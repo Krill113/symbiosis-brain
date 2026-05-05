@@ -1,0 +1,52 @@
+[project]
+name = "symbiosis-brain"
+version = "0.1.0"
+description = "MCP memory server with semantic search, graph, and bi-temporal tracking"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Kirill Voznesenskij" }]
+requires-python = ">=3.12"
+keywords = ["mcp", "memory", "claude", "semantic-search", "knowledge-base"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "python-frontmatter>=1.1.0",
+    "fastembed>=0.4.0",
+    "sqlite-vec>=0.1.6",
+    "numpy>=1.26.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Krill113/symbiosis-brain"
+Repository = "https://github.com/Krill113/symbiosis-brain"
+Issues = "https://github.com/Krill113/symbiosis-brain/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+symbiosis-brain = "symbiosis_brain.install_cli:main"
+brain-cli = "symbiosis_brain.scope_cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/symbiosis_brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]

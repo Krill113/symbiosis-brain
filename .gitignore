@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+dist/
+*.egg-info/
+
+# User-local config (never commit personal scope→path mappings, etc.)
+*.local.json
+
+# User vault — created by `symbiosis-brain setup` / brain-welcome skill, not bundled
+vault/

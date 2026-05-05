@@ -54,6 +54,13 @@ Same result — installs the latest `main` branch directly from the repo. Useful
 
 </details>
 
+> 🤖 **Want Claude Code to install it for you?**
+> Paste this prompt:
+>
+> > *Install Symbiosis Brain from https://github.com/Krill113/symbiosis-brain — use the default vault path, then remind me to restart Claude Code.*
+>
+> Claude will read this README, run the install with `--vault ~/symbiosis-brain-vault`, and tell you when it's time to restart. **You'll need to restart Claude Code manually** — the running session can't pick up its own new MCP server until you do.
+
 > 🤝 **Augments Claude Code — never overrides it.**
 > Symbiosis Brain *adds* a memory layer. Every built-in Claude Code feature keeps working. Your existing hooks, skills, slash commands, and settings stay intact — we deep-merge our config with a `.bak` backup, and `symbiosis-brain uninstall` restores everything.
 

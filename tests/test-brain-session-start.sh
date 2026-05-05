@@ -1,12 +1,12 @@
 #!/bin/bash
 # Unit tests for brain-session-start.sh hook.
-# Usage: bash tools/symbiosis-brain/tests/test-brain-session-start.sh
+# Usage: bash tests/test-brain-session-start.sh   (run from repo root)
 
 set -u
 
 HOOK="$HOME/.claude/hooks/brain-session-start.sh"
 # Repo source-of-truth (used for sourcing normalize_scope helper in tests).
-HOOK_SOURCE="${HOOK_SOURCE:-tools/symbiosis-brain/hooks/brain-session-start.sh}"
+HOOK_SOURCE="${HOOK_SOURCE:-hooks/brain-session-start.sh}"
 VAULT="/tmp/sb-test-vault-$$"
 FAKE_ROOT="/tmp/sb-test-cwd-$$"
 FAILED=0

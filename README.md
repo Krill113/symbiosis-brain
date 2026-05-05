@@ -69,7 +69,7 @@ Same result — installs the latest `main` branch directly from the repo. Useful
 ## Why a markdown brain?
 
 - 📂 **Your knowledge, your files.** Plain `.md` in a folder you pick. Human-readable, git-trackable, opens in Obsidian as a graph.
-- 🔍 **Hybrid search out of the box.** SQLite + FTS5 + sqlite-vec. Local, fast, no cloud, no API key, no per-token pricing.
+- 🔍 **Hybrid search, all local.** Local embeddings + local index, no API key — memory calls don't add an API bill on top of Claude.
 - 🔗 **Wiki-links connect your projects.** `brain_context` walks the graph N hops — decisions in one repo surface as context in another.
 - ⏰ **Bi-temporal.** Every fact has a `valid_from` / `valid_to` date. Stale knowledge gets a warning, not silent rot.
 - 🪶 **Quiet by design.** No Clippy, no nag. Hooks fire only when they earn the interruption (e.g., context at 70% → "save before /compact swallows this").

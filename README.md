@@ -29,6 +29,31 @@ symbiosis-brain setup claude-code
 
 That's it. Restart Claude Code — `brain-welcome` introduces itself, asks two friendly questions, and you're done.
 
+<details>
+<summary><b>Don't have <code>uv</code>? Or prefer installing straight from GitHub?</b></summary>
+
+**Install `uv` first** (one-time, ~30 seconds — `uv` is a fast Python package manager):
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Install Symbiosis Brain straight from GitHub** (no PyPI involved):
+
+```bash
+uv tool install git+https://github.com/Krill113/symbiosis-brain.git
+symbiosis-brain setup claude-code
+```
+
+Same result — installs the latest `main` branch directly from the repo. Useful if you want to track unreleased changes or install from a fork.
+
+</details>
+
 > 🤝 **Augments Claude Code — never overrides it.**
 > Symbiosis Brain *adds* a memory layer. Every built-in Claude Code feature keeps working. Your existing hooks, skills, slash commands, and settings stay intact — we deep-merge our config with a `.bak` backup, and `symbiosis-brain uninstall` restores everything.
 

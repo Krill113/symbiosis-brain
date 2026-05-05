@@ -11,3 +11,18 @@ dist/
 
 # User vault — created by `symbiosis-brain setup` / brain-welcome skill, not bundled
 vault/
+
+# Personal Claude Code overrides
+CLAUDE.local.md
+.claude/
+
+# Serena MCP semantic cache
+.serena/
+
+# Editor configs
+.vscode/
+.idea/
+
+# OS junk
+Thumbs.db
+.DS_Store

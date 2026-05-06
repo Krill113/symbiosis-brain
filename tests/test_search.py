@@ -218,3 +218,31 @@ def test_search_engine_exposes_model_name(tmp_vault: Path, db_path: Path):
     se = SearchEngine(s)
     assert se._model_name == _MODEL_NAME
     s.close()
+
+
+def test_get_embedder_creates_lockfile_during_init(tmp_path, monkeypatch):
+    """During fastembed init, a lockfile exists at LOCK_DIR. After init, gone."""
+    from symbiosis_brain import search as _search_mod
+    monkeypatch.setattr(_search_mod, "LOCK_DIR", tmp_path)
+    # Reset module singleton
+    monkeypatch.setattr(_search_mod, "_embedder", None)
+
+    e = _search_mod._get_embedder()
+    assert e is not None
+    # After init, lockfile is removed
+    lockfile = tmp_path / "sb-fastembed-init.lock"
+    assert not lockfile.exists()
+
+
+def test_get_embedder_skips_lock_when_already_loaded(tmp_path, monkeypatch):
+    """If _embedder is already non-None, _get_embedder returns immediately
+    without touching the lockfile."""
+    from symbiosis_brain import search as _search_mod
+    monkeypatch.setattr(_search_mod, "LOCK_DIR", tmp_path)
+    sentinel = object()
+    monkeypatch.setattr(_search_mod, "_embedder", sentinel)
+    # Pre-create a fresh lockfile to assert it's NOT touched
+    (tmp_path / "sb-fastembed-init.lock").write_text("99999\n0\n")
+
+    result = _search_mod._get_embedder()
+    assert result is sentinel  # fast path returned the cached singleton

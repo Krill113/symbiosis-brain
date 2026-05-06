@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -10,6 +14,9 @@ if TYPE_CHECKING:
 
 _MODEL_NAME = "BAAI/bge-small-en-v1.5"
 _embedder = None
+
+LOCK_DIR = Path(tempfile.gettempdir())
+_FASTEMBED_LOCK_TIMEOUT_S = 120
 
 _SCOPE_BOOST = 1.5
 """Multiplier applied to RRF scores of notes whose scope matches the query scope.
@@ -57,9 +64,46 @@ def _extract_fallback_gist(content: str, max_chars: int = 80) -> str:
 
 def _get_embedder():
     global _embedder
-    if _embedder is None:
-        from fastembed import TextEmbedding
-        _embedder = TextEmbedding(model_name=_MODEL_NAME)
+    if _embedder is not None:
+        return _embedder
+
+    lockfile = LOCK_DIR / "sb-fastembed-init.lock"
+    deadline = time.time() + _FASTEMBED_LOCK_TIMEOUT_S
+    acquired = False
+
+    while not acquired:
+        try:
+            fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w") as f:
+                f.write(f"{os.getpid()}\n{int(time.time())}\n")
+            acquired = True
+        except FileExistsError:
+            try:
+                age = time.time() - lockfile.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > _FASTEMBED_LOCK_TIMEOUT_S:
+                try:
+                    lockfile.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.time() >= deadline:
+                # Lock held too long — give up, attempt unguarded init.
+                # Worst case: parallel cold-starts compete; not a hang.
+                break
+            time.sleep(0.1)
+
+    try:
+        if _embedder is None:
+            from fastembed import TextEmbedding
+            _embedder = TextEmbedding(model_name=_MODEL_NAME)
+    finally:
+        if acquired:
+            try:
+                lockfile.unlink()
+            except FileNotFoundError:
+                pass
     return _embedder
 
 

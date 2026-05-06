@@ -240,3 +240,13 @@ class TestUpsertRelationNewFields:
             "SELECT broken FROM relations WHERE from_name=?", ("projects/src",)
         ).fetchone()
         assert row["broken"] == 1
+
+
+def test_pragmas_set_on_init(db_path: Path):
+    s = Storage(db_path)
+    assert s._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert s._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+    assert s._conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 200
+    assert s._conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
+    assert s._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    s.close()

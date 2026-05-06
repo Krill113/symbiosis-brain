@@ -1,6 +1,6 @@
 from pathlib import Path
 from symbiosis_brain.storage import Storage
-from symbiosis_brain.sync import VaultSync
+from symbiosis_brain.sync import SyncResult, VaultSync
 
 
 class TestVaultSync:
@@ -175,3 +175,48 @@ class TestForceReindexOnSchemaBump:
             r["from_name"] == "projects/src" and r["to_name"] == "projects/foo"
             for r in rows
         )
+
+
+def test_sync_all_returns_paths_added(tmp_vault: Path, db_path: Path):
+    (tmp_vault / "wiki" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: wiki\nscope: global\ntags: []\n---\n\nbody.\n",
+        encoding="utf-8",
+    )
+    s = Storage(db_path)
+    sync = VaultSync(tmp_vault, s)
+    result = sync.sync_all()
+    assert isinstance(result, SyncResult)
+    assert result.added == ["wiki/alpha.md"]
+    assert result.updated == []
+    assert result.removed == []
+    assert result.skipped == 0
+    s.close()
+
+
+def test_sync_all_returns_paths_updated_and_removed(tmp_vault: Path, db_path: Path):
+    note = tmp_vault / "wiki" / "alpha.md"
+    note.write_text("---\ntitle: A1\ntype: wiki\nscope: global\ntags: []\n---\n\nv1.\n",
+                    encoding="utf-8")
+    s = Storage(db_path)
+    sync = VaultSync(tmp_vault, s)
+    sync.sync_all()  # initial add
+
+    # Update + add another + remove implicit (none yet)
+    note.write_text("---\ntitle: A1\ntype: wiki\nscope: global\ntags: []\n---\n\nv2.\n",
+                    encoding="utf-8")
+    (tmp_vault / "wiki" / "beta.md").write_text(
+        "---\ntitle: Beta\ntype: wiki\nscope: global\ntags: []\n---\n\nb.\n",
+        encoding="utf-8",
+    )
+    result = sync.sync_all()
+    assert sorted(result.added) == ["wiki/beta.md"]
+    assert sorted(result.updated) == ["wiki/alpha.md"]
+    assert result.removed == []
+
+    # Now delete alpha + run again — alpha should appear in removed
+    note.unlink()
+    result = sync.sync_all()
+    assert result.added == []
+    assert result.updated == []
+    assert result.removed == ["wiki/alpha.md"]
+    s.close()

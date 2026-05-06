@@ -44,8 +44,10 @@ def _init(vault_path: Path):
     _graph = GraphTraverser(_storage)
     _temporal = TemporalManager(_storage)
     _linter = VaultLinter(_storage, vault_path=vault_path)
-    stats = _sync.sync_all()
-    logger.info("Vault synced: %s", stats)
+    sync_result = _sync.sync_all()
+    logger.info("Vault synced: added=%d updated=%d removed=%d skipped=%d",
+                len(sync_result.added), len(sync_result.updated),
+                len(sync_result.removed), sync_result.skipped)
     _search.index_all()
     logger.info("Embeddings indexed")
 
@@ -391,9 +393,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=text)]
 
     elif name == "brain_sync":
-        stats = _sync.sync_all()
+        sync_result = _sync.sync_all()
         _search.index_all()
-        return [TextContent(type="text", text=f"Sync complete: {json.dumps(stats)}")]
+        summary = {
+            "added": len(sync_result.added),
+            "updated": len(sync_result.updated),
+            "removed": len(sync_result.removed),
+            "skipped": sync_result.skipped,
+        }
+        return [TextContent(type="text", text=f"Sync complete: {json.dumps(summary)}")]
 
     elif name == "brain_lint":
         report = _linter.lint()

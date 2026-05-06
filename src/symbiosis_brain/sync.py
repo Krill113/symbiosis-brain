@@ -1,8 +1,27 @@
 import hashlib
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from symbiosis_brain.markdown_parser import extract_wikilinks, parse_note
 from symbiosis_brain.storage import Storage
+
+
+@dataclass
+class SyncResult:
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    skipped: int = 0
+
+    def __getitem__(self, key: str) -> int:
+        """Backward-compat: stats["added"] returns count, mirroring the
+        legacy dict-shaped return. Use the dataclass attributes (e.g.
+        result.added) for the path lists."""
+        if key in ("added", "updated", "removed"):
+            return len(getattr(self, key))
+        if key == "skipped":
+            return self.skipped
+        raise KeyError(key)
 
 VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference"]
 MD_GLOB = "**/*.md"
@@ -14,8 +33,8 @@ class VaultSync:
         self.vault_path = vault_path
         self.storage = storage
 
-    def sync_all(self) -> dict[str, int]:
-        stats = {"added": 0, "updated": 0, "removed": 0, "skipped": 0}
+    def sync_all(self) -> SyncResult:
+        result = SyncResult()
 
         # Force reindex on first sync after schema migration
         if self.storage.needs_full_reindex():
@@ -48,7 +67,7 @@ class VaultSync:
 
             existing = db_notes.get(rel_path)
             if existing and existing.get("content_hash") == content_hash:
-                stats["skipped"] += 1
+                result.skipped += 1
                 continue
 
             parsed = parse_note(content)
@@ -71,9 +90,9 @@ class VaultSync:
             changed_notes.append((rel_path, parsed["title"], parsed["body"]))
 
             if existing:
-                stats["updated"] += 1
+                result.updated.append(rel_path)
             else:
-                stats["added"] += 1
+                result.added.append(rel_path)
 
         for db_path in db_notes:
             if db_path not in disk_files:
@@ -81,13 +100,13 @@ class VaultSync:
                     "DELETE FROM relations WHERE source_note=?", (db_path,)
                 )
                 self.storage.delete_note(db_path)
-                stats["removed"] += 1
+                result.removed.append(db_path)
 
         # Pass 2: resolve wiki-links now that the notes table is fully populated.
         for rel_path, title, body in changed_notes:
             self._sync_wikilinks(rel_path, title, body)
 
-        return stats
+        return result
 
     def _sync_wikilinks(self, note_path: str, note_title: str, body: str):
         from symbiosis_brain.resolver import resolve_target

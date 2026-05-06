@@ -250,3 +250,58 @@ def test_pragmas_set_on_init(db_path: Path):
     assert s._conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
     assert s._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     s.close()
+
+
+import multiprocessing as mp
+
+
+def _open_storage_in_subprocess(db_path_str: str, queue: "mp.Queue"):
+    """Helper for test_concurrent_migration_safe — must be top-level for spawn."""
+    try:
+        from pathlib import Path as _P
+        from symbiosis_brain.storage import Storage as _S
+        s = _S(_P(db_path_str))
+        version = s._conn.execute(
+            "SELECT version FROM schema_version WHERE key='wikilink_normalization'"
+        ).fetchone()
+        queue.put(("ok", version[0] if version else None))
+        s.close()
+    except Exception as exc:
+        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+
+def test_concurrent_migration_safe(db_path: Path):
+    # Bootstrap an unmigrated DB by stopping at the bare bones.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3 as _sq
+    c = _sq.connect(str(db_path))
+    c.executescript("""
+        CREATE TABLE notes (path TEXT PRIMARY KEY, title TEXT, content TEXT,
+            note_type TEXT, scope TEXT, tags TEXT, frontmatter TEXT,
+            content_hash TEXT, created_at TEXT, updated_at TEXT,
+            valid_from TEXT, valid_to TEXT);
+        CREATE TABLE entities (name TEXT PRIMARY KEY, entity_type TEXT,
+            scope TEXT, created_at TEXT);
+        CREATE TABLE relations (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_name TEXT, to_name TEXT, relation_type TEXT,
+            source_note TEXT, created_at TEXT,
+            UNIQUE(from_name, to_name, relation_type));
+        CREATE TABLE schema_version (key TEXT PRIMARY KEY, version INTEGER);
+    """)
+    c.commit()
+    c.close()
+
+    # Now spawn 3 processes that each open Storage and trigger migration.
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=_open_storage_in_subprocess,
+                         args=(str(db_path), q)) for _ in range(3)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=15)
+        assert p.exitcode == 0, f"process exited with {p.exitcode}"
+
+    results = [q.get_nowait() for _ in range(3)]
+    assert all(r[0] == "ok" for r in results), f"errors: {results}"
+    assert all(r[1] == 1 for r in results), f"unexpected versions: {results}"

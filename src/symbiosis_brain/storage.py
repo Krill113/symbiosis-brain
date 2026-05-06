@@ -83,36 +83,44 @@ class Storage:
         self._migrate_wikilink_normalization()
 
     def _migrate_wikilink_normalization(self):
-        row = self._conn.execute(
-            "SELECT version FROM schema_version WHERE key=?",
-            ("wikilink_normalization",),
-        ).fetchone()
-        current = row["version"] if row else 0
+        # BEGIN IMMEDIATE serializes parallel migrators: only one runs the
+        # ALTER TABLE block; the others wait via busy_timeout, then re-read
+        # schema_version and skip (current >= 1).
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT version FROM schema_version WHERE key=?",
+                ("wikilink_normalization",),
+            ).fetchone()
+            current = row["version"] if row else 0
 
-        if current < 1:
-            existing_cols = {
-                r["name"]
-                for r in self._conn.execute(
-                    "PRAGMA table_info(relations)"
-                ).fetchall()
-            }
-            if "label" not in existing_cols:
+            if current < 1:
+                existing_cols = {
+                    r["name"]
+                    for r in self._conn.execute(
+                        "PRAGMA table_info(relations)"
+                    ).fetchall()
+                }
+                if "label" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE relations ADD COLUMN label TEXT"
+                    )
+                if "raw_target" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE relations ADD COLUMN raw_target TEXT"
+                    )
+                if "broken" not in existing_cols:
+                    self._conn.execute(
+                        "ALTER TABLE relations ADD COLUMN broken INTEGER NOT NULL DEFAULT 0"
+                    )
                 self._conn.execute(
-                    "ALTER TABLE relations ADD COLUMN label TEXT"
+                    "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
+                    ("wikilink_normalization", 1),
                 )
-            if "raw_target" not in existing_cols:
-                self._conn.execute(
-                    "ALTER TABLE relations ADD COLUMN raw_target TEXT"
-                )
-            if "broken" not in existing_cols:
-                self._conn.execute(
-                    "ALTER TABLE relations ADD COLUMN broken INTEGER NOT NULL DEFAULT 0"
-                )
-            self._conn.execute(
-                "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
-                ("wikilink_normalization", 1),
-            )
             self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def list_tables(self) -> list[str]:
         rows = self._conn.execute(

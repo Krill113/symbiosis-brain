@@ -1,16 +1,33 @@
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+_BUSY_TIMEOUT_MS = 30_000
 
 
 class Storage:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False,
+                                     isolation_level=None)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=30000")
+        # Set busy_timeout FIRST so the connection has retry semantics before
+        # any locking operations.
+        self._conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        # journal_mode=WAL requires a brief exclusive lock; the SQLite busy
+        # handler does not cover PRAGMA journal_mode, so we retry manually
+        # when multiple processes open the same DB simultaneously.
+        deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
+        while True:
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
         self._conn.execute("PRAGMA wal_autocheckpoint=200")
         self._conn.execute("PRAGMA journal_size_limit=10485760")
         self._conn.execute("PRAGMA foreign_keys=ON")

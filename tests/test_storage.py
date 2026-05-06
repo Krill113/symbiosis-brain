@@ -1,5 +1,6 @@
-from pathlib import Path
+import multiprocessing as mp
 import sqlite3
+from pathlib import Path
 
 from symbiosis_brain.storage import Storage
 
@@ -252,15 +253,10 @@ def test_pragmas_set_on_init(db_path: Path):
     s.close()
 
 
-import multiprocessing as mp
-
-
 def _open_storage_in_subprocess(db_path_str: str, queue: "mp.Queue"):
     """Helper for test_concurrent_migration_safe — must be top-level for spawn."""
     try:
-        from pathlib import Path as _P
-        from symbiosis_brain.storage import Storage as _S
-        s = _S(_P(db_path_str))
+        s = Storage(Path(db_path_str))
         version = s._conn.execute(
             "SELECT version FROM schema_version WHERE key='wikilink_normalization'"
         ).fetchone()
@@ -273,8 +269,7 @@ def _open_storage_in_subprocess(db_path_str: str, queue: "mp.Queue"):
 def test_concurrent_migration_safe(db_path: Path):
     # Bootstrap an unmigrated DB by stopping at the bare bones.
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    import sqlite3 as _sq
-    c = _sq.connect(str(db_path))
+    c = sqlite3.connect(str(db_path))
     c.executescript("""
         CREATE TABLE notes (path TEXT PRIMARY KEY, title TEXT, content TEXT,
             note_type TEXT, scope TEXT, tags TEXT, frontmatter TEXT,

@@ -193,3 +193,41 @@ def test_init_full_reindex_on_count_drift(tmp_vault, db_path):
     finally:
         _SE.index_all = orig_index_all
         server._storage.close()
+
+
+def test_write_note_body_does_not_scan_other_notes(tmp_vault, db_path, monkeypatch):
+    """A brain_write should call sync_one for the target path only,
+    not sync_all (which scans the entire vault)."""
+    _seed_vault(tmp_vault, n=5)
+    from symbiosis_brain import server
+
+    server._init(tmp_vault)
+
+    sync_all_calls = {"count": 0}
+    sync_one_calls = {"paths": []}
+
+    orig_sync_all = server._sync.sync_all
+    orig_sync_one = server._sync.sync_one
+
+    def counting_sync_all(*a, **kw):
+        sync_all_calls["count"] += 1
+        return orig_sync_all(*a, **kw)
+
+    def counting_sync_one(path, *a, **kw):
+        sync_one_calls["paths"].append(path)
+        return orig_sync_one(path, *a, **kw)
+
+    monkeypatch.setattr(server._sync, "sync_all", counting_sync_all)
+    monkeypatch.setattr(server._sync, "sync_one", counting_sync_one)
+
+    # Trigger a write via the internal helper (simulates brain_write tool)
+    server._write_note_body(
+        rel_path="wiki/new.md",
+        new_text="---\ntitle: New\ntype: wiki\nscope: global\ntags: []\n---\n\nbody.\n",
+        op="write",
+        title="New",
+    )
+
+    assert sync_all_calls["count"] == 0, "expected sync_one, not sync_all"
+    assert sync_one_calls["paths"] == ["wiki/new.md"]
+    server._storage.close()

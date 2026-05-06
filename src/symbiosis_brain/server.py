@@ -135,7 +135,7 @@ def _write_note_body(rel_path: str, new_text: str, op: str, title: str) -> None:
     file_path = (_vault_path / rel_path).resolve()
     atomic_write_text(file_path, new_text)
     _append_log(_vault_path, op, rel_path, title)
-    _sync.sync_all()
+    _sync.sync_one(rel_path)
     parsed = parse_note(new_text)
     _search.index_note(rel_path, f"{parsed['title']}\n{parsed['body']}")
 

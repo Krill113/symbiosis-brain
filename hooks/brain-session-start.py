@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from symbiosis_brain.atomic_write import atomic_write_text
 
 # Force UTF-8 on stdout/stderr — Windows defaults to CP1251 which crashes on 🧠 / Cyrillic.
 # Claude Code invokes this hook in a non-TTY context where Python's default encoding
@@ -70,9 +71,10 @@ def _clean_session_flags(session_id: str) -> None:
             (tmp / name).unlink()
         except FileNotFoundError:
             pass
-    # Mark current session
+    # Mark current session — atomic to avoid torn writes if multiple sessions
+    # start concurrently.
     try:
-        (tmp / "brain-current-session").write_text(session_id, encoding="utf-8")
+        atomic_write_text(tmp / "brain-current-session", session_id)
     except OSError:
         pass
 

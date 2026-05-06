@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from symbiosis_brain.atomic_write import atomic_write_text
 
 # Force UTF-8 on stdout/stderr — Windows defaults to CP1251 which crashes on 🧠 / Cyrillic.
 # Claude Code invokes this hook in a non-TTY context where Python's default encoding
@@ -114,12 +115,14 @@ def cmd_stop(data: dict) -> int:
         if 40 <= t < 70 and save_later_file.exists():
             save_later_file.unlink()
             return 0
-        # Mark all crossed thresholds
-        with triggered_file.open("a", encoding="utf-8") as f:
-            for mark in THRESHOLDS:
-                if mark <= pct and str(mark) not in triggered:
-                    f.write(f"{mark}\n")
-                    triggered.add(str(mark))
+        # Mark all crossed thresholds (atomic write to avoid torn lines under
+        # concurrent stop hooks within the same session).
+        new_marks = [str(mark) for mark in THRESHOLDS
+                     if mark <= pct and str(mark) not in triggered]
+        triggered.update(new_marks)
+        if new_marks:
+            sorted_marks = sorted(triggered, key=lambda x: int(x))
+            atomic_write_text(triggered_file, "".join(f"{m}\n" for m in sorted_marks))
         # Zone-based message
         if t < 70:
             msg = f"🧠 Контекст {pct}%, delta +{delta}%. Сохрани если есть что — или скажи SAVE_LATER чтобы пропустить раз."
@@ -192,15 +195,16 @@ def cmd_prompt_check(data: dict) -> int:
         zone_hit = highest_crossed > highest_shown
 
         if zone_hit:
-            with shown_file.open("a", encoding="utf-8") as f:
-                for z in crossed:
-                    if str(z) not in shown:
-                        f.write(f"{z}\n")
+            new_zones = [str(z) for z in crossed if str(z) not in shown]
+            shown.update(new_zones)
+            if new_zones:
+                sorted_zones = sorted(shown, key=lambda x: int(x))
+                atomic_write_text(shown_file, "".join(f"{z}\n" for z in sorted_zones))
         if zone_hit or turns >= rules_turn:
             rules_block = f"[rules — context {pct}%]\n{rules_text}"
-            turn_file.write_text("0", encoding="utf-8")
+            atomic_write_text(turn_file, "0")
         else:
-            turn_file.write_text(str(turns), encoding="utf-8")
+            atomic_write_text(turn_file, str(turns))
 
     # Compose
     blocks = [b for b in (memory_block, rules_block, pending_block) if b]

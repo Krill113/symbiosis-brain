@@ -129,3 +129,30 @@ def test_main_cleans_session_flags(tmp_path, monkeypatch):
 
     for f in flags:
         assert not f.exists(), f"{f} still exists, should have been cleaned"
+
+
+import threading
+
+
+def test_concurrent_session_start_atomic_current_session(tmp_path):
+    """Five parallel session-start hooks: `brain-current-session` must end up
+    holding exactly one of the session_ids — not a torn concatenation."""
+    HOOK_PATH = Path(__file__).parent.parent / "hooks" / "brain-session-start.py"
+
+    def worker(sid: str):
+        subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=json.dumps({"session_id": sid}),
+            capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "TMPDIR": str(tmp_path),
+                 "SYMBIOSIS_BRAIN_VAULT": ""},
+        )
+
+    threads = [threading.Thread(target=worker, args=(f"sess-{i}",)) for i in range(5)]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=10)
+
+    current = (tmp_path / "brain-current-session").read_text(encoding="utf-8")
+    # Last-writer-wins is OK; torn-write is NOT
+    assert current in {f"sess-{i}" for i in range(5)}, \
+        f"file content is not exactly one session-id (torn write?): {current!r}"

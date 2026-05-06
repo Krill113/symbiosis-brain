@@ -135,3 +135,39 @@ def test_prompt_check_rules_block_emitted_at_zone_crossing(tmp_path, monkeypatch
     monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL", "999")
     proc = _run("prompt-check", json.dumps({"session_id": "s1", "prompt": "hello world long enough prompt"}))
     assert "[rules — context 65%]" in proc.stdout
+
+
+import threading
+
+
+def test_concurrent_stop_hooks_produce_parseable_triggered(tmp_path, monkeypatch):
+    """Five parallel `stop` hooks for the same session at 95% must leave
+    `brain-triggered-<sid>` parseable (every line a valid int, no torn writes,
+    no garbage). All three thresholds (40, 70, 90) must be recorded."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    (tmp_path / "brain-context-pct-s1").write_text("95", encoding="utf-8")
+
+    results: list = []
+    lock = threading.Lock()
+
+    def worker():
+        proc = subprocess.run(
+            [sys.executable, str(HOOK), "stop"],
+            input=json.dumps({"session_id": "s1"}),
+            capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "TMPDIR": str(tmp_path)},
+        )
+        with lock:
+            results.append(proc.returncode)
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=10)
+
+    triggered = (tmp_path / "brain-triggered-s1").read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in triggered.splitlines() if ln.strip()]
+    # Every recorded line must be a parseable integer (no torn writes)
+    for ln in lines:
+        assert ln.isdigit(), f"non-numeric line in triggered file: {ln!r}"
+    parsed = {int(ln) for ln in lines}
+    assert parsed >= {40, 70, 90}, f"missing thresholds: {parsed}"

@@ -8,6 +8,7 @@ import numpy as np
 if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
+_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 _embedder = None
 
 _SCOPE_BOOST = 1.5
@@ -58,7 +59,7 @@ def _get_embedder():
     global _embedder
     if _embedder is None:
         from fastembed import TextEmbedding
-        _embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        _embedder = TextEmbedding(model_name=_MODEL_NAME)
     return _embedder
 
 
@@ -75,6 +76,10 @@ class SearchEngine:
     def __init__(self, storage: Storage):
         self.storage = storage
         self._vec_enabled = self._try_load_vec()
+
+    @property
+    def _model_name(self) -> str:
+        return _MODEL_NAME
 
     def _try_load_vec(self) -> bool:
         try:
@@ -124,6 +129,21 @@ class SearchEngine:
                 (note["path"], np.array(emb, dtype=np.float32).tobytes()),
             )
         self.storage._conn.commit()
+
+    def delete_vec(self, path: str) -> None:
+        """Remove the vector embedding for a single note path."""
+        if not self._vec_enabled:
+            return
+        self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (path,))
+        self.storage._conn.commit()
+
+    def is_index_dirty(self) -> bool:
+        """True if count(notes) != count(notes_vec). Cheap O(1) drift check."""
+        if not self._vec_enabled:
+            return False
+        n = self.storage._conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        v = self.storage._conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0]
+        return n != v
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:

@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.search import SearchEngine
+from symbiosis_brain.sync import VaultSync
 
 
 @pytest.fixture
@@ -164,3 +165,56 @@ class TestGistMode:
         assert "title:" not in result
         assert "tags:" not in result
         assert result.startswith("The real first paragraph")
+
+
+def test_delete_vec_removes_single_path(tmp_vault: Path, db_path: Path):
+    s = Storage(db_path)
+    se = SearchEngine(s)
+    if not se._vec_enabled:
+        pytest.skip("sqlite-vec not available")
+    # Manually insert two vec rows
+    import numpy as np
+    emb = np.zeros(384, dtype=np.float32).tobytes()
+    s._conn.execute("INSERT INTO notes_vec (path, embedding) VALUES ('a.md', ?)", (emb,))
+    s._conn.execute("INSERT INTO notes_vec (path, embedding) VALUES ('b.md', ?)", (emb,))
+    s._conn.commit()
+    assert s._conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0] == 2
+
+    se.delete_vec("a.md")
+    rows = s._conn.execute("SELECT path FROM notes_vec ORDER BY path").fetchall()
+    assert [r[0] for r in rows] == ["b.md"]
+    s.close()
+
+
+def test_is_index_dirty_detects_count_drift(tmp_vault: Path, db_path: Path):
+    note = tmp_vault / "wiki" / "n1.md"
+    note.write_text("---\ntitle: N1\ntype: wiki\nscope: global\ntags: []\n---\n\nbody.\n",
+                    encoding="utf-8")
+    s = Storage(db_path)
+    sync = VaultSync(tmp_vault, s)
+    sync.sync_all()
+    se = SearchEngine(s)
+    if not se._vec_enabled:
+        pytest.skip("sqlite-vec not available")
+
+    # Index is empty (count=0), notes table has 1 → dirty
+    assert se.is_index_dirty() is True
+
+    # Index it
+    se.index_all()
+    assert se.is_index_dirty() is False
+
+    # Now delete a vec row to simulate drift
+    s._conn.execute("DELETE FROM notes_vec WHERE path='wiki/n1.md'")
+    s._conn.commit()
+    assert se.is_index_dirty() is True
+    s.close()
+
+
+def test_search_engine_exposes_model_name(tmp_vault: Path, db_path: Path):
+    from symbiosis_brain.search import SearchEngine, _MODEL_NAME
+    assert _MODEL_NAME == "BAAI/bge-small-en-v1.5"
+    s = Storage(db_path)
+    se = SearchEngine(s)
+    assert se._model_name == _MODEL_NAME
+    s.close()

@@ -1,15 +1,20 @@
-"""Tier 1 reproducer: full MCP server _init() path equivalent.
+"""Tier 1 reproducer: full MCP server `_init()` path.
 
-Mimics what happens when a fresh Claude Code session starts symbiosis-brain MCP server:
-  - Open Storage (creates tables, migrations)
-  - Init SearchEngine (loads sqlite-vec extension)
-  - VaultSync.sync_all() (reads vault, upserts notes)
-  - SearchEngine.index_all() (DELETE notes_vec + 395 INSERTs + 1 commit)
+Mimics what happens when a fresh Claude Code session starts symbiosis-brain MCP server.
+Calls `server._init(vault)` directly so the run exercises the production code path:
 
-Then performs a single brain_search to simulate first user query.
+- Storage open (PRAGMAs + migration + WAL retry)
+- SearchEngine init (sqlite-vec extension load)
+- VaultSync.sync_all (idempotent — skips unchanged notes via content_hash)
+- _init's bootstrap-by-inference / model-drift / targeted-incremental / count-drift logic
 
 REPRO_VAULT env var must point to a vault directory.
 Each phase is timed individually; output is one JSON line on stdout.
+
+Note: the FIRST cold run on a freshly-upgraded vault may execute a one-time
+full re-embed (bootstrap path, ~50s for ~400 notes) if `embedding_model` is
+not yet registered. Subsequent runs skip everything in <1s. Warm the vault
+once with N=1 before running parallel benchmarks.
 """
 import json
 import os
@@ -32,36 +37,19 @@ def main():
 
     t0 = time.perf_counter()
 
-    from symbiosis_brain.storage import Storage
-    from symbiosis_brain.search import SearchEngine
-    from symbiosis_brain.sync import VaultSync
+    from symbiosis_brain import server
     mark("imports_s", t0)
 
-    db_path = vault / ".index" / "brain.db"
-    storage = Storage(db_path)
-    mark("storage_open_s", t0)
+    server._init(vault)
+    mark("init_s", t0)
 
-    search = SearchEngine(storage)
-    mark("search_init_s", t0)
-
-    sync = VaultSync(vault, storage)
-    sync_result = sync.sync_all()
-    mark("sync_all_s", t0)
-
-    search.index_all()
-    mark("index_all_s", t0)
-
-    results = search.search("test query for parallel cold-start measurement",
-                            limit=3, mode="gist")
+    results = server._search.search(
+        "test query for parallel cold-start measurement",
+        limit=3, mode="gist",
+    )
     mark("first_search_s", t0)
 
     PHASE["pid"] = os.getpid()
-    PHASE["sync_stats"] = {
-        "added": sync_result["added"],
-        "updated": sync_result["updated"],
-        "removed": sync_result["removed"],
-        "skipped": sync_result["skipped"],
-    }
     PHASE["search_hits"] = len(results)
     PHASE["total_s"] = round(time.perf_counter() - t0, 3)
     print(json.dumps(PHASE))

@@ -300,3 +300,15 @@ def test_concurrent_migration_safe(db_path: Path):
     results = [q.get_nowait() for _ in range(3)]
     assert all(r[0] == "ok" for r in results), f"errors: {results}"
     assert all(r[1] == 1 for r in results), f"unexpected versions: {results}"
+
+
+def test_schema_version_helpers_round_trip(db_path: Path):
+    s = Storage(db_path)
+    assert s.get_schema_version("does_not_exist") is None
+    s.set_schema_version("embedding_model", "BAAI/bge-small-en-v1.5")
+    assert s.get_schema_version("embedding_model") == "BAAI/bge-small-en-v1.5"
+    s.set_schema_version("embedding_model", "BAAI/bge-large-en-v1.5")
+    assert s.get_schema_version("embedding_model") == "BAAI/bge-large-en-v1.5"
+    s.set_schema_version("some_int", 42)
+    assert s.get_schema_version("some_int") == 42
+    s.close()

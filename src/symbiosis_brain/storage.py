@@ -304,5 +304,35 @@ class Storage:
         )
         self._conn.commit()
 
+    def get_schema_version(self, key: str) -> str | int | None:
+        """Read a schema_version key. Returns int if the stored value parses
+        as int, else str. Returns None if key is absent.
+
+        Note: the underlying column is named `version` (legacy — INTEGER affinity),
+        but we use SQLite's dynamic typing to store strings (e.g. model names) too.
+        Always go through these helpers, not raw SQL.
+        """
+        row = self._conn.execute(
+            "SELECT version FROM schema_version WHERE key=?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        v = row["version"]
+        if isinstance(v, int):
+            return v
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return v
+
+    def set_schema_version(self, key: str, value: str | int) -> None:
+        """Upsert a schema_version key. Strings stored as-is via SQLite
+        dynamic typing on the INTEGER-affinity column."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
+            (key, str(value) if not isinstance(value, int) else value),
+        )
+        self._conn.commit()
+
     def close(self):
         self._conn.close()

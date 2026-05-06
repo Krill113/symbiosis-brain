@@ -17,6 +17,7 @@ from symbiosis_brain.temporal import TemporalManager
 from symbiosis_brain.markdown_parser import parse_note, render_note
 from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
+from symbiosis_brain.write_lock import note_write_lock
 
 import frontmatter
 
@@ -121,16 +122,12 @@ def _append_log(vault_path: Path, action: str, path: str, title: str):
         logger.warning("Failed to append to vault log", exc_info=True)
 
 
-def _write_note_body(rel_path: str, new_text: str, op: str, title: str) -> None:
-    """Persist `new_text` to `rel_path` inside the vault, then log/sync/index.
+def _write_note_body_unlocked(rel_path: str, new_text: str, op: str, title: str) -> None:
+    """FS write + DB sync + vec index WITHOUT acquiring the per-note lock.
 
-    Shared tail for brain_write / brain_append / brain_patch. Callers are
-    responsible for:
-      - validating `rel_path` (is_relative_to vault)
-      - building `new_text` from their operation-specific inputs
-      - shaping the response TextContent
-
-    `op` is one of "write", "append", "patch" (used in log only).
+    Call only when the caller already holds `note_write_lock` for `rel_path`
+    (e.g. from inside a `with note_write_lock(...)` block). Using this from
+    an unlocked context creates a race — prefer `_write_note_body` instead.
     """
     file_path = (_vault_path / rel_path).resolve()
     atomic_write_text(file_path, new_text)
@@ -138,6 +135,19 @@ def _write_note_body(rel_path: str, new_text: str, op: str, title: str) -> None:
     _sync.sync_one(rel_path)
     parsed = parse_note(new_text)
     _search.index_note(rel_path, f"{parsed['title']}\n{parsed['body']}")
+
+
+def _write_note_body(rel_path: str, new_text: str, op: str, title: str) -> None:
+    """Persist `new_text` to `rel_path` inside the vault, then log/sync/index.
+
+    Per-note file lock serializes concurrent writes to the same path across
+    processes. The lock covers FS write + DB sync + vec index so the three
+    stay consistent under contention. Different notes do not block each other.
+
+    `op` is one of "write", "append", "patch" (used in log only).
+    """
+    with note_write_lock(_vault_path, rel_path):
+        _write_note_body_unlocked(rel_path, new_text, op, title)
 
 
 @app.list_tools()
@@ -330,21 +340,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not file_path.exists():
             return [TextContent(type="text", text=f"Error: note not found: {rel_path}")]
 
-        raw = file_path.read_text(encoding="utf-8")
-        post = frontmatter.loads(raw)
-        try:
-            new_body = append_to_section(
-                post.content,
-                arguments["section"],
-                arguments["content"],
-                create_if_missing=arguments.get("create_if_missing", False),
-            )
-        except SectionNotFoundError as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
+        # Read-modify-write must be atomic: hold the per-note lock for the
+        # entire cycle so a concurrent append cannot read stale content and
+        # clobber the first writer's changes.
+        with note_write_lock(_vault_path, rel_path):
+            raw = file_path.read_text(encoding="utf-8")
+            post = frontmatter.loads(raw)
+            try:
+                new_body = append_to_section(
+                    post.content,
+                    arguments["section"],
+                    arguments["content"],
+                    create_if_missing=arguments.get("create_if_missing", False),
+                )
+            except SectionNotFoundError as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
 
-        post.content = new_body
-        new_text = frontmatter.dumps(post) + "\n"
-        _write_note_body(rel_path, new_text, "append", post.metadata.get("title", ""))
+            post.content = new_body
+            new_text = frontmatter.dumps(post) + "\n"
+            _write_note_body_unlocked(rel_path, new_text, "append", post.metadata.get("title", ""))
         return [TextContent(type="text", text=f"Appended to '## {arguments['section']}' in {rel_path}")]
 
     elif name == "brain_patch":

@@ -195,6 +195,99 @@ def test_init_full_reindex_on_count_drift(tmp_vault, db_path):
         server._storage.close()
 
 
+def _write_in_subprocess(vault_str: str, rel_path: str, content: str, queue: "mp.Queue"):
+    try:
+        from pathlib import Path as _P
+        from symbiosis_brain import server as _srv
+        _srv._init(_P(vault_str))
+        _srv._write_note_body(rel_path, content, "write", "T")
+        queue.put(("ok", rel_path))
+    except Exception as exc:
+        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+
+def _append_in_subprocess(vault_str: str, rel_path: str, section: str, fragment: str, queue: "mp.Queue"):
+    try:
+        from pathlib import Path as _P
+        import frontmatter as _fm
+        from symbiosis_brain import server as _srv
+        from symbiosis_brain.sections import append_to_section
+        from symbiosis_brain.write_lock import note_write_lock
+        _srv._init(_P(vault_str))
+        full = _P(vault_str) / rel_path
+        with note_write_lock(_P(vault_str), rel_path):
+            raw = full.read_text(encoding="utf-8")
+            post = _fm.loads(raw)
+            post.content = append_to_section(post.content, section, fragment)
+            new_text = _fm.dumps(post) + "\n"
+            _srv._write_note_body_unlocked(rel_path, new_text, "append", post.metadata.get("title", ""))
+        queue.put(("ok", section))
+    except Exception as exc:
+        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+
+def test_concurrent_brain_write_same_note_no_corruption(tmp_vault, db_path):
+    """Two parallel writes to same note: both complete, file is one-of-two contents,
+    DB is consistent (no half-written rows)."""
+    target = tmp_vault / "wiki" / "shared.md"
+    target.write_text(
+        "---\ntitle: Shared\ntype: wiki\nscope: global\ntags: []\n---\n\ninitial.\n",
+        encoding="utf-8",
+    )
+
+    body_a = "---\ntitle: Shared\ntype: wiki\nscope: global\ntags: []\n---\n\nA wins.\n"
+    body_b = "---\ntitle: Shared\ntype: wiki\nscope: global\ntags: []\n---\n\nB wins.\n"
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_write_in_subprocess, args=(str(tmp_vault), "wiki/shared.md", body_a, q)),
+        ctx.Process(target=_write_in_subprocess, args=(str(tmp_vault), "wiki/shared.md", body_b, q)),
+    ]
+    for p in procs: p.start()
+    for p in procs: p.join(timeout=60)
+    for p in procs: assert p.exitcode == 0
+
+    results = [q.get_nowait() for _ in range(2)]
+    assert all(r[0] == "ok" for r in results), f"errors: {results}"
+
+    final = target.read_text(encoding="utf-8")
+    assert final in (body_a, body_b), \
+        f"file should contain exactly one of the two writes, got: {final!r}"
+
+    s = Storage(tmp_vault / ".index" / "brain.db")
+    note = s.get_note("wiki/shared.md")
+    assert note is not None
+    assert note["content"] in ("A wins.", "B wins.")
+    s.close()
+
+
+def test_concurrent_brain_append_different_sections_both_persist(tmp_vault, db_path):
+    """Two parallel appends to DIFFERENT sections of same note: both edits land."""
+    target = tmp_vault / "wiki" / "multi.md"
+    target.write_text(
+        "---\ntitle: Multi\ntype: wiki\nscope: global\ntags: []\n---\n\n"
+        "## Section A\n\ninitial A.\n\n## Section B\n\ninitial B.\n",
+        encoding="utf-8",
+    )
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_append_in_subprocess,
+                    args=(str(tmp_vault), "wiki/multi.md", "Section A", "added by A", q)),
+        ctx.Process(target=_append_in_subprocess,
+                    args=(str(tmp_vault), "wiki/multi.md", "Section B", "added by B", q)),
+    ]
+    for p in procs: p.start()
+    for p in procs: p.join(timeout=60)
+    for p in procs: assert p.exitcode == 0
+
+    final = target.read_text(encoding="utf-8")
+    assert "added by A" in final, "Section A append must persist"
+    assert "added by B" in final, "Section B append must persist"
+
+
 def test_write_note_body_does_not_scan_other_notes(tmp_vault, db_path, monkeypatch):
     """A brain_write should call sync_one for the target path only,
     not sync_all (which scans the entire vault)."""

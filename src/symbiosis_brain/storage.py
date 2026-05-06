@@ -158,19 +158,25 @@ class Storage:
         now = self._now()
         tags_json = json.dumps(tags or [])
         fm_json = json.dumps(frontmatter or {})
-        existing = self.get_note(path)
-        if existing:
-            self._conn.execute("""
-                UPDATE notes SET title=?, content=?, note_type=?, scope=?, tags=?,
-                    frontmatter=?, updated_at=?, valid_from=?, valid_to=?
-                WHERE path=?
-            """, (title, content, note_type, scope, tags_json, fm_json, now, valid_from, valid_to, path))
-        else:
-            self._conn.execute("""
-                INSERT INTO notes (path, title, content, note_type, scope, tags, frontmatter,
-                    created_at, updated_at, valid_from, valid_to)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (path, title, content, note_type, scope, tags_json, fm_json, now, now, valid_from, valid_to))
+        # Single atomic statement avoids the SELECT-then-INSERT race that
+        # causes UNIQUE-constraint failures when two processes concurrently
+        # upsert the same path (e.g. parallel cold-starts on a fresh vault).
+        # created_at is preserved for existing rows via the excluded alias.
+        self._conn.execute("""
+            INSERT INTO notes (path, title, content, note_type, scope, tags, frontmatter,
+                created_at, updated_at, valid_from, valid_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                title=excluded.title,
+                content=excluded.content,
+                note_type=excluded.note_type,
+                scope=excluded.scope,
+                tags=excluded.tags,
+                frontmatter=excluded.frontmatter,
+                updated_at=excluded.updated_at,
+                valid_from=excluded.valid_from,
+                valid_to=excluded.valid_to
+        """, (path, title, content, note_type, scope, tags_json, fm_json, now, now, valid_from, valid_to))
         self._conn.commit()
 
     def get_note(self, path: str) -> dict | None:

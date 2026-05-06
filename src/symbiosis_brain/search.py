@@ -107,12 +107,25 @@ class SearchEngine:
         if not self._vec_enabled:
             return
         embedding = _embed_one(content)
-        self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (path,))
-        self.storage._conn.execute(
-            "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
-            (path, np.array(embedding, dtype=np.float32).tobytes()),
-        )
-        self.storage._conn.commit()
+        # BEGIN IMMEDIATE serializes concurrent indexers on the same path.
+        # vec0 does not support INSERT OR REPLACE, so DELETE + INSERT is the
+        # only upsert pattern — wrapping it in an exclusive transaction prevents
+        # the UNIQUE-constraint race that arises when two processes index the
+        # same note simultaneously (e.g. parallel cold-starts on a fresh vault).
+        self.storage._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (path,))
+            self.storage._conn.execute(
+                "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+                (path, np.array(embedding, dtype=np.float32).tobytes()),
+            )
+            self.storage._conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.storage._conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def index_all(self):
         if not self._vec_enabled:
@@ -120,15 +133,26 @@ class SearchEngine:
         notes = self.storage.list_notes()
         if not notes:
             return
-        self.storage._conn.execute("DELETE FROM notes_vec")
         texts = [f"{n['title']}\n{n['content']}" for n in notes]
         embeddings = _embed(texts)
-        for note, emb in zip(notes, embeddings):
-            self.storage._conn.execute(
-                "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
-                (note["path"], np.array(emb, dtype=np.float32).tobytes()),
-            )
-        self.storage._conn.commit()
+        # BEGIN IMMEDIATE serializes concurrent full rebuilds. Without this,
+        # two parallel cold-starts both see a dirty index and both run the
+        # DELETE + multi-INSERT loop, causing UNIQUE-constraint violations.
+        self.storage._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.storage._conn.execute("DELETE FROM notes_vec")
+            for note, emb in zip(notes, embeddings):
+                self.storage._conn.execute(
+                    "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+                    (note["path"], np.array(emb, dtype=np.float32).tobytes()),
+                )
+            self.storage._conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.storage._conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def delete_vec(self, path: str) -> None:
         """Remove the vector embedding for a single note path."""

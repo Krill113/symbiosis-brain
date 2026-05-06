@@ -38,7 +38,9 @@ def note_write_lock(
     """Acquire a per-note write lock; yield; release on exit (even on exception).
 
     Raises TimeoutError if the lock cannot be acquired within `timeout_s`.
-    Stale locks (mtime older than `timeout_s`) are reclaimed.
+    Locks older than `2 × timeout_s` are considered stale and reclaimed (the
+    doubled threshold avoids racing with a live holder whose hold time
+    approaches `timeout_s`).
     """
     lockfile = _lock_path_for(vault_path, rel_path)
     deadline = time.time() + timeout_s

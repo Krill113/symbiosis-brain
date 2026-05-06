@@ -44,12 +44,63 @@ def _init(vault_path: Path):
     _graph = GraphTraverser(_storage)
     _temporal = TemporalManager(_storage)
     _linter = VaultLinter(_storage, vault_path=vault_path)
+
     sync_result = _sync.sync_all()
     logger.info("Vault synced: added=%d updated=%d removed=%d skipped=%d",
                 len(sync_result.added), len(sync_result.updated),
                 len(sync_result.removed), sync_result.skipped)
-    _search.index_all()
-    logger.info("Embeddings indexed")
+
+    current_model = _search._model_name
+    stored_model = _storage.get_schema_version("embedding_model")
+
+    # Bootstrap: stored_model unset → infer from current state.
+    # On legacy DBs upgraded into this code path, notes_vec was already
+    # populated by the old `index_all()`-on-every-startup behaviour. If the
+    # index is consistent with notes (no count drift), it's valid under the
+    # current model — just register the model name, don't re-embed.
+    # This avoids the 60s parallel-init collision otherwise triggered the
+    # first time a freshly-upgraded vault meets multiple cold-starting
+    # processes (write-lock contention exceeds busy_timeout).
+    if stored_model is None:
+        if _search.is_index_dirty():
+            logger.info("Bootstrap: notes_vec drift detected, building full index")
+            _search.index_all()
+        _storage.set_schema_version("embedding_model", current_model)
+        logger.info("Embedding model registered: %s", current_model)
+        return
+
+    # Real model change (rare, only on explicit upgrade to a different model).
+    if stored_model != current_model:
+        logger.warning("Embedding model changed (%s -> %s); rebuilding vector index",
+                       stored_model, current_model)
+        _search.index_all()
+        _storage.set_schema_version("embedding_model", current_model)
+        logger.info("Embeddings indexed (full re-build, model change)")
+        return
+
+    # Targeted incremental indexing — only the actual diff. Note: this MUST
+    # run before the count-drift safety net below, otherwise the safety net
+    # would fire after every sync that added notes (notes table briefly has
+    # more rows than notes_vec until index_note runs).
+    for path in sync_result.removed:
+        _search.delete_vec(path)
+    for path in sync_result.added + sync_result.updated:
+        note = _storage.get_note(path)
+        if note is None:
+            continue
+        _search.index_note(path, f"{note['title']}\n{note['content']}")
+
+    # Final safety net: if drift remains after targeted updates, something's
+    # structurally wrong (manual deletion, partial-write recovery) — rebuild.
+    if _search.is_index_dirty():
+        logger.warning("notes_vec inconsistent after targeted updates; rebuilding")
+        _search.index_all()
+        logger.info("Embeddings indexed (full re-build, count drift safety net)")
+        return
+
+    logger.info("Embeddings indexed (targeted: +%d ~%d -%d)",
+                len(sync_result.added), len(sync_result.updated),
+                len(sync_result.removed))
 
 
 def _append_log(vault_path: Path, action: str, path: str, title: str):

@@ -19,13 +19,15 @@ class Storage:
         # journal_mode=WAL requires a brief exclusive lock; the SQLite busy
         # handler does not cover PRAGMA journal_mode, so we retry manually
         # when multiple processes open the same DB simultaneously.
-        deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
+        deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000  # ms → s
         while True:
             try:
                 self._conn.execute("PRAGMA journal_mode=WAL")
                 break
-            except sqlite3.OperationalError:
-                if time.monotonic() >= deadline:
+            except sqlite3.OperationalError as e:
+                # Only retry on locking contention; readonly/I/O errors should
+                # propagate immediately rather than hang for the full timeout.
+                if "locked" not in str(e).lower() or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.05)
         self._conn.execute("PRAGMA wal_autocheckpoint=200")

@@ -375,22 +375,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not file_path.exists():
             return [TextContent(type="text", text=f"Error: note not found: {rel_path}")]
 
-        raw = file_path.read_text(encoding="utf-8")
-        post = frontmatter.loads(raw)
-        try:
-            new_body = replace_anchor(
-                post.content,
-                arguments["anchor"],
-                arguments["replacement"],
-            )
-        except AnchorNotFoundError as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
-        except AnchorAmbiguousError as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
+        # Read-modify-write must be atomic: hold the per-note lock for the
+        # entire cycle so a concurrent patch cannot read stale content and
+        # clobber the first writer's changes (mirrors brain_append).
+        with note_write_lock(_vault_path, rel_path):
+            raw = file_path.read_text(encoding="utf-8")
+            post = frontmatter.loads(raw)
+            try:
+                new_body = replace_anchor(
+                    post.content,
+                    arguments["anchor"],
+                    arguments["replacement"],
+                )
+            except AnchorNotFoundError as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
+            except AnchorAmbiguousError as e:
+                return [TextContent(type="text", text=f"Error: {e}")]
 
-        post.content = new_body
-        new_text = frontmatter.dumps(post) + "\n"
-        _write_note_body(rel_path, new_text, "patch", post.metadata.get("title", ""))
+            post.content = new_body
+            new_text = frontmatter.dumps(post) + "\n"
+            _write_note_body_unlocked(rel_path, new_text, "patch",
+                                      post.metadata.get("title", ""))
         return [TextContent(type="text", text=f"Patched {rel_path}")]
 
     elif name == "brain_context":

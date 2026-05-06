@@ -450,11 +450,43 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "brain_status":
         notes = _storage.list_notes()
         entities = _storage.list_entities()
+
+        # WAL size on disk
+        db_path = _vault_path / ".index" / "brain.db"
+        wal_path = db_path.parent / (db_path.name + "-wal")
+        wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
+
+        # Pending checkpoint frames — PASSIVE doesn't block writers
+        try:
+            cp = _storage._conn.execute(
+                "PRAGMA wal_checkpoint(PASSIVE)"
+            ).fetchone()
+            log_frames = cp[1] if cp and len(cp) >= 2 and cp[1] is not None else 0
+            checkpointed = cp[2] if cp and len(cp) >= 3 and cp[2] is not None else 0
+            pending_frames = max(0, log_frames - checkpointed)
+        except Exception:
+            pending_frames = -1  # unknown
+
+        # Index drift
+        n_notes = len(notes)
+        if _search._vec_enabled:
+            n_vec = _storage._conn.execute(
+                "SELECT COUNT(*) FROM notes_vec"
+            ).fetchone()[0]
+            in_sync = "yes" if n_notes == n_vec else f"no (drift {abs(n_notes-n_vec)})"
+        else:
+            n_vec = 0
+            in_sync = "n/a (vector disabled)"
+
         text = f"Vault: {_vault_path}\n"
         text += f"Notes: {len(notes)}\n"
         text += f"Entities: {len(entities)}\n"
         text += f"Vector index: {'enabled' if _search._vec_enabled else 'disabled (FTS only)'}\n"
         text += f"Ready: {'yes' if _ready is None or _ready.is_set() else 'initializing...'}\n"
+        text += f"WAL size: {wal_bytes/1024:.1f} KB ({wal_bytes} bytes)\n"
+        text += f"WAL pages pending: {pending_frames}\n"
+        text += f"Vector index in sync: {in_sync} (notes={n_notes}, notes_vec={n_vec})\n"
+
         by_type: dict[str, int] = {}
         for n in notes:
             by_type[n["note_type"]] = by_type.get(n["note_type"], 0) + 1

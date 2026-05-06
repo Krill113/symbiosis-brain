@@ -324,3 +324,30 @@ def test_write_note_body_does_not_scan_other_notes(tmp_vault, db_path, monkeypat
     assert sync_all_calls["count"] == 0, "expected sync_one, not sync_all"
     assert sync_one_calls["paths"] == ["wiki/new.md"]
     server._storage.close()
+
+
+def test_brain_status_exposes_wal_and_index_health(tmp_vault, db_path):
+    """brain_status output contains WAL size, pending frames, and index sync state."""
+    _seed_vault(tmp_vault, n=2)
+    from symbiosis_brain import server
+    server._init(tmp_vault)
+
+    import asyncio
+    output = asyncio.run(server.call_tool("brain_status", {}))
+    text = output[0].text
+
+    assert "Notes:" in text
+    assert "WAL size:" in text
+    assert "WAL pages pending:" in text
+    assert "Vector index in sync:" in text
+    # Healthy state — counts match
+    assert "Vector index in sync: yes" in text
+
+    # Force drift via SearchEngine.delete_vec (raw SQL fails because vec0 isn't loaded
+    # on a fresh non-SearchEngine connection — same lesson learned in earlier T6 test)
+    server._search.delete_vec(server._storage.list_notes()[0]["path"])
+
+    output = asyncio.run(server.call_tool("brain_status", {}))
+    text = output[0].text
+    assert "Vector index in sync: no" in text
+    server._storage.close()

@@ -16,6 +16,9 @@ vault/
 CLAUDE.local.md
 .claude/
 
+# Internal design specs / plans (kept out of public repo)
+docs/superpowers/
+
 # Serena MCP semantic cache
 .serena/
 

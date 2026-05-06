@@ -108,6 +108,35 @@ class VaultSync:
 
         return result
 
+    def sync_one(self, rel_path: str) -> None:
+        """Upsert a single note from disk + re-resolve its outgoing wikilinks.
+
+        O(1) in vault size — does NOT scan disk for other notes. Caller must
+        have already written the file via atomic_write_text. External edits
+        to OTHER notes are NOT detected by this call — use sync_all (run on
+        session start) or the brain_sync MCP tool for that.
+        """
+        file_path = self.vault_path / rel_path
+        content = file_path.read_text(encoding="utf-8")
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        parsed = parse_note(content)
+        self.storage.upsert_note(
+            path=rel_path,
+            title=parsed["title"],
+            content=parsed["body"],
+            note_type=parsed["type"],
+            scope=parsed["scope"],
+            tags=parsed["tags"],
+            frontmatter=parsed["extra"],
+            valid_from=parsed["valid_from"],
+            valid_to=parsed["valid_to"],
+        )
+        self.storage._conn.execute(
+            "UPDATE notes SET content_hash=? WHERE path=?", (content_hash, rel_path)
+        )
+        self.storage._conn.commit()
+        self._sync_wikilinks(rel_path, parsed["title"], parsed["body"])
+
     def _sync_wikilinks(self, note_path: str, note_title: str, body: str):
         from symbiosis_brain.resolver import resolve_target
 

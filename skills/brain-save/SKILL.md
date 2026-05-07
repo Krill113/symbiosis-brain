@@ -48,12 +48,19 @@ Ask yourself: **"Is this needed in a FUTURE session? Can it be easily derived fr
 - Save: decisions with reasoning, patterns, mistakes/gotchas, user preferences, research findings, cross-project relationships.
 - Don't save: file structure (read code), task progress (use tasks), git history (use git log), anything already in CLAUDE.md.
 
-### Step 2: Deduplication check
+### Step 2: Deduplication check — BLOCKING
 
-Call `brain_search` with the topic keywords.
+**STOP before `brain_write`.** Run `brain_search` with the topic keywords. This is not optional and not a courtesy — duplicate notes degrade graph queries and split context across files.
 
-- If an existing note covers >60% of the same topic → update the existing note, don't create a new one.
-- If a related but distinct note exists → create new, but link to the existing one.
+Decision tree:
+
+- **Existing note covers >60% of the same topic** → `brain_patch` or `brain_append` to update it. Do NOT create a new file.
+- **Related but distinct note exists** → create new, but the new note MUST `[[link]]` to the existing one (graph-connectedness gate, see Step 4).
+- **Nothing close** → continue.
+
+**Common failure mode** (see [[feedback/symbiosis-brain-usage-self-critique-2026-05-07]]): under flow pressure ("я уже знаю что писать"), this step gets skipped. Don't skip. The cost of a 2-second `brain_search` is far below the cost of a duplicate that fragments knowledge.
+
+If you're saving in a session where you already searched on the same topic in Step 1 of `brain-recall` — that result counts; you don't need to re-search.
 
 ### Step 3: Determine metadata
 

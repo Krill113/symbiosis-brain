@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOK = Path(__file__).parent.parent / "hooks" / "brain-session-start.py"
 
 
@@ -156,3 +158,48 @@ def test_concurrent_session_start_atomic_current_session(tmp_path):
     # Last-writer-wins is OK; torn-write is NOT
     assert current in {f"sess-{i}" for i in range(5)}, \
         f"file content is not exactly one session-id (torn write?): {current!r}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uv via shell script — bash hook + manual smoke cover Windows.",
+)
+def test_session_start_spawns_prewarm_when_uv_available(tmp_path, monkeypatch):
+    """SessionStart must spawn the prewarm subprocess detached. Verified by
+    intercepting via a stub `uv` on PATH that touches a sentinel file —
+    poll for it after the hook returns (detached spawn is async)."""
+    import time as _time
+    monkeypatch.setenv("CLAUDE_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_TOOLS", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    sentinel = tmp_path / "prewarm-spawned"
+    uv_stub = fake_bin / "uv"
+    uv_stub.write_text(
+        f'#!/bin/sh\ntouch "{sentinel}"\nexit 0\n',
+        encoding="utf-8",
+    )
+    uv_stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+
+    proc = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps({"session_id": "spawn-test"}),
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+
+    # Poll for sentinel — detached spawn may take a moment
+    for _ in range(30):
+        if sentinel.exists():
+            break
+        _time.sleep(0.1)
+    assert sentinel.exists(), "prewarm subprocess was never spawned (no sentinel touch)"

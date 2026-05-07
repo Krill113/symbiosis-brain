@@ -107,8 +107,9 @@ if [ "$MODE" = "prompt-check" ]; then
   RULES_ENABLED="${SYMBIOSIS_BRAIN_RULES_ENABLED:-true}"
   RULES_ZONES="${SYMBIOSIS_BRAIN_RULES_ZONES:-30,60,85}"
   RULES_TURN_INTERVAL="${SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL:-10}"
-  RULES_TEXT="${SYMBIOSIS_BRAIN_RULES_TEXT:-Отвечай tight, без воды. Большие чтения / поиск / анализ — делегируй субагентам.
-Доступно: brain_search/brain_read (память), Serena (find_symbol/replace_symbol_body), субагенты (Explore/general-purpose).}"
+  RULES_TEXT="${SYMBIOSIS_BRAIN_RULES_TEXT:-Перед grep по коду — проверь \`.claude/docs/catalog/\` (если есть) и brain_search.
+Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena (find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).
+Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.}"
 
   VAULT="${SYMBIOSIS_BRAIN_VAULT:-}"
 

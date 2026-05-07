@@ -252,3 +252,25 @@ def test_prompt_check_first_turn_roster_only_once(tmp_path, monkeypatch):
         "session_id": "s1", "prompt": "another long enough prompt below zone 30"
     }))
     assert "[rules" not in proc.stdout, f"unexpected roster reissue; stdout: {proc.stdout!r}"
+
+
+def test_default_rules_text_mentions_catalog_and_brain_lint(tmp_path, monkeypatch):
+    """Roster must mention .claude/docs/catalog/ (project helper index, when present)
+    and brain_lint (vault hygiene). Per [[feedback/use-tools-catalog-serena-brain-actively]]
+    — catalog covers ~80% of helper discovery in projects that have it."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    (tmp_path / "brain-context-pct-s1").write_text("65", encoding="utf-8")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RECALL_ENABLED", "false")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ENABLED", "true")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ZONES", "30,60,85")
+    # Use default rules text — explicitly remove any inherited override
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_RULES_TEXT", raising=False)
+
+    proc = _run("prompt-check", json.dumps({
+        "session_id": "s1", "prompt": "long prompt to bypass short guard"
+    }))
+    assert ".claude/docs/catalog" in proc.stdout, \
+        f"default RULES_TEXT must mention catalog; stdout: {proc.stdout!r}"
+    assert "brain_lint" in proc.stdout, \
+        f"default RULES_TEXT must mention brain_lint; stdout: {proc.stdout!r}"

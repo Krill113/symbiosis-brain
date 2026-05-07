@@ -244,13 +244,22 @@ def cmd_prompt_check(data: dict) -> int:
         highest_shown = max(crossed_shown) if crossed_shown else -1
         zone_hit = highest_crossed > highest_shown
 
+        # First-turn rule: if no zone has been shown yet AND we're at turn 1,
+        # emit the roster once unconditionally. Sentinel "0" written to the
+        # shown file so this branch fires exactly once per session.
+        first_turn_inject = False
+        if not shown and turns <= 1:
+            first_turn_inject = True
+            shown.add("0")
+            atomic_write_text(shown_file, "0\n")
+
         if zone_hit:
             new_zones = [str(z) for z in crossed if str(z) not in shown]
             shown.update(new_zones)
             if new_zones:
                 sorted_zones = sorted(shown, key=lambda x: int(x))
                 atomic_write_text(shown_file, "".join(f"{z}\n" for z in sorted_zones))
-        if zone_hit or turns >= rules_turn:
+        if zone_hit or turns >= rules_turn or first_turn_inject:
             rules_block = f"[rules — context {pct}%]\n{rules_text}"
             atomic_write_text(turn_file, "0")
         else:

@@ -274,3 +274,35 @@ def test_default_rules_text_mentions_catalog_and_brain_lint(tmp_path, monkeypatc
         f"default RULES_TEXT must mention catalog; stdout: {proc.stdout!r}"
     assert "brain_lint" in proc.stdout, \
         f"default RULES_TEXT must mention brain_lint; stdout: {proc.stdout!r}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uv via shell script — bash test covers the Windows code path.",
+)
+def test_search_gist_failure_writes_debug_log(tmp_path, monkeypatch):
+    """When search-gist fails (stub uv exits 1), the hook must append a
+    diagnostic line to brain-hook-debug.log — no more silent `[]`."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ENABLED", "false")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RECALL_ENABLED", "true")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_TOOLS", str(tmp_path / "fake-tools"))
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    uv_stub = fake_bin / "uv"
+    uv_stub.write_text('#!/bin/sh\necho "boom" >&2\nexit 1\n', encoding="utf-8")
+    uv_stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
+
+    proc = _run("prompt-check", json.dumps({
+        "session_id": "s1", "prompt": "long enough prompt to bypass guard"
+    }))
+    assert "[memory:" not in proc.stdout
+    log = tmp_path / "brain-hook-debug.log"
+    assert log.exists(), "debug log must exist after silent failure"
+    body = log.read_text(encoding="utf-8")
+    assert "search-gist" in body and ("EXIT=1" in body or "boom" in body), \
+        f"debug log content unexpected: {body!r}"

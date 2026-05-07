@@ -115,6 +115,28 @@ echo "0" > "$SHOWN"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "another long enough prompt below zones")
 if [[ "$out" != *"[rules"* ]]; then t "first-turn roster doesn't repeat" PASS; else t "first-turn roster doesn't repeat" FAIL; fi
 
+# Test 10: Bash hook writes debug log on search-gist failure
+cleanup
+DEBUG_LOG="/tmp/brain-hook-debug.log"
+rm -f "$DEBUG_LOG"
+echo "10" > "$PCT_FILE"
+TMPBIN="$(mktemp -d)"
+cat > "$TMPBIN/uv" <<'EOF'
+#!/bin/sh
+echo "boom" >&2
+exit 1
+EOF
+chmod +x "$TMPBIN/uv"
+out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
+      SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
+      SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+      SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+      PATH="$TMPBIN:$PATH" \
+      run_hook "long enough prompt for guard")
+if [[ "$out" != *"[memory:"* ]]; then t "failure produces no memory block" PASS; else t "failure produces no memory block" FAIL; fi
+if [ -s "$DEBUG_LOG" ] && grep -q "search-gist" "$DEBUG_LOG"; then t "debug log captured failure" PASS; else t "debug log captured failure" FAIL; fi
+rm -rf "$TMPBIN"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

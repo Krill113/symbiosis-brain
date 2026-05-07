@@ -27,6 +27,27 @@ for _stream in (sys.stdout, sys.stderr):
         except (AttributeError, OSError):
             pass  # Older Python or non-reconfigurable stream — best-effort
 
+import shutil
+
+
+def _which(cmd: str) -> str | None:
+    """Resolve a command name to its full path via PATH lookup. Returns None
+    if not found. Wraps shutil.which so subprocess.run gets an absolute path
+    on Windows (avoids .bat/.exe extension surprises)."""
+    return shutil.which(cmd)
+
+
+def _append_debug(path: Path, msg: str) -> None:
+    """Append a single timestamped line to the debug log. Best-effort —
+    never raises, even if the parent dir is read-only."""
+    import datetime
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {msg}\n")
+    except OSError:
+        pass
+
+
 THRESHOLDS = (40, 70, 90)
 DELTA_GUARD = 20
 
@@ -64,25 +85,55 @@ CONFIRMATION_RE = re.compile(r"^(да|нет|ок|yes|no|ok|continue|продо�
 
 
 def _gist_recall(prompt: str, scope: str, vault: str, top_k: int) -> str:
+    tools = os.environ.get("SYMBIOSIS_BRAIN_TOOLS", "")
+    debug_log = _tmp_dir() / "brain-hook-debug.log"
+
+    # Prefer `uv run --directory <tools>` so we run from the package source tree;
+    # bare `python -m symbiosis_brain` fails silently on machines where the
+    # package isn't installed in the system Python (the typical Windows setup).
+    # Resolving uv's absolute path via shutil.which avoids subprocess invocation
+    # surprises on Windows where `["uv", ...]` may not find `uv.bat`/`uv.exe`.
+    uv_path = _which("uv") if tools else None
+    if uv_path:
+        cmd = [uv_path, "run", "--quiet", "--directory", tools,
+               "python", "-m", "symbiosis_brain", "search-gist",
+               "--vault", vault, "--query", prompt, "--scope", scope, "--limit", str(top_k)]
+        # Cold-start uv run ~25s on first invocation per session (resolves env, imports
+        # fastembed). Warm calls drop to ~1.6s. Pre-warm hook (Task 9) shrinks cold
+        # path further. 30s ceiling tolerates the first prompt of an unwarmed session.
+        timeout_s = 30
+    else:
+        cmd = [sys.executable, "-m", "symbiosis_brain", "search-gist",
+               "--vault", vault, "--query", prompt, "--scope", scope, "--limit", str(top_k)]
+        timeout_s = 12
+
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "symbiosis_brain", "search-gist",
-             "--vault", vault, "--query", prompt, "--scope", scope, "--limit", str(top_k)],
-            # Timeout 12s: cold-start ~9.6s (fastembed import + sync + search),
-            # warm ~3.6s. Per-prompt fresh process. Daemon/pre-warm: A-v2 spec.
-            capture_output=True, text=True, timeout=12,
-        )
-        if proc.returncode != 0:
-            return ""
-        data = json.loads(proc.stdout or "[]")
-        if not data:
-            return ""
-        lines = [f"[memory: {len(data)} hits, scope={scope}]"]
-        for n in data:
-            lines.append(f"- {n['path']} — {n.get('gist','')}")
-        return "\n".join(lines)
-    except (subprocess.TimeoutExpired, Exception):
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout_s, encoding="utf-8")
+    except subprocess.TimeoutExpired:
+        _append_debug(debug_log, f"search-gist TIMEOUT after {timeout_s}s; cmd={cmd!r}")
         return ""
+    except Exception as e:
+        _append_debug(debug_log, f"search-gist EXCEPTION {type(e).__name__}: {e}; cmd={cmd!r}")
+        return ""
+
+    if proc.returncode != 0:
+        _append_debug(debug_log, f"search-gist EXIT={proc.returncode}; "
+                                 f"stderr={proc.stderr.strip()[:500]!r}")
+        return ""
+
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as e:
+        _append_debug(debug_log, f"search-gist BAD_JSON: {e}; stdout={proc.stdout[:200]!r}")
+        return ""
+
+    if not data:
+        return ""
+    lines = [f"[memory: {len(data)} hits, scope={scope}]"]
+    for n in data:
+        lines.append(f"- {n['path']} — {n.get('gist','')}")
+    return "\n".join(lines)
 
 
 def cmd_stop(data: dict) -> int:

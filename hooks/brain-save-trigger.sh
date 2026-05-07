@@ -128,12 +128,34 @@ if [ "$MODE" = "prompt-check" ]; then
   fi
 
   if [ "$SKIP_RECALL" = "0" ] && [ -n "$VAULT" ]; then
-    # Timeout 12s: measured cold-start ~9.6s (Python+fastembed+sqlite-vec import,
-    # sync_all, search), warm ~3.6s. Fresh process per prompt — every call pays
-    # the full cost. Daemon/pre-warm tracked separately as A-v2.
-    GIST_JSON=$(timeout 12 python -m symbiosis_brain search-gist \
-      --vault "$VAULT" --query "$PROMPT" --scope "$SCOPE" \
-      --limit "$RECALL_TOP_K" 2>/dev/null || echo "[]")
+    DEBUG_LOG="/tmp/brain-hook-debug.log"
+    GIST_TOOLS="${SYMBIOSIS_BRAIN_TOOLS:-}"
+
+    # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.
+    # Fixes silent failure on machines where `python -m symbiosis_brain` does
+    # not resolve (e.g. system Python without the package installed). See
+    # [[mistakes/uv-not-on-bash-path-windows]] — same root cause for hooks.
+    EXIT=0
+    if [ -n "$GIST_TOOLS" ] && command -v uv >/dev/null 2>&1; then
+      # 30s timeout absorbs cold uv-run start (~25s); warm path is <2s.
+      GIST_JSON=$(timeout 30 uv run --quiet --directory "$GIST_TOOLS" \
+        python -m symbiosis_brain search-gist \
+        --vault "$VAULT" --query "$PROMPT" --scope "$SCOPE" \
+        --limit "$RECALL_TOP_K" 2>>"$DEBUG_LOG")
+      EXIT=$?
+    else
+      GIST_JSON=$(timeout 12 python -m symbiosis_brain search-gist \
+        --vault "$VAULT" --query "$PROMPT" --scope "$SCOPE" \
+        --limit "$RECALL_TOP_K" 2>>"$DEBUG_LOG")
+      EXIT=$?
+    fi
+
+    if [ "$EXIT" -ne 0 ] || [ -z "$GIST_JSON" ]; then
+      printf '[%s] search-gist EXIT=%s VAULT=%s SCOPE=%s\n' \
+        "$(date -Iseconds 2>/dev/null || date)" "$EXIT" "$VAULT" "$SCOPE" >> "$DEBUG_LOG"
+      GIST_JSON="[]"
+    fi
+
     HITS=$(echo "$GIST_JSON" | python -c "import sys,json
 try:
     d=json.load(sys.stdin)

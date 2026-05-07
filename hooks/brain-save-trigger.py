@@ -75,9 +75,10 @@ def _read_int(path: Path, default: int = 0) -> int:
 
 
 DEFAULT_RULES_TEXT = (
-    "Отвечай tight, без воды. Большие чтения / поиск / анализ — делегируй субагентам.\n"
-    "Доступно: brain_search/brain_read (память), Serena (find_symbol/replace_symbol_body), "
-    "субагенты (Explore/general-purpose)."
+    "Перед grep по коду — проверь `.claude/docs/catalog/` (если есть) и brain_search.\n"
+    "Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena "
+    "(find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).\n"
+    "Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main."
 )
 
 CONFIRMATION_RE = re.compile(r"^(да|нет|ок|yes|no|ok|continue|продолжай)$", re.IGNORECASE)

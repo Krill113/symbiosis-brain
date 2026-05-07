@@ -180,6 +180,14 @@ except Exception:
     [ -z "$TURNS" ] && TURNS=0
     TURNS=$((TURNS + 1))
 
+    # First-turn injection: if shown file doesn't exist and we're at turn 1,
+    # emit the roster once with sentinel "0" written. Mirrors brain-save-trigger.py.
+    FIRST_TURN_INJECT=0
+    if [ ! -f "$SHOWN_FILE" ] && [ "$TURNS" -le 1 ]; then
+      FIRST_TURN_INJECT=1
+      echo "0" > "$SHOWN_FILE"
+    fi
+
     ZONE_HIT=0
     HIGHEST_CROSSED=-1
     HIGHEST_SHOWN=-1
@@ -202,7 +210,7 @@ except Exception:
       done
     fi
 
-    if [ "$ZONE_HIT" = "1" ] || [ "$TURNS" -ge "$RULES_TURN_INTERVAL" ]; then
+    if [ "$ZONE_HIT" = "1" ] || [ "$TURNS" -ge "$RULES_TURN_INTERVAL" ] || [ "$FIRST_TURN_INJECT" = "1" ]; then
       RULES_BLOCK="[rules — context ${PCT}%]
 ${RULES_TEXT}"
       echo "0" > "$TURN_FILE"

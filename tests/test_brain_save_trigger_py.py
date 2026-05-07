@@ -212,3 +212,43 @@ def test_prompt_check_uses_uv_run_when_tools_path_set(tmp_path, monkeypatch):
     invocation = sentinel.read_text(encoding="utf-8")
     assert "run" in invocation and "--directory" in invocation, \
         f"uv stub was called with unexpected args: {invocation!r}"
+
+
+def test_prompt_check_first_turn_emits_roster_even_below_zones(tmp_path, monkeypatch):
+    """First prompt of a fresh session must inject the `[rules]` block even when
+    context is below the lowest zone (30%). Otherwise the user has to manually
+    remind Claude about the tool roster for the first ~10 turns of every session."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    (tmp_path / "brain-context-pct-s1").write_text("10", encoding="utf-8")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RECALL_ENABLED", "false")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ENABLED", "true")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ZONES", "30,60,85")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL", "10")
+
+    proc = _run("prompt-check", json.dumps({
+        "session_id": "s1", "prompt": "long enough prompt to bypass guard"
+    }))
+    assert "[rules — context 10%]" in proc.stdout, \
+        f"first-turn roster missing; stdout: {proc.stdout!r}"
+    shown = (tmp_path / "brain-rules-shown-s1").read_text(encoding="utf-8")
+    assert "0" in shown, f"expected sentinel '0' in shown file, got: {shown!r}"
+
+
+def test_prompt_check_first_turn_roster_only_once(tmp_path, monkeypatch):
+    """The first-turn roster fires exactly once per session — second short prompt
+    below all zones must not re-emit (no spam)."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    (tmp_path / "brain-context-pct-s1").write_text("10", encoding="utf-8")
+    (tmp_path / "brain-rules-shown-s1").write_text("0\n", encoding="utf-8")
+    (tmp_path / "brain-rules-turn-counter-s1").write_text("3", encoding="utf-8")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RECALL_ENABLED", "false")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ENABLED", "true")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ZONES", "30,60,85")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL", "10")
+
+    proc = _run("prompt-check", json.dumps({
+        "session_id": "s1", "prompt": "another long enough prompt below zone 30"
+    }))
+    assert "[rules" not in proc.stdout, f"unexpected roster reissue; stdout: {proc.stdout!r}"

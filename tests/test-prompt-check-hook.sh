@@ -100,6 +100,18 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
 if [[ "$out" == *"[memory: 1 hits"* ]]; then t "A1 recall surfaces memory block" PASS; else t "A1 recall surfaces memory block" FAIL; fi
 rm -rf "$TMPBIN"
 
+# Test 8: First-turn roster injection at pct=10 (below all zones)
+cleanup
+echo "10" > "$PCT_FILE"
+out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "long enough prompt to bypass guard")
+if [[ "$out" == *"[rules"* ]]; then t "first-turn roster fires below all zones" PASS; else t "first-turn roster fires below all zones" FAIL; fi
+if [ -f "$SHOWN" ] && grep -q "^0$" "$SHOWN"; then t "sentinel 0 written to shown file" PASS; else t "sentinel 0 written to shown file" FAIL; fi
+
+# Test 9: First-turn injection only once (no spam)
+echo "10" > "$PCT_FILE"
+out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "another long enough prompt below zones")
+if [[ "$out" != *"[rules"* ]]; then t "first-turn roster doesn't repeat" PASS; else t "first-turn roster doesn't repeat" FAIL; fi
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

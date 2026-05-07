@@ -107,8 +107,11 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true ru
 if [[ "$out" == *"[rules"* ]]; then t "first-turn roster fires below all zones" PASS; else t "first-turn roster fires below all zones" FAIL; fi
 if [ -f "$SHOWN" ] && grep -q "^0$" "$SHOWN"; then t "sentinel 0 written to shown file" PASS; else t "sentinel 0 written to shown file" FAIL; fi
 
-# Test 9: First-turn injection only once (no spam)
+# Test 9: First-turn injection only once (no spam).
+# Self-contained: explicitly seed $SHOWN with sentinel "0" so this test
+# doesn't silently break if anyone reorders or adds cleanup before it.
 echo "10" > "$PCT_FILE"
+echo "0" > "$SHOWN"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "another long enough prompt below zones")
 if [[ "$out" != *"[rules"* ]]; then t "first-turn roster doesn't repeat" PASS; else t "first-turn roster doesn't repeat" FAIL; fi
 

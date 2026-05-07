@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOK = Path(__file__).parent.parent / "hooks" / "brain-save-trigger.py"
 
 
@@ -171,3 +173,42 @@ def test_concurrent_stop_hooks_produce_parseable_triggered(tmp_path, monkeypatch
         assert ln.isdigit(), f"non-numeric line in triggered file: {ln!r}"
     parsed = {int(ln) for ln in lines}
     assert parsed >= {40, 70, 90}, f"missing thresholds: {parsed}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stub uv via shell script — Windows .bat invocation through subprocess.run "
+           "without shell=True is unreliable across Python versions; tests/test-prompt-check-hook.sh "
+           "covers Windows code path through git-bash.",
+)
+def test_prompt_check_uses_uv_run_when_tools_path_set(tmp_path, monkeypatch):
+    """When SYMBIOSIS_BRAIN_TOOLS is set and uv is available, hook must invoke
+    `uv run --directory <tools>` instead of bare `python -m`. Verifies the fix
+    for [[mistakes/uv-not-on-bash-path-windows]] applied to active recall."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))  # Windows fallback even though test is *nix-only
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RULES_ENABLED", "false")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RECALL_ENABLED", "true")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_TOOLS", str(tmp_path / "fake-tools"))
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    sentinel = tmp_path / "uv-call.log"
+    uv_stub = fake_bin / "uv"
+    uv_stub.write_text(
+        f'#!/bin/sh\necho "$@" > "{sentinel}"\n'
+        f'echo \'[{{"path":"x.md","title":"X","scope":"global","gist":"g"}}]\'\n',
+        encoding="utf-8",
+    )
+    uv_stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
+
+    proc = _run("prompt-check", json.dumps({
+        "session_id": "s1", "prompt": "long enough prompt to bypass guard"
+    }))
+    assert "[memory:" in proc.stdout, f"stdout: {proc.stdout!r}"
+    assert "x.md — g" in proc.stdout
+    invocation = sentinel.read_text(encoding="utf-8")
+    assert "run" in invocation and "--directory" in invocation, \
+        f"uv stub was called with unexpected args: {invocation!r}"

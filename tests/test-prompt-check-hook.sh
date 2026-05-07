@@ -80,6 +80,26 @@ cleanup
 SYMBIOSIS_BRAIN_RULES_ENABLED=false out=$(SYMBIOSIS_BRAIN_RULES_ENABLED=false run_hook "long enough prompt to bypass guard")
 if [[ "$out" != *"[rules"* ]]; then t "rules disabled silences A2" PASS; else t "rules disabled silences A2" FAIL; fi
 
+# Test 7: A1 recall surfaces a memory block when SYMBIOSIS_BRAIN_TOOLS is set
+# and the search-gist invocation succeeds. Stub `uv` returns a fixed JSON
+# payload — keeps the test hermetic and fast.
+cleanup
+echo "10" > "$PCT_FILE"
+TMPBIN="$(mktemp -d)"
+cat > "$TMPBIN/uv" <<'EOF'
+#!/bin/sh
+echo '[{"path":"x.md","title":"X","scope":"global","gist":"g"}]'
+EOF
+chmod +x "$TMPBIN/uv"
+out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
+      SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
+      SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+      SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+      PATH="$TMPBIN:$PATH" \
+      run_hook "long enough prompt for guard")
+if [[ "$out" == *"[memory: 1 hits"* ]]; then t "A1 recall surfaces memory block" PASS; else t "A1 recall surfaces memory block" FAIL; fi
+rm -rf "$TMPBIN"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

@@ -1,20 +1,30 @@
 ---
 name: brain-recall
 description: >
-  Search Symbiosis Brain for relevant context before starting work. Use when the user
-  gives a new task, asks about a project or technology, before brainstorming or debugging.
-  Check memory SILENTLY — don't ask "should I check?", just check. Report only if
-  something relevant was found.
+  Search Symbiosis Brain for relevant context BEFORE acting. Trigger silently on these
+  signals: (a) before first Edit/Write in an unfamiliar file or scope; (b) before grep
+  across >3 files / a whole subtree; (c) when the user describes a bug or unexpected
+  behavior — recall similar fix history; (d) after any subagent error or contradicted
+  hypothesis — recall if this mistake is already documented; (e) before using an API
+  / library that hasn't appeared in this session yet. Don't ask "should I check?" —
+  just check. Report only when something relevant was found.
 ---
 
 # Brain Recall — Task Context Search
 
-## When to use
+## When to use — concrete triggers
 
-- User gives a new task or asks a question
-- Before starting brainstorming, debugging, or implementation
-- When encountering unfamiliar code, API, or pattern
-- When the topic touches multiple projects
+Trigger silently on **any** of these signals (no permission needed, no narration if nothing relevant):
+
+1. **Before first Edit/Write in a new file or scope.** Recall existing patterns + mistakes for that area before touching code.
+2. **Before grep across >3 files or a whole subtree.** Memory may already have the answer — saves the read chain.
+3. **When the user describes a bug, unexpected behavior, or "что-то не так".** Recall similar fix history before forming a hypothesis.
+4. **After a subagent error or a contradicted hypothesis.** Recall whether this exact mistake is already documented as `mistakes/*`.
+5. **Before using an API / library that hasn't appeared in this session.** Recall gotchas (`thirdparty-libs-fragile`, etc.).
+6. **When the user uses phrases like «как обсуждали», «как раньше», «помнишь».** This is an explicit memory pointer — surface 2-3 brain_search variations, not a single shallow lookup. See [[mistakes/session-start-dove-into-files-skipped-recall-and-delegation]].
+7. **Before brainstorming, debugging, or implementation that spans multiple projects.** Cross-project patterns live in `global` scope.
+
+If none of the above apply — don't recall. The hook auto-injects `[memory: …]` for substantive prompts; you only need explicit recall for the moments above.
 
 ## Procedure
 

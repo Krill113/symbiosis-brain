@@ -9,9 +9,11 @@ Mirrors hooks/brain-save-trigger.sh exactly.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,8 +29,6 @@ for _stream in (sys.stdout, sys.stderr):
         except (AttributeError, OSError):
             pass  # Older Python or non-reconfigurable stream — best-effort
 
-import shutil
-
 
 def _which(cmd: str) -> str | None:
     """Resolve a command name to its full path via PATH lookup. Returns None
@@ -40,7 +40,6 @@ def _which(cmd: str) -> str | None:
 def _append_debug(path: Path, msg: str) -> None:
     """Append a single timestamped line to the debug log. Best-effort —
     never raises, even if the parent dir is read-only."""
-    import datetime
     try:
         with path.open("a", encoding="utf-8") as f:
             f.write(f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {msg}\n")

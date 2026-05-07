@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from symbiosis_brain.atomic_write import atomic_write_text
@@ -112,6 +114,22 @@ def main():
     print()
 
     print(f"[scope: {scope}]")
+
+    # Background pre-warm of fastembed + sqlite-vec to prime OS page cache.
+    # Spawned detached — never blocks session start (hook timeout = 5s).
+    # `shutil.which("uv")` resolves to absolute path, so subprocess.Popen
+    # finds uv.exe / uv.bat reliably on Windows without needing shell=True.
+    uv_path = shutil.which("uv") if os.environ.get("SYMBIOSIS_BRAIN_TOOLS") else None
+    if uv_path and vault and os.environ.get("SYMBIOSIS_BRAIN_TOOLS"):
+        try:
+            subprocess.Popen(
+                [uv_path, "run", "--quiet", "--directory", os.environ["SYMBIOSIS_BRAIN_TOOLS"],
+                 "python", "-m", "symbiosis_brain", "prewarm", "--vault", vault],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError:
+            pass  # never break session start
 
     _clean_session_flags(session_id)
     return 0

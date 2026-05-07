@@ -55,6 +55,17 @@ echo ""
 
 echo "[scope: $SCOPE]"
 
+# Background pre-warm: fastembed + sqlite-vec page-cache priming.
+# Fire-and-forget — must not block session start (hook timeout is 5s).
+# Output suppressed so it can't pollute L0 context. nohup intentionally
+# omitted: subshell + & + DEVNULL redirect already detaches under Claude
+# Code (no controlling TTY), and nohup is missing on some git-bash envs.
+if [ -n "$TOOLS" ] && [ -n "$VAULT" ] && command -v uv >/dev/null 2>&1; then
+  ( uv run --quiet --directory "$TOOLS" \
+      python -m symbiosis_brain prewarm --vault "$VAULT" \
+      >/dev/null 2>&1 & ) >/dev/null 2>&1
+fi
+
 # Clean THIS session's trigger flags (threshold reset on compaction; no-op on fresh startup)
 if [ -n "$SESSION_ID" ]; then
   rm -f "/tmp/brain-triggered-${SESSION_ID}" \

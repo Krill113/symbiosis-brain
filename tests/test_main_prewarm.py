@@ -49,3 +49,20 @@ def test_prewarm_missing_vault_graceful(tmp_path):
     """User may have wrong vault path or first-time install. Must not raise."""
     proc = _run_prewarm(str(tmp_path / "nonexistent"))
     assert proc.returncode == 0
+
+
+def test_prewarm_silent_stdout_on_internal_failure(tmp_path):
+    """Even when prewarm internals raise (e.g., corrupt DB), stdout must remain
+    empty — the SessionStart hook captures and includes our stdout in the L0
+    context block, and any leak corrupts brain-init output."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    # Existing-but-empty brain.db forces Storage() to attempt opening it,
+    # which can raise on a malformed file. Write garbage that fails sqlite open.
+    (vault / ".index").mkdir()
+    (vault / ".index" / "brain.db").write_bytes(b"not a sqlite database at all")
+    proc = _run_prewarm(str(vault))
+    # Failure must be silent on stdout regardless of exit code
+    assert proc.stdout == "", f"prewarm leaked stdout on failure: {proc.stdout!r}"
+    # Exit code must remain 0 — never block session start
+    assert proc.returncode == 0, f"prewarm broke session start with exit {proc.returncode}: {proc.stderr}"

@@ -119,11 +119,12 @@ def main():
     # Spawned detached — never blocks session start (hook timeout = 5s).
     # `shutil.which("uv")` resolves to absolute path, so subprocess.Popen
     # finds uv.exe / uv.bat reliably on Windows without needing shell=True.
-    uv_path = shutil.which("uv") if os.environ.get("SYMBIOSIS_BRAIN_TOOLS") else None
-    if uv_path and vault and os.environ.get("SYMBIOSIS_BRAIN_TOOLS"):
+    tools = os.environ.get("SYMBIOSIS_BRAIN_TOOLS")
+    uv_path = shutil.which("uv") if tools else None
+    if uv_path and vault and tools:
         try:
             subprocess.Popen(
-                [uv_path, "run", "--quiet", "--directory", os.environ["SYMBIOSIS_BRAIN_TOOLS"],
+                [uv_path, "run", "--quiet", "--directory", tools,
                  "python", "-m", "symbiosis_brain", "prewarm", "--vault", vault],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL, start_new_session=True,

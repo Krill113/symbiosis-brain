@@ -20,7 +20,9 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.markdown_parser import extract_wikilinks
+from symbiosis_brain.write_lock import note_write_lock
 
 if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
@@ -36,13 +38,14 @@ def _strip_md_ext(p: str) -> str:
 
 
 def _canonical(path: str) -> str:
-    """vault-relative path without .md, the form used in the relations table."""
-    return _strip_md_ext(path)
+    """vault-relative path without .md, the form used in the relations table.
+    Normalizes path separators to forward-slash (Windows callers may pass `\\`)."""
+    return _strip_md_ext(path).replace("\\", "/")
 
 
 def _rewrite_links_in_body(body: str, old_canonical: str, new_canonical: str) -> str:
     """Rewrite [[old_canonical]] and [[old_canonical|alias]] to use new_canonical.
-    Preserves alias text. Case-sensitive match on the target portion (matches
+    Preserves alias text. Case-insensitive match on the target portion (matches
     how the resolver canonicalizes — lowercase-equality).
     """
     def repl(m: re.Match[str]) -> str:
@@ -105,21 +108,19 @@ def brain_rename(
         src_file = vault_path / src
         if not src_file.exists():
             continue
-        text = src_file.read_text(encoding="utf-8")
-        new_text = _rewrite_links_in_body(text, old_canonical, new_canonical)
-        if new_text != text:
-            src_file.write_text(new_text, encoding="utf-8")
-            sync.sync_one(src)
+        with note_write_lock(vault_path, src):
+            text = src_file.read_text(encoding="utf-8")
+            new_text = _rewrite_links_in_body(text, old_canonical, new_canonical)
+            if new_text != text:
+                atomic_write_text(src_file, new_text)
+                sync.sync_one(src)
 
     new_file.parent.mkdir(parents=True, exist_ok=True)
-    old_file.rename(new_file)
-
-    storage.delete_note(old_path)
-    storage._conn.execute(
-        "DELETE FROM relations WHERE source_note=?", (old_path,)
-    )
-    storage._conn.commit()
-    sync.sync_one(new_path)
+    with note_write_lock(vault_path, new_path):
+        old_file.rename(new_file)
+        storage.delete_note(old_path)
+        storage.delete_relations_by_source(old_path)
+        sync.sync_one(new_path)
 
     return {"refs_rewritten": len(sources), "sources": sources}
 
@@ -161,18 +162,17 @@ def brain_delete(
             src_file = vault_path / src
             if not src_file.exists():
                 continue
-            text = src_file.read_text(encoding="utf-8")
-            new_text = _replace_with_stub(text, canonical)
-            if new_text != text:
-                src_file.write_text(new_text, encoding="utf-8")
-                sync.sync_one(src)
-                modified.append(src)
+            with note_write_lock(vault_path, src):
+                text = src_file.read_text(encoding="utf-8")
+                new_text = _replace_with_stub(text, canonical)
+                if new_text != text:
+                    atomic_write_text(src_file, new_text)
+                    sync.sync_one(src)
+                    modified.append(src)
 
-    file_path.unlink()
-    storage.delete_note(path)
-    storage._conn.execute(
-        "DELETE FROM relations WHERE source_note=?", (path,)
-    )
-    storage._conn.commit()
+    with note_write_lock(vault_path, path):
+        file_path.unlink()
+        storage.delete_note(path)
+        storage.delete_relations_by_source(path)
 
     return {"sources_modified": modified, "file_deleted": True}

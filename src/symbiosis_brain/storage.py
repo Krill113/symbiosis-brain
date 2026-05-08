@@ -100,6 +100,7 @@ class Storage:
         """)
         self._conn.commit()
         self._migrate_wikilink_normalization()
+        self._migrate_phase8_resolver_reindex()
         # Partial index on broken=1 — must come after _migrate_wikilink_normalization
         # because `broken` is added by that migration on fresh DBs (it is not in
         # the base CREATE TABLE above).  CREATE INDEX IF NOT EXISTS is idempotent.
@@ -108,6 +109,43 @@ class Storage:
             " ON relations(broken) WHERE broken=1"
         )
         self._conn.commit()
+
+    def _migrate_phase8_resolver_reindex(self):
+        """Phase 8 (anchor-strip + scope-prefix shorthand + stale-relation
+        re-resolution) shipped resolver fixes that change which targets are
+        broken vs resolved. Existing vaults still carry stale broken=True
+        rows from before the fix because sync_all skips notes whose content_hash
+        matches disk — Pass 2 (re-resolve wiki-links) never runs on unchanged
+        notes. See [[mistakes/brain-sync-skips-stale-relations-via-content-hash]].
+
+        This migration triggers the existing `needs_full_reindex` mechanism
+        once per vault: deletes the `wikilink_normalization_reindex` marker so
+        the next `sync_all()` call sees needs_full_reindex=True, purges
+        relations + entities, NULLs content_hash, and rebuilds with the new
+        resolver. After that rebuild marks itself done, both markers stay set
+        and this migration is a no-op forever.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT version FROM schema_version WHERE key=?",
+                ("phase8_resolver_reindex",),
+            ).fetchone()
+            current = row["version"] if row else 0
+
+            if current < 1:
+                self._conn.execute(
+                    "DELETE FROM schema_version WHERE key=?",
+                    ("wikilink_normalization_reindex",),
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
+                    ("phase8_resolver_reindex", 1),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _migrate_wikilink_normalization(self):
         # BEGIN IMMEDIATE serializes parallel migrators: only one runs the

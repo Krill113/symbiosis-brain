@@ -174,7 +174,10 @@ class VaultSync:
                 )
             except _sqlite3.IntegrityError:
                 # Duplicate edge already exists in canonical form — drop the
-                # broken duplicate instead of failing.
+                # broken duplicate instead of failing. Storage uses
+                # isolation_level=None (autocommit, see Storage.__init__),
+                # so the failed UPDATE was implicitly rolled back; no explicit
+                # ROLLBACK needed here before the DELETE.
                 self.storage._conn.execute(
                     "DELETE FROM relations WHERE id=?", (rel["id"],)
                 )

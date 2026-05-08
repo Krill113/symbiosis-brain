@@ -100,6 +100,14 @@ class Storage:
         """)
         self._conn.commit()
         self._migrate_wikilink_normalization()
+        # Partial index on broken=1 — must come after _migrate_wikilink_normalization
+        # because `broken` is added by that migration on fresh DBs (it is not in
+        # the base CREATE TABLE above).  CREATE INDEX IF NOT EXISTS is idempotent.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_relations_broken"
+            " ON relations(broken) WHERE broken=1"
+        )
+        self._conn.commit()
 
     def _migrate_wikilink_normalization(self):
         # BEGIN IMMEDIATE serializes parallel migrators: only one runs the

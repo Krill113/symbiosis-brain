@@ -144,9 +144,15 @@ def test_target_scope_prefix_with_anchor(tmp_path):
 
 
 def test_colon_in_basename_not_treated_as_scope_prefix(tmp_path):
-    """Edge case: a path like 'foo:bar' (colon in name, no path-like rest) must
-    NOT be misinterpreted as a scope prefix. Such targets should still try
-    basename-match as-is."""
+    """Edge case: `foo:bar` (no `/` and no matching note) returns broken=True.
+
+    The scope-prefix regex is intentionally lax (any non-whitespace remainder
+    qualifies), so `foo:` IS stripped to `bar`. This is intentional — the
+    fallback safety net is the resolver itself: when `bar` doesn't exist as
+    a note, `broken=True` is the correct outcome. We don't try to distinguish
+    `foo:bar` (literal note name) from `foo: bar` (scope shorthand) at the
+    parser level — note names with colons in them are vanishingly rare.
+    """
     storage = _storage_with_paths(tmp_path, [])
     canonical, broken = resolve_target("foo:bar", storage)
     assert broken is True

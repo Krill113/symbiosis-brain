@@ -10,6 +10,12 @@ def _strip_md(p: str) -> str:
     return p[:-3] if p.lower().endswith(".md") else p
 
 
+def _strip_anchor(p: str) -> str:
+    """Remove '#anchor' suffix from a wiki-link target. Anchors are for human
+    navigation only — the lookup key is the path/basename before the '#'."""
+    return p.split("#", 1)[0] if "#" in p else p
+
+
 def resolve_target(target: str, storage: Storage) -> tuple[str | None, bool]:
     """Resolve a wiki-link target to canonical path (without .md extension).
 
@@ -18,11 +24,12 @@ def resolve_target(target: str, storage: Storage) -> tuple[str | None, bool]:
 
     Rules:
       - empty → broken
+      - strip trailing '#anchor' before matching
       - contains '/' → path-match (case-insensitive), .md-stripped
       - no '/'        → basename-match across all notes (case-insensitive);
                         unique match returns path; ambiguous/none → broken
     """
-    norm = target.strip()
+    norm = _strip_anchor(target.strip())
     if not norm:
         return None, True
 

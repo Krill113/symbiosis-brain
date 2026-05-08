@@ -58,9 +58,10 @@ def _check_hard_blocks(
             f"frontmatter must be a dict, got {type(frontmatter).__name__}"
         )
 
-    if not frontmatter.get("gist"):
+    gist_value = frontmatter.get("gist") or ""
+    if not gist_value.strip():
         raise ValidationError(
-            "gist field is required (1-line summary, ≤80 chars). "
+            "gist field is required (1-line summary, ≤100 chars). "
             "Add gist='...' to the brain_write call."
         )
 

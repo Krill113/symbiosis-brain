@@ -339,3 +339,52 @@ def test_find_inbound_refs_returns_only_non_broken_pointers_to_path(tmp_path):
     assert sources == ["wiki/a.md"]
     # SQLite stores broken as INTEGER 0/1, not Python bool
     assert all(r["broken"] == 0 for r in refs)
+
+
+def test_phase8_migration_triggers_one_reindex_on_existing_vault(tmp_path):
+    """Phase 8 migration deletes wikilink_normalization_reindex marker once,
+    so the next sync_all triggers a full relations rebuild. After phase8
+    marker is set, migration is idempotent."""
+    db = tmp_path / "test.db"
+    s1 = Storage(db)
+    # Simulate a vault that has already gone through W3 reindex once
+    # (phase8 migration just set its own marker, but W3 marker is unset on fresh DB)
+    s1.mark_reindex_done()
+    assert s1.get_schema_version("wikilink_normalization_reindex") == 1
+    assert s1.get_schema_version("phase8_resolver_reindex") == 1
+    s1.close()
+
+    # Simulate a vault before phase8 code shipped: clear just the phase8 marker
+    conn = sqlite3.connect(str(db))
+    conn.execute("DELETE FROM schema_version WHERE key=?", ("phase8_resolver_reindex",))
+    conn.commit()
+    conn.close()
+
+    # Re-open Storage — phase8 migration must now run, deleting the
+    # wikilink_normalization_reindex marker so sync_all rebuilds.
+    s2 = Storage(db)
+    assert s2.get_schema_version("wikilink_normalization_reindex") is None
+    assert s2.get_schema_version("phase8_resolver_reindex") == 1
+    assert s2.needs_full_reindex() is True
+
+    # Simulate sync_all completing — it sets wikilink_normalization_reindex back to 1.
+    s2.mark_reindex_done()
+    s2.close()
+
+    # Re-open again — phase8 marker is set, migration is a no-op.
+    # wikilink_normalization_reindex stays at 1 — no second rebuild.
+    s3 = Storage(db)
+    assert s3.get_schema_version("wikilink_normalization_reindex") == 1
+    assert s3.get_schema_version("phase8_resolver_reindex") == 1
+    assert s3.needs_full_reindex() is False
+    s3.close()
+
+
+def test_phase8_migration_on_fresh_vault_marks_done(tmp_path):
+    """On a brand-new vault, phase8 migration runs once, sets its own marker,
+    and the DELETE is a no-op (marker doesn't exist yet)."""
+    s = Storage(tmp_path / "test.db")
+    assert s.get_schema_version("phase8_resolver_reindex") == 1
+    assert s.get_schema_version("wikilink_normalization_reindex") is None
+    assert s.needs_full_reindex() is True
+    s.close()

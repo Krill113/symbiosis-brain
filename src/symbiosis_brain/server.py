@@ -18,7 +18,7 @@ from symbiosis_brain.markdown_parser import parse_note, render_note
 from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.write_lock import note_write_lock
-from symbiosis_brain.validation import validate_note, ValidationError
+from symbiosis_brain.validation import validate_note, ValidationError, new_links_introduced
 
 import frontmatter
 
@@ -377,21 +377,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             except SectionNotFoundError as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
 
-            from symbiosis_brain.validation import (
-                validate_note as _validate_note,
-                ValidationError as _ValidationError,
-                new_links_introduced as _new_links_introduced,
-            )
-            if _new_links_introduced(post.content, new_body):
+            if new_links_introduced(post.content, new_body):
                 try:
-                    _ = _validate_note(
+                    validate_note(
                         path=rel_path,
                         title=post.metadata.get("title", ""),
                         body=new_body,
                         frontmatter=dict(post.metadata),
                         storage=_storage,
                     )
-                except _ValidationError as e:
+                except ValidationError as e:
                     return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body
@@ -430,21 +425,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             except AnchorAmbiguousError as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
 
-            from symbiosis_brain.validation import (
-                validate_note as _validate_note,
-                ValidationError as _ValidationError,
-                new_links_introduced as _new_links_introduced,
-            )
-            if _new_links_introduced(post.content, new_body):
+            if new_links_introduced(post.content, new_body):
                 try:
-                    _ = _validate_note(
+                    validate_note(
                         path=rel_path,
                         title=post.metadata.get("title", ""),
                         body=new_body,
                         frontmatter=dict(post.metadata),
                         storage=_storage,
                     )
-                except _ValidationError as e:
+                except ValidationError as e:
                     return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body

@@ -109,3 +109,52 @@ def test_target_with_anchor_only_basename(tmp_path):
 
     assert broken is False
     assert canonical == "wiki/uniquely-named"
+
+
+def test_target_with_scope_prefix_resolves(tmp_path):
+    """[[gkeybot: wiki/gkeybot-credentials]] is shorthand for the path
+    'wiki/gkeybot-credentials' (the scope prefix is for the human reader,
+    confirming the cross-scope nature of the link)."""
+    storage = _storage_with_paths(tmp_path, ["wiki/gkeybot-credentials.md"])
+
+    canonical, broken = resolve_target("gkeybot: wiki/gkeybot-credentials", storage)
+
+    assert broken is False
+    assert canonical == "wiki/gkeybot-credentials"
+
+
+def test_target_with_scope_prefix_no_space(tmp_path):
+    """[[gkeybot:wiki/gkeybot-credentials]] (no space after colon) — must also work."""
+    storage = _storage_with_paths(tmp_path, ["wiki/gkeybot-credentials.md"])
+
+    canonical, broken = resolve_target("gkeybot:wiki/gkeybot-credentials", storage)
+
+    assert broken is False
+    assert canonical == "wiki/gkeybot-credentials"
+
+
+def test_target_scope_prefix_with_anchor(tmp_path):
+    """Combination: [[scope: path#section]] — strip both prefix and anchor."""
+    storage = _storage_with_paths(tmp_path, ["wiki/gkeybot-credentials.md"])
+
+    canonical, broken = resolve_target("gkeybot: wiki/gkeybot-credentials#section-x", storage)
+
+    assert broken is False
+    assert canonical == "wiki/gkeybot-credentials"
+
+
+def test_colon_in_basename_not_treated_as_scope_prefix(tmp_path):
+    """Edge case: a path like 'foo:bar' (colon in name, no path-like rest) must
+    NOT be misinterpreted as a scope prefix. Such targets should still try
+    basename-match as-is."""
+    storage = _storage_with_paths(tmp_path, [])
+    canonical, broken = resolve_target("foo:bar", storage)
+    assert broken is True
+
+
+def test_target_starting_with_digit_not_a_scope(tmp_path):
+    """Scope prefixes start with [a-z]. A target like '2026: note' must not be
+    treated as a scope-prefix shorthand."""
+    storage = _storage_with_paths(tmp_path, [])
+    canonical, broken = resolve_target("2026: note", storage)
+    assert broken is True

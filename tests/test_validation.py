@@ -42,6 +42,20 @@ def test_missing_gist_raises_validation_error(tmp_path):
     assert "gist" in str(exc.value).lower()
 
 
+def test_whitespace_only_gist_raises(tmp_path):
+    """gist: '   ' (only whitespace) is not a real gist; treat as missing."""
+    storage = _storage_with_note(tmp_path)
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md",
+            title="New",
+            body="# H\n[[wiki/existing]] [[wiki/existing]]",
+            frontmatter={"gist": "   "},
+            storage=storage,
+        )
+    assert "gist" in str(exc.value).lower()
+
+
 def test_malformed_frontmatter_raises(tmp_path):
     storage = _storage_with_note(tmp_path)
     with pytest.raises(ValidationError) as exc:

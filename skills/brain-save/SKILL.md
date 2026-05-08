@@ -112,9 +112,13 @@ brain_write(path=..., title=..., body=..., gist="...", ...)
 
 Call `brain_write` with all metadata.
 
-### Step 7: Confirm
+### Step 7: Confirm + closure
 
-Output 1 line: what was saved and where. Example: "Saved: decision about X → decisions/x-approach.md"
+Output 1 line: what was saved and where. Example: "Saved: decision about X → decisions/x-approach.md".
+
+**If this save replaces or supersedes an existing note:**
+- Set `valid_to` on the old note via `brain_patch` (closes the bi-temporal lifecycle).
+- If you need to RENAME or DELETE an existing note (not just supersede via valid_to), use `brain_rename` or `brain_delete` MCP tools — never raw Edit on the file. Direct file edits leave inbound `[[old]]` references stale, which is the dominant source of vault broken-links. `brain_rename` rewrites inbound refs atomically; `brain_delete` (mode=safe) refuses if inbound refs exist, so you don't accidentally orphan callers.
 
 ### MCP fallback
 

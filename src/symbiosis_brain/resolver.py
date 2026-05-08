@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import re as _re
+
 if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
@@ -20,7 +22,6 @@ def _strip_anchor(p: str) -> str:
 # The scope prefix is human-facing (signals cross-scope intent). For lookup
 # we strip it and use only the path portion. A target is treated as having a
 # scope prefix iff it matches: <word>:<optional space><path-with-slash-or-extension>.
-import re as _re
 _SCOPE_PREFIX_RE = _re.compile(r"^[a-z][a-z0-9_-]*:\s?(?=\S)", _re.IGNORECASE)
 
 

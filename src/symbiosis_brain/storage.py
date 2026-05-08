@@ -290,6 +290,36 @@ class Storage:
         ).fetchall()
         return {row["to_name"]: row["cnt"] for row in rows}
 
+    def find_broken_relations(self) -> list[dict]:
+        """Return all relations currently marked broken=True, with their
+        raw_target strings. Used to re-resolve when a new note is created
+        that might satisfy a previously-unresolvable target."""
+        rows = self._conn.execute(
+            "SELECT id, from_name, source_note, raw_target, label "
+            "FROM relations WHERE broken=1 AND relation_type='references'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_relation_resolution(
+        self, relation_id: int, new_to_name: str, broken: bool
+    ) -> None:
+        """Update a relation's to_name + broken flag in place. Used by the
+        stale-relation re-resolver after a new note is created.
+
+        Note: the relations table has UNIQUE(from_name, to_name, relation_type).
+        Updating to_name on a broken row is safe because the corresponding
+        broken row used `to_name='broken:<target>'` — different from the
+        canonical to_name we're switching to. If a duplicate happens to exist
+        (e.g. the same source already has a non-broken edge to canonical),
+        SQLite raises IntegrityError; caller should treat as best-effort and
+        skip the offending row.
+        """
+        self._conn.execute(
+            "UPDATE relations SET to_name=?, broken=? WHERE id=?",
+            (new_to_name, 1 if broken else 0, relation_id),
+        )
+        self._conn.commit()
+
     def get_all_paths(self) -> list[str]:
         """Return all note paths (including .md extension) from notes table."""
         rows = self._conn.execute("SELECT path FROM notes").fetchall()

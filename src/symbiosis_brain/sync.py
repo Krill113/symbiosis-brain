@@ -136,6 +136,49 @@ class VaultSync:
         )
         self.storage._conn.commit()
         self._sync_wikilinks(rel_path, parsed["title"], parsed["body"])
+        self._reresolve_broken_inbound(rel_path)
+
+    def _reresolve_broken_inbound(self, just_written_path: str) -> None:
+        """After a note is added or modified, re-resolve broken relations
+        whose raw_target *plausibly* points to this path. The plausibility
+        filter (canonical-equals or basename-equals after anchor + scope-prefix
+        stripping) caps actual resolver calls to near zero on the hot path —
+        without it this is O(broken × notes) per write.
+        """
+        from symbiosis_brain.resolver import (
+            resolve_target,
+            _strip_anchor,
+            _strip_scope_prefix,
+            _strip_md,
+        )
+        import sqlite3 as _sqlite3
+
+        new_canonical = _strip_md(just_written_path).lower()
+        new_basename = new_canonical.rsplit("/", 1)[-1]
+
+        for rel in self.storage.find_broken_relations():
+            raw = rel["raw_target"] or ""
+            target = raw.split("|", 1)[0].strip()
+            if not target:
+                continue
+            cleaned = _strip_md(_strip_scope_prefix(_strip_anchor(target))).lower()
+            if cleaned != new_canonical and cleaned != new_basename:
+                continue
+            canonical, broken = resolve_target(target, self.storage)
+            if broken:
+                continue
+            self.storage.upsert_entity(name=canonical)
+            try:
+                self.storage.update_relation_resolution(
+                    rel["id"], new_to_name=canonical, broken=False
+                )
+            except _sqlite3.IntegrityError:
+                # Duplicate edge already exists in canonical form — drop the
+                # broken duplicate instead of failing.
+                self.storage._conn.execute(
+                    "DELETE FROM relations WHERE id=?", (rel["id"],)
+                )
+                self.storage._conn.commit()
 
     def _sync_wikilinks(self, note_path: str, note_title: str, body: str):
         from symbiosis_brain.resolver import resolve_target

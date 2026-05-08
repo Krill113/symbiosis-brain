@@ -241,6 +241,51 @@ async def list_tools() -> list[Tool]:
         Tool(name="brain_lint", description="Audit vault: orphans, weak links, broken references, scope warnings, type drift", inputSchema={
             "type": "object", "properties": {},
         }),
+        Tool(
+            name="brain_rename",
+            description=(
+                "Atomically rename a note and rewrite all inbound [[old]] "
+                "wiki-link references to point at the new path. Use this "
+                "instead of direct Edit + manual ref-fixing. Inbound refs are "
+                "detected via the relations table; alias forms `[[old|alias]]` "
+                "are preserved with the new path."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "old_path": {
+                        "type": "string",
+                        "description": "Existing vault-relative path (e.g. 'wiki/foo.md')",
+                    },
+                    "new_path": {
+                        "type": "string",
+                        "description": "New vault-relative path. Must not yet exist.",
+                    },
+                },
+                "required": ["old_path", "new_path"],
+            },
+        ),
+        Tool(
+            name="brain_delete",
+            description=(
+                "Delete a note. Default `mode=safe` refuses if any inbound "
+                "wiki-link references exist (lists them in the error). Use "
+                "`mode=cascade` to replace inbound `[[X]]` with strikethrough "
+                "stubs `~~X~~` and proceed with deletion."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["safe", "cascade"],
+                        "default": "safe",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
     ]
 
 
@@ -609,6 +654,47 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 and not report.get("gist_equals_title")):
             lines.append("\nAll notes are well-connected.")
         return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "brain_rename":
+        from symbiosis_brain.refactor import brain_rename as _brain_rename
+        old_path = arguments["old_path"]
+        new_path = arguments["new_path"]
+        try:
+            result = _brain_rename(
+                old_path,
+                new_path,
+                storage=_storage,
+                sync=_sync,
+                vault_path=_vault_path,
+            )
+        except (FileNotFoundError, FileExistsError) as e:
+            return [TextContent(type="text", text=f"Error: {e}")]
+        msg = f"Renamed {old_path} → {new_path}; rewrote {result['refs_rewritten']} ref(s) in {len(result['sources'])} source(s)"
+        return [TextContent(type="text", text=msg)]
+
+    elif name == "brain_delete":
+        from symbiosis_brain.refactor import (
+            brain_delete as _brain_delete,
+            DeleteBlockedError,
+        )
+        path = arguments["path"]
+        mode = arguments.get("mode", "safe")
+        try:
+            result = _brain_delete(
+                path,
+                mode=mode,
+                storage=_storage,
+                sync=_sync,
+                vault_path=_vault_path,
+            )
+        except DeleteBlockedError as e:
+            return [TextContent(type="text", text=f"Error: {e}")]
+        except FileNotFoundError as e:
+            return [TextContent(type="text", text=f"Error: {e}")]
+        msg = f"Deleted {path}"
+        if result["sources_modified"]:
+            msg += f"; rewrote {len(result['sources_modified'])} source(s) with stubs"
+        return [TextContent(type="text", text=msg)]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

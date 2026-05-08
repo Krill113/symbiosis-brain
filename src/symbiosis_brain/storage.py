@@ -328,6 +328,18 @@ class Storage:
         )
         self._conn.commit()
 
+    def find_inbound_refs(self, canonical_path: str) -> list[dict]:
+        """Return all non-broken `references` relations whose to_name equals
+        canonical_path. Used by brain_rename / brain_delete to identify which
+        notes link TO the target."""
+        rows = self._conn.execute(
+            "SELECT id, source_note, raw_target, label, broken "
+            "FROM relations "
+            "WHERE relation_type='references' AND to_name=? AND broken=0",
+            (canonical_path,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_all_paths(self) -> list[str]:
         """Return all note paths (including .md extension) from notes table."""
         rows = self._conn.execute("SELECT path FROM notes").fetchall()

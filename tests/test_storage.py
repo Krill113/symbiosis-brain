@@ -312,3 +312,30 @@ def test_schema_version_helpers_round_trip(db_path: Path):
     s.set_schema_version("some_int", 42)
     assert s.get_schema_version("some_int") == 42
     s.close()
+
+
+def test_find_inbound_refs_returns_only_non_broken_pointers_to_path(tmp_path):
+    storage = Storage(tmp_path / "test.db")
+
+    # B exists
+    storage.upsert_note(
+        path="wiki/b.md", title="B", content="# B", note_type="wiki",
+        scope="global", tags=[], frontmatter={"gist": "x"},
+        valid_from=None, valid_to=None,
+    )
+    # A points at B (resolved)
+    storage.upsert_relation(
+        from_name="wiki/a", to_name="wiki/b", relation_type="references",
+        source_note="wiki/a.md", label=None, raw_target="wiki/b", broken=False,
+    )
+    # C points at "wiki/missing" (broken)
+    storage.upsert_relation(
+        from_name="wiki/c", to_name="broken:wiki/missing", relation_type="references",
+        source_note="wiki/c.md", label=None, raw_target="wiki/missing", broken=True,
+    )
+
+    refs = storage.find_inbound_refs("wiki/b")
+    sources = [r["source_note"] for r in refs]
+    assert sources == ["wiki/a.md"]
+    # SQLite stores broken as INTEGER 0/1, not Python bool
+    assert all(r["broken"] == 0 for r in refs)

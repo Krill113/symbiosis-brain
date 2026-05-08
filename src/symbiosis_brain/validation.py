@@ -114,6 +114,13 @@ def _check_soft_warns(
     return warnings
 
 
+def new_links_introduced(old_body: str, new_body: str) -> bool:
+    """True iff new_body contains any [[wiki-link]] target that old_body did not."""
+    old_targets = {l["target"] for l in extract_wikilinks(old_body)}
+    new_targets = {l["target"] for l in extract_wikilinks(new_body)}
+    return bool(new_targets - old_targets)
+
+
 def validate_note(
     *,
     path: str,

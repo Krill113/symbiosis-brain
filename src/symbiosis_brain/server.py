@@ -18,6 +18,7 @@ from symbiosis_brain.markdown_parser import parse_note, render_note
 from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.write_lock import note_write_lock
+from symbiosis_brain.validation import validate_note, ValidationError
 
 import frontmatter
 
@@ -304,6 +305,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             extra_fm["valid_to"] = arguments["valid_to"]
         if arguments.get("gist"):
             extra_fm["gist"] = arguments["gist"]
+
+        # ---------- VALIDATION GATE ----------
+        try:
+            warnings = validate_note(
+                path=arguments["path"],
+                title=arguments["title"],
+                body=arguments["body"],
+                frontmatter={
+                    "gist": arguments.get("gist"),
+                    "valid_from": arguments.get("valid_from"),
+                    "valid_to": arguments.get("valid_to"),
+                    "type": arguments.get("note_type", "wiki"),
+                    "scope": arguments.get("scope", "global"),
+                    "tags": arguments.get("tags") or [],
+                },
+                storage=_storage,
+            )
+        except ValidationError as e:
+            return [TextContent(type="text", text=f"Error: {e}")]
+        # -------------------------------------
+
         md_content = render_note(
             title=arguments["title"],
             body=arguments["body"],
@@ -318,11 +340,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         is_new = not file_path.exists()
         file_path.parent.mkdir(parents=True, exist_ok=True)
         _write_note_body(arguments["path"], md_content, "write", arguments["title"])
+
         msg = f"Saved: {arguments['path']}"
-        if not arguments.get("gist"):
-            msg += ("\n\n⚠️ Note saved without `gist:` field. "
-                    "Add a 1-line gist (≤80 chars) describing why this note exists. "
-                    "Used by mid-conversation recall.")
+        if warnings:
+            msg += "\n\nwarnings: " + "; ".join(w.message for w in warnings)
         if is_new:
             note_count = _storage.count_notes()
             if note_count > 0 and note_count % 25 == 0:
@@ -355,6 +376,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 )
             except SectionNotFoundError as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
+
+            from symbiosis_brain.validation import (
+                validate_note as _validate_note,
+                ValidationError as _ValidationError,
+                new_links_introduced as _new_links_introduced,
+            )
+            if _new_links_introduced(post.content, new_body):
+                try:
+                    _ = _validate_note(
+                        path=rel_path,
+                        title=post.metadata.get("title", ""),
+                        body=new_body,
+                        frontmatter=dict(post.metadata),
+                        storage=_storage,
+                    )
+                except _ValidationError as e:
+                    return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body
             new_text = frontmatter.dumps(post) + "\n"
@@ -391,6 +429,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=f"Error: {e}")]
             except AnchorAmbiguousError as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
+
+            from symbiosis_brain.validation import (
+                validate_note as _validate_note,
+                ValidationError as _ValidationError,
+                new_links_introduced as _new_links_introduced,
+            )
+            if _new_links_introduced(post.content, new_body):
+                try:
+                    _ = _validate_note(
+                        path=rel_path,
+                        title=post.metadata.get("title", ""),
+                        body=new_body,
+                        frontmatter=dict(post.metadata),
+                        storage=_storage,
+                    )
+                except _ValidationError as e:
+                    return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body
             new_text = frontmatter.dumps(post) + "\n"

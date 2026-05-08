@@ -32,9 +32,10 @@ async def seeded_backlog(initialized_server, tmp_vault_with_taxonomy: Path):
     await _call("brain_write", {
         "path": "projects/sample-backlog.md",
         "title": "Sample Backlog",
-        "body": "## Next Up\n\n- [[Alpha]] task\n\n## Ideas\n\n- idea 1\n\n## Completed\n\n- done 1\n",
+        "body": "## Next Up\n\n- [[forward:Alpha]] task [[forward:Beta]]\n\n## Ideas\n\n- idea 1\n\n## Completed\n\n- done 1\n",
         "note_type": "project",
         "scope": "global",
+        "gist": "sample backlog for append/patch tests",
     })
     return tmp_vault_with_taxonomy / "projects" / "sample-backlog.md"
 
@@ -44,12 +45,12 @@ class TestBrainAppend:
         msg = await _call("brain_append", {
             "path": "projects/sample-backlog.md",
             "section": "Next Up",
-            "content": "- [[Beta]] task",
+            "content": "- extra item",
         })
         assert "Appended" in msg
         text = seeded_backlog.read_text(encoding="utf-8")
-        assert "- [[Alpha]] task" in text
-        assert "- [[Beta]] task" in text
+        assert "[[forward:Alpha]]" in text
+        assert "- extra item" in text
         assert "- idea 1" in text
         assert "- done 1" in text
 
@@ -107,12 +108,12 @@ class TestBrainPatch:
     async def test_replaces_unique_anchor(self, seeded_backlog: Path):
         msg = await _call("brain_patch", {
             "path": "projects/sample-backlog.md",
-            "anchor": "- [[Alpha]] task",
-            "replacement": "- [[Alpha]] task DONE",
+            "anchor": "[[forward:Alpha]] task",
+            "replacement": "[[forward:Alpha]] task DONE",
         })
         assert "Patched" in msg
         text = seeded_backlog.read_text(encoding="utf-8")
-        assert "- [[Alpha]] task DONE" in text
+        assert "[[forward:Alpha]] task DONE" in text
         assert "- idea 1" in text  # untouched
 
     async def test_anchor_not_found(self, seeded_backlog: Path):
@@ -128,8 +129,9 @@ class TestBrainPatch:
         await _call("brain_write", {
             "path": "projects/dup.md",
             "title": "Dup",
-            "body": "## Notes\n\nfoo\nfoo\n",
+            "body": "## Notes\n\nfoo\nfoo\n[[forward:A]] [[forward:B]]",
             "note_type": "project",
+            "gist": "duplicate anchor test note",
         })
         msg = await _call("brain_patch", {
             "path": "projects/dup.md",
@@ -154,9 +156,10 @@ class TestBrainPatch:
         await _call("brain_write", {
             "path": "projects/fm-guard.md",
             "title": "FM Guard",
-            "body": "## Notes\n\nThe word test appears here.\n",
+            "body": "## Notes\n\nThe word test appears here.\n[[forward:A]] [[forward:B]]",
             "note_type": "project",
             "tags": ["test"],  # 'test' appears in frontmatter as a tag
+            "gist": "frontmatter guard test note",
         })
         msg = await _call("brain_patch", {
             "path": "projects/fm-guard.md",

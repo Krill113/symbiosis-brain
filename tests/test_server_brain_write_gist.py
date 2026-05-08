@@ -1,11 +1,11 @@
-"""brain_write soft-warning when gist is missing."""
+"""brain_write hard-block when gist is missing (validation gate)."""
 import pytest
 import asyncio
 from pathlib import Path
 
 
 @pytest.mark.asyncio
-async def test_brain_write_warns_when_gist_missing(tmp_vault: Path, db_path: Path):
+async def test_brain_write_blocks_when_gist_missing(tmp_vault: Path, db_path: Path):
     from symbiosis_brain import server
     from symbiosis_brain.storage import Storage
     from symbiosis_brain.search import SearchEngine
@@ -25,8 +25,9 @@ async def test_brain_write_warns_when_gist_missing(tmp_vault: Path, db_path: Pat
         "note_type": "wiki", "scope": "global",
     })
     text = result[0].text
-    assert "Saved" in text
-    assert "gist" in text.lower()  # warning mentions gist
+    assert "Error" in text
+    assert "gist" in text.lower()  # error message mentions gist
+    assert not (tmp_vault / "wiki" / "test.md").exists()  # file not written
 
 
 @pytest.mark.asyncio

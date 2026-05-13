@@ -112,7 +112,14 @@ Format reference: [[wiki/handoff-pattern]] (4 bullets: shipped / WIP / parked / 
 
 The following pathological states are handled silently in priority order:
 
-- **Marker missing, `projects/<scope>.md` exists** → propose: "Маркер CLAUDE.md потерялся, восстановить из vault?". On yes, write marker via Edit (append at EOF). One question max.
+- **Marker missing, `projects/<scope>.md` exists** → propose: "Маркер CLAUDE.md потерялся, восстановить из vault?". On yes, write marker via Edit (append at EOF). One question max. **Marker format** (single line, comma-separated `key=value` pairs):
+  ```
+  <!-- symbiosis-brain v1: scope=<scope>[, umbrella=<umbrella>][, status=<status>] -->
+  ```
+  Examples:
+  - `<!-- symbiosis-brain v1: scope=symbiosis-brain -->` (no umbrella)
+  - `<!-- symbiosis-brain v1: scope=iteris-seti, umbrella=iteris -->` (with umbrella)
+  - `<!-- symbiosis-brain v1: scope=newscope, status=draft -->` (provisional)
 - **Marker present, `projects/<scope>.md` missing** → run `brain-project-init` with `mode=recovery` and pre-filled scope/umbrella from the marker. Skill should NOT re-ask "зачем" — read it from history if found, otherwise fall back to draft mode.
 - **Marker version ≥ 2 (future client)** → run `brain-project-init` with `mode=migration`. Tell the user: "Маркер написан более новой версией Symbiosis Brain. Запускаю миграцию".
 - **Marker scope ≠ frontmatter scope (drift)** → vault wins. Use frontmatter scope. Tell the user once: "Маркер CLAUDE.md устарел (`<old>` → `<new>`), исправить?". Apply on yes.

@@ -133,7 +133,11 @@ def _run_pre_action_recall(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="symbiosis_brain pre-action-recall")
     parser.add_argument("--vault", required=True)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        # argparse calls sys.exit(2) on bad args — convert to fail-open exit 0
+        return 0
 
     # Read PreToolUse payload from stdin (piped by bash wrapper)
     try:
@@ -169,35 +173,41 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     # propagated to this subprocess by uv run; not a bridge file).
     scope = os.environ.get("SYMBIOSIS_BRAIN_SCOPE") or None
 
-    # Plug SearchEngine
-    from symbiosis_brain.storage import Storage
-    from symbiosis_brain.search import SearchEngine
-    from symbiosis_brain.sync import VaultSync
+    # Plug SearchEngine. Wrapped in try/except per fail-open principle —
+    # corrupt vault, locked DB, or unexpected runtime errors must not block
+    # the tool call. Bash hook has its own outer error handling; this is
+    # defense in depth.
+    try:
+        from symbiosis_brain.storage import Storage
+        from symbiosis_brain.search import SearchEngine
+        from symbiosis_brain.sync import VaultSync
 
-    vault_path = Path(args.vault).expanduser().resolve()
-    if not vault_path.exists():
-        return 0
-    db_path = vault_path / ".index" / "brain.db"
-    storage = Storage(db_path)
-    VaultSync(vault_path, storage).sync_all()
-    engine = SearchEngine(storage)
-    # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
-    # In production the vector index is prewarmed at SessionStart and persists
-    # across sessions. Tests must pre-populate the index in their fixture.
+        vault_path = Path(args.vault).expanduser().resolve()
+        if not vault_path.exists():
+            return 0
+        db_path = vault_path / ".index" / "brain.db"
+        storage = Storage(db_path)
+        VaultSync(vault_path, storage).sync_all()
+        engine = SearchEngine(storage)
+        # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
+        # In production the vector index is prewarmed at SessionStart and
+        # persists across sessions. Tests pre-populate the index in fixture.
 
-    hits = run_recall(query=query, scope=scope, config=cfg, engine=engine)
-    if not hits:
-        return 0
+        hits = run_recall(query=query, scope=scope, config=cfg, engine=engine)
+        if not hits:
+            return 0
 
-    block = format_recall_block(query, hits)
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": block,
+        block = format_recall_block(query, hits)
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": block,
+            }
         }
-    }
-    print(json.dumps(output, ensure_ascii=False))
-    return 0
+        print(json.dumps(output, ensure_ascii=False))
+        return 0
+    except Exception:
+        return 0  # fail-open on any runtime error
 
 
 def main():

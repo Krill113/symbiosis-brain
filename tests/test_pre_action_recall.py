@@ -282,3 +282,26 @@ def test_cli_handles_malformed_stdin_json(populated_vault: Path):
     )
     assert proc.returncode == 0  # fail-open
     assert proc.stdout.strip() == ""  # silent skip
+
+
+def test_cli_handles_bad_argparse_args(populated_vault: Path):
+    """argparse sys.exit(2) on bad args must be caught — fail-open as exit 0."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
+         "--unknown-flag", "xyz"],
+        input="{}",
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0  # NOT 2
+    assert proc.stdout.strip() == ""
+
+
+def test_cli_handles_missing_vault_arg(populated_vault: Path):
+    """--vault is required by argparse — missing should fail-open."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall"],
+        input="{}",
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0  # NOT 2
+    assert proc.stdout.strip() == ""

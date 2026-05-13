@@ -181,7 +181,9 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     storage = Storage(db_path)
     VaultSync(vault_path, storage).sync_all()
     engine = SearchEngine(storage)
-    engine.index_all()  # build/refresh vector index for semantic matching
+    # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
+    # In production the vector index is prewarmed at SessionStart and persists
+    # across sessions. Tests must pre-populate the index in their fixture.
 
     hits = run_recall(query=query, scope=scope, config=cfg, engine=engine)
     if not hits:

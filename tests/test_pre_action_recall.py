@@ -179,7 +179,16 @@ from pathlib import Path
 
 @pytest.fixture
 def populated_vault(tmp_path: Path) -> Path:
-    """Minimal vault with one feedback note that matches 'git commit' query."""
+    """Minimal vault with one feedback note + pre-built indexes (FTS+vector).
+
+    Production hook does NOT call index_all() — too slow. In real use, vector
+    index is prewarmed at SessionStart and persisted. Tests must build it
+    explicitly to mirror that warmed state.
+    """
+    from symbiosis_brain.storage import Storage
+    from symbiosis_brain.search import SearchEngine
+    from symbiosis_brain.sync import VaultSync
+
     vault = tmp_path / "vault"
     (vault / "feedback").mkdir(parents=True)
     note = vault / "feedback" / "commit-style.md"
@@ -191,9 +200,17 @@ def populated_vault(tmp_path: Path) -> Path:
         "gist: Не добавляй Co-Authored-By Claude в коммиты\n"
         "---\n\n"
         "# Commit style\n\n"
-        "Без AI-trailer'ов. Никаких [[wiki/claude-code]] упоминаний в commit message.\n",
+        "Без AI-trailer'ов. Никаких [[wiki/claude-code]] упоминаний в commit message.\n"
+        "Применяется для git commit / git push команд.\n",
         encoding="utf-8",
     )
+
+    # Pre-build indexes (mirrors prewarmed SessionStart state)
+    db_path = vault / ".index" / "brain.db"
+    storage = Storage(db_path)
+    VaultSync(vault, storage).sync_all()
+    SearchEngine(storage).index_all()
+
     return vault
 
 

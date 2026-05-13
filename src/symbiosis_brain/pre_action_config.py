@@ -66,6 +66,15 @@ def load_config(path: Path = CONFIG_PATH) -> PreActionConfig:
         _debug_log(f"config root is not a dict: {type(data).__name__}")
         return cfg
     for key, value in data.items():
-        if hasattr(cfg, key):
-            setattr(cfg, key, value)
+        if not hasattr(cfg, key):
+            _debug_log(f"unknown config key: {key}")
+            continue
+        expected = type(getattr(cfg, key))
+        if not isinstance(value, expected):
+            _debug_log(
+                f"type mismatch for '{key}': expected {expected.__name__}, "
+                f"got {type(value).__name__}"
+            )
+            continue
+        setattr(cfg, key, value)
     return cfg

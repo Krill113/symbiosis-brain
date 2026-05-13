@@ -54,3 +54,31 @@ def test_load_with_extra_excluded_types(tmp_path: Path):
     cfg = load_config(cfg_path)
     assert "wiki" in cfg.excluded_note_types
     assert "user" in cfg.excluded_note_types
+
+
+def test_load_with_unknown_key_keeps_defaults(tmp_path: Path):
+    """Unknown config keys should be logged and ignored, defaults preserved."""
+    cfg_path = tmp_path / "cfg.json"
+    # Typo "enabeld" instead of "enabled" — should be ignored
+    cfg_path.write_text(json.dumps({"enabeld": False, "hit_limit": 7}))
+    cfg = load_config(cfg_path)
+    assert cfg.enabled is True  # typo'd key ignored, default kept
+    assert cfg.hit_limit == 7  # valid key applied
+    assert not hasattr(cfg, "enabeld")
+
+
+def test_load_with_type_mismatch_keeps_default(tmp_path: Path):
+    """Type mismatches should be logged and ignored, defaults preserved."""
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps({"hit_limit": "three"}))
+    cfg = load_config(cfg_path)
+    assert cfg.hit_limit == 3  # wrong type → default kept
+
+
+def test_load_with_list_root_returns_defaults(tmp_path: Path):
+    """Non-dict JSON root should return defaults gracefully."""
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps([1, 2, 3]))
+    cfg = load_config(cfg_path)
+    assert cfg.enabled is True
+    assert cfg.hit_limit == 3

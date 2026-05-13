@@ -288,6 +288,61 @@ def test_concurrent_brain_append_different_sections_both_persist(tmp_vault, db_p
     assert "added by B" in final, "Section B append must persist"
 
 
+def _patch_in_subprocess(vault_str: str, rel_path: str, anchor: str, replacement: str, queue: "mp.Queue"):
+    try:
+        from pathlib import Path as _P
+        import frontmatter as _fm
+        from symbiosis_brain import server as _srv
+        from symbiosis_brain.sections import replace_anchor
+        from symbiosis_brain.write_lock import note_write_lock
+        _srv._init(_P(vault_str))
+        full = _P(vault_str) / rel_path
+        with note_write_lock(_P(vault_str), rel_path):
+            raw = full.read_text(encoding="utf-8")
+            post = _fm.loads(raw)
+            post.content = replace_anchor(post.content, anchor, replacement)
+            new_text = _fm.dumps(post) + "\n"
+            _srv._write_note_body_unlocked(rel_path, new_text, "patch", post.metadata.get("title", ""))
+        queue.put(("ok", anchor))
+    except Exception as exc:
+        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+
+def test_concurrent_brain_patch_different_anchors_both_persist(tmp_vault, db_path):
+    """Two parallel patches to DIFFERENT unique anchors of same note: both edits land."""
+    target = tmp_vault / "wiki" / "patches.md"
+    target.write_text(
+        "---\ntitle: Patches\ntype: wiki\nscope: global\ntags: []\n---\n\n"
+        "## Section A\n\nanchor-alpha-original\n\n## Section B\n\nanchor-beta-original\n",
+        encoding="utf-8",
+    )
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(
+            target=_patch_in_subprocess,
+            args=(str(tmp_vault), "wiki/patches.md", "anchor-alpha-original", "anchor-alpha-PATCHED", q),
+        ),
+        ctx.Process(
+            target=_patch_in_subprocess,
+            args=(str(tmp_vault), "wiki/patches.md", "anchor-beta-original", "anchor-beta-PATCHED", q),
+        ),
+    ]
+    for p in procs: p.start()
+    for p in procs: p.join(timeout=60)
+    for p in procs: assert p.exitcode == 0
+
+    results = [q.get_nowait() for _ in range(2)]
+    assert all(r[0] == "ok" for r in results), f"errors: {results}"
+
+    final = target.read_text(encoding="utf-8")
+    assert "anchor-alpha-PATCHED" in final, "Section A patch must persist"
+    assert "anchor-beta-PATCHED" in final, "Section B patch must persist"
+    assert "anchor-alpha-original" not in final
+    assert "anchor-beta-original" not in final
+
+
 def test_write_note_body_does_not_scan_other_notes(tmp_vault, db_path, monkeypatch):
     """A brain_write should call sync_one for the target path only,
     not sync_all (which scans the entire vault)."""

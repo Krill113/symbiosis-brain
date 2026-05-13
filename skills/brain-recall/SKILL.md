@@ -12,6 +12,19 @@ description: >
 
 # Brain Recall — Task Context Search
 
+## Automatic action-trigger recall
+
+As of 2026-05-13, brain recall fires automatically before decision-class tool calls (Task, Edit, Write, MultiEdit, NotebookEdit, and whitelisted Bash commands like `git commit`, `pip install`, `docker push`). You will see a `[recall: N hits for "..."]` block in `<system-reminder>` injected by `hooks/brain-pre-action-trigger.sh`.
+
+This skill is still useful for:
+- Explicit recall when no tool call is imminent (pure exploration / discussion).
+- Searching by topic when the auto-hook query (derived from tool args) is too narrow.
+
+Runtime config: `~/.claude/symbiosis-brain-pre-action.json` (toggle matchers, edit Bash whitelist, etc.).
+Kill-switch: `SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED=1`.
+
+Design: `decisions/2026-05-13-brain-recall-action-trigger-design.md` (in vault).
+
 ## When to use — concrete triggers
 
 Trigger silently on **any** of these signals (no permission needed, no narration if nothing relevant):

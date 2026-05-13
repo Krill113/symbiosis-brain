@@ -129,7 +129,7 @@ if [ "$MODE" = "prompt-check" ]; then
   fi
 
   if [ "$SKIP_RECALL" = "0" ] && [ -n "$VAULT" ]; then
-    DEBUG_LOG="/tmp/brain-hook-debug.log"
+    DEBUG_LOG="${SYMBIOSIS_BRAIN_DEBUG_LOG:-/tmp/brain-hook-debug.log}"
     GIST_TOOLS="${SYMBIOSIS_BRAIN_TOOLS:-}"
 
     # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.

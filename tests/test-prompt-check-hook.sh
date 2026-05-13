@@ -116,9 +116,11 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true ru
 if [[ "$out" != *"[rules"* ]]; then t "first-turn roster doesn't repeat" PASS; else t "first-turn roster doesn't repeat" FAIL; fi
 
 # Test 10: Bash hook writes debug log on search-gist failure
+# Isolated via SYMBIOSIS_BRAIN_DEBUG_LOG so the test doesn't pollute (or destroy
+# artifacts in) the production /tmp/brain-hook-debug.log used by real sessions.
 cleanup
-DEBUG_LOG="/tmp/brain-hook-debug.log"
-rm -f "$DEBUG_LOG"
+TMPLOGDIR="$(mktemp -d)"
+DEBUG_LOG="$TMPLOGDIR/brain-hook-debug.log"
 echo "10" > "$PCT_FILE"
 TMPBIN="$(mktemp -d)"
 cat > "$TMPBIN/uv" <<'EOF'
@@ -131,11 +133,12 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
       SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
       SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
       SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+      SYMBIOSIS_BRAIN_DEBUG_LOG="$DEBUG_LOG" \
       PATH="$TMPBIN:$PATH" \
       run_hook "long enough prompt for guard")
 if [[ "$out" != *"[memory:"* ]]; then t "failure produces no memory block" PASS; else t "failure produces no memory block" FAIL; fi
 if [ -s "$DEBUG_LOG" ] && grep -q "search-gist" "$DEBUG_LOG"; then t "debug log captured failure" PASS; else t "debug log captured failure" FAIL; fi
-rm -rf "$TMPBIN"
+rm -rf "$TMPBIN" "$TMPLOGDIR"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

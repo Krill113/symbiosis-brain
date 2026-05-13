@@ -80,6 +80,28 @@ def test_query_missing_field_returns_none_or_empty():
     assert build_query("Task", {}, max_chars=500) == ""
 
 
+# ---------- _note_type ----------
+
+from symbiosis_brain.pre_action_recall import _note_type
+
+
+def test_note_type_reads_from_frontmatter():
+    assert _note_type({"frontmatter": {"type": "feedback"}}) == "feedback"
+
+
+def test_note_type_returns_none_when_no_frontmatter():
+    assert _note_type({"path": "x"}) is None
+
+
+def test_note_type_returns_none_when_frontmatter_is_string():
+    # Edge case: frontmatter could be raw string in some storage paths
+    assert _note_type({"frontmatter": "raw yaml string"}) is None
+
+
+def test_note_type_returns_none_when_frontmatter_is_none():
+    assert _note_type({"frontmatter": None}) is None
+
+
 # ---------- format_recall_block ----------
 
 def test_format_with_hits():

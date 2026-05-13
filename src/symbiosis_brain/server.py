@@ -182,7 +182,7 @@ async def list_tools() -> list[Tool]:
                 "path": {"type": "string", "description": "Relative path (e.g. 'wiki/dapper-patterns.md')"},
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown body. Use [[wiki links]] for connections."},
-                "note_type": {"type": "string", "enum": ["project", "wiki", "research", "decision", "user", "pattern", "mistake", "feedback"], "default": "wiki"},
+                "note_type": {"type": "string", "enum": ["project", "wiki", "research", "decision", "user", "pattern", "mistake", "feedback", "reference"], "default": "wiki"},
                 "scope": {"type": "string", "default": "global"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "gist": {"type": "string", "description": "1-line summary (≤80 chars), used by mid-conversation recall. Optional but warned-if-missing."},

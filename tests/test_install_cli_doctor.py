@@ -88,3 +88,48 @@ def test_doctor_reports_missing_hook(tmp_path, monkeypatch, capsys):
     assert "✗" in out
     assert "brain-save-trigger.py" in out
     assert rc == 1
+
+
+def test_resolve_vault_path_handles_path_with_spaces(monkeypatch):
+    """Paths containing spaces (e.g. 'C:\\Program Files\\vault') must round-trip."""
+    from symbiosis_brain import install_cli
+
+    class _FakeProc:
+        stdout = 'symbiosis-brain: symbiosis-brain serve --vault "C:\\Program Files\\my vault"\n'
+
+    monkeypatch.setattr(install_cli.subprocess, "run", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr(install_cli, "DEFAULT_VAULT", Path("/nonexistent"))
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_VAULT", raising=False)
+
+    result = install_cli._resolve_vault_path()
+    assert result == Path("C:\\Program Files\\my vault"), (
+        f"Path-with-spaces parse failed: got {result!r}"
+    )
+
+
+def test_resolve_vault_path_falls_back_to_env_var(monkeypatch, tmp_path):
+    """When claude mcp list yields nothing useful, fall back to SYMBIOSIS_BRAIN_VAULT env var."""
+    from symbiosis_brain import install_cli
+
+    class _FakeProc:
+        stdout = ""
+
+    monkeypatch.setattr(install_cli.subprocess, "run", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr(install_cli, "DEFAULT_VAULT", Path("/nonexistent"))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+
+    assert install_cli._resolve_vault_path() == tmp_path
+
+
+def test_resolve_vault_path_env_var_overrides_dead_mcp_list(monkeypatch, tmp_path):
+    """When `claude` binary is missing entirely, env var still works."""
+    from symbiosis_brain import install_cli
+
+    def fake_run(*a, **kw):
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr(install_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_cli, "DEFAULT_VAULT", Path("/nonexistent"))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+
+    assert install_cli._resolve_vault_path() == tmp_path

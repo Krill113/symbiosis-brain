@@ -75,17 +75,38 @@ def _hook_dir() -> Path:
 
 
 def _resolve_vault_path() -> Path | None:
-    """Read vault path from existing MCP config (claude mcp list output)."""
+    """Resolve vault path with fallback chain:
+
+    1. Parse `claude mcp list` output looking for symbiosis-brain registration.
+       Handles paths-with-spaces (quoted or unquoted-as-tail).
+    2. `SYMBIOSIS_BRAIN_VAULT` env var.
+    3. `DEFAULT_VAULT` if it exists on disk.
+    4. None.
+    """
+    import shlex
+
     try:
-        proc = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=10)
+        proc = subprocess.run(
+            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10
+        )
         for line in proc.stdout.splitlines():
-            if "symbiosis-brain" in line and "--vault" in line:
-                # naive parse: --vault <path> [other args]
-                parts = line.split("--vault", 1)[1].strip().split()
-                if parts:
-                    return Path(parts[0])
+            if "symbiosis-brain" not in line or "--vault" not in line:
+                continue
+            tail = line.split("--vault", 1)[1].strip()
+            try:
+                tokens = shlex.split(tail, posix=False)
+            except ValueError:
+                tokens = tail.split()
+            if tokens:
+                # First token is the vault path (quoted forms come back unstripped from shlex non-posix).
+                return Path(tokens[0].strip('"').strip("'"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+
+    env_vault = os.environ.get("SYMBIOSIS_BRAIN_VAULT")
+    if env_vault:
+        return Path(env_vault).expanduser()
+
     if DEFAULT_VAULT.exists():
         return DEFAULT_VAULT
     return None

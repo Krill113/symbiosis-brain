@@ -64,7 +64,7 @@ def run_recall(
     """
     if not query:
         return []
-    over_limit = max(config.hit_limit * 2, 5)
+    over_limit = min(max(config.hit_limit * 2, 5), 50)
     raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist")
     excluded = set(config.excluded_note_types)
     filtered = [r for r in raw if _note_type(r) not in excluded]

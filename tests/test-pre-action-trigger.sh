@@ -30,6 +30,9 @@ export SYMBIOSIS_BRAIN_TOOLS="$REPO_ROOT"
 # Convert to Windows-native path so Python subprocess (uv run) resolves /tmp correctly
 # on Windows/git-bash (POSIX /tmp/... is not visible to Windows Python as-is).
 WIN_VAULT=$(cygpath -w "$TMP_VAULT" 2>/dev/null || echo "$TMP_VAULT")
+# Guard: cygpath could return empty string with exit 0 in some edge cases —
+# fall back to POSIX path so SYMBIOSIS_BRAIN_VAULT is never empty.
+[ -z "$WIN_VAULT" ] && WIN_VAULT="$TMP_VAULT"
 export SYMBIOSIS_BRAIN_VAULT="$WIN_VAULT"
 
 # Pre-warm: sync vault + build vector index (mirrors prewarmed production state)

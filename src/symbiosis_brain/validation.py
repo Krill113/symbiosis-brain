@@ -65,6 +65,17 @@ def _check_hard_blocks(
             "Add gist='...' to the brain_write call."
         )
 
+    # Malformed forward-ref check: `[[forward:X|alias]]` is structurally invalid.
+    # The alias attaches to a real target; until the target exists, an alias
+    # is meaningless. Run BEFORE broken_outgoing_ref so the diagnostic is precise.
+    for link in extract_wikilinks(body):
+        if link["target"].startswith(FORWARD_REF_PREFIX) and link["alias"] is not None:
+            raise ValidationError(
+                f"malformed forward-ref [[{link['raw']}]]: forward-refs do "
+                f"not accept '|alias'. Use [[forward:{link['target'][len(FORWARD_REF_PREFIX):]}]] "
+                f"first; add the alias after the target is created."
+            )
+
     # Resolve every outgoing wiki-link; collect broken ones (skipping forward-refs).
     from symbiosis_brain.resolver import resolve_target
     broken: list[str] = []

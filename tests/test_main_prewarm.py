@@ -14,6 +14,16 @@ import pytest
 ROOT = Path(__file__).parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _isolated_tmpdir(tmp_path, monkeypatch):
+    # Prewarm logs failures to <TMPDIR or TEMP>/brain-hook-debug.log. Without
+    # isolation the test_prewarm_silent_stdout_on_internal_failure subprocess
+    # inherits the system TEMP and pollutes the shared production log, which
+    # has triggered false-alarm "prewarm race" investigations.
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+
+
 def _run_prewarm(vault_arg: str, env: dict | None = None) -> subprocess.CompletedProcess:
     e = os.environ.copy()
     if env:
@@ -66,3 +76,10 @@ def test_prewarm_silent_stdout_on_internal_failure(tmp_path):
     assert proc.stdout == "", f"prewarm leaked stdout on failure: {proc.stdout!r}"
     # Exit code must remain 0 — never block session start
     assert proc.returncode == 0, f"prewarm broke session start with exit {proc.returncode}: {proc.stderr}"
+    # Error must reach the debug log (isolated to tmp_path via autouse fixture
+    # above; without isolation we would silently pollute /tmp/brain-hook-debug.log).
+    debug_log = tmp_path / "brain-hook-debug.log"
+    assert debug_log.exists(), "prewarm error must be captured in debug log"
+    body = debug_log.read_text(encoding="utf-8")
+    assert "prewarm FAIL" in body and "DatabaseError" in body, \
+        f"debug log content unexpected: {body!r}"

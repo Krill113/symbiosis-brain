@@ -150,3 +150,37 @@ def test_two_links_no_few_links_warning(tmp_path):
         storage=storage,
     )
     assert "few_wiki_links" not in [w.rule for w in warnings]
+
+
+def test_forward_ref_with_alias_pipe_rejected(tmp_path):
+    """`[[forward:X|alias]]` is structurally invalid — forward-refs don't take alias-pipe.
+
+    The alias attaches to a real target; until the target exists, an alias
+    is meaningless. Reject with explicit hint about correct syntax.
+    """
+    storage = _storage_with_note(tmp_path)
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md",
+            title="New",
+            body="# H\n[[forward:not-yet-created|alias]] [[wiki/existing]]",
+            frontmatter={"gist": "x"},
+            storage=storage,
+        )
+    msg = str(exc.value).lower()
+    assert "forward" in msg
+    assert "alias" in msg
+    assert "[[forward:" in str(exc.value)  # error includes correct-form hint
+
+
+def test_forward_ref_without_alias_passes(tmp_path):
+    """Plain `[[forward:X]]` (no pipe) remains valid — Phase 8 contract unchanged."""
+    storage = _storage_with_note(tmp_path)
+    warnings = validate_note(
+        path="wiki/new.md",
+        title="New",
+        body="# H\n[[forward:not-yet-created]] [[wiki/existing]]",
+        frontmatter={"gist": "x"},
+        storage=storage,
+    )
+    assert isinstance(warnings, list)

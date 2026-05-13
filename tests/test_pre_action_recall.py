@@ -166,3 +166,102 @@ def test_run_recall_zero_results():
     fake_engine = MagicMock()
     fake_engine.search.return_value = []
     assert run_recall(query="x", scope=None, config=cfg, engine=fake_engine) == []
+
+
+# ---------- CLI subcommand integration ----------
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+@pytest.fixture
+def populated_vault(tmp_path: Path) -> Path:
+    """Minimal vault with one feedback note that matches 'git commit' query."""
+    vault = tmp_path / "vault"
+    (vault / "feedback").mkdir(parents=True)
+    note = vault / "feedback" / "commit-style.md"
+    note.write_text(
+        "---\n"
+        "name: commit-style\n"
+        "type: feedback\n"
+        "scope: global\n"
+        "gist: Не добавляй Co-Authored-By Claude в коммиты\n"
+        "---\n\n"
+        "# Commit style\n\n"
+        "Без AI-trailer'ов. Никаких [[wiki/claude-code]] упоминаний в commit message.\n",
+        encoding="utf-8",
+    )
+    return vault
+
+
+def _run_cli(stdin_payload: dict, vault: Path) -> tuple[int, str, str]:
+    """Run `python -m symbiosis_brain pre-action-recall` with payload via stdin pipe."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
+         "--vault", str(vault)],
+        input=json.dumps(stdin_payload),
+        capture_output=True, text=True, timeout=30,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_cli_emits_additional_context_for_bash_commit(populated_vault: Path):
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'feat: x'"},
+        "session_id": "test-session-123",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert "additionalContext" in out
+    data = json.loads(out)
+    assert data["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "[recall:" in data["hookSpecificOutput"]["additionalContext"]
+
+
+def test_cli_emits_nothing_for_bash_ls(populated_vault: Path):
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls -la"},
+        "session_id": "test-session-123",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert out.strip() == ""  # silent skip — not in whitelist
+
+
+def test_cli_emits_nothing_for_unknown_tool(populated_vault: Path):
+    payload = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "/x"},
+        "session_id": "test-session-123",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert out.strip() == ""
+
+
+def test_cli_emits_nothing_when_kill_switch_set(populated_vault: Path, monkeypatch):
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED", "1")
+    payload = {
+        "tool_name": "Task",
+        "tool_input": {"prompt": "anything"},
+        "session_id": "test-session-123",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert out.strip() == ""
+
+
+def test_cli_handles_malformed_stdin_json(populated_vault: Path):
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
+         "--vault", str(populated_vault)],
+        input="{not valid",
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0  # fail-open
+    assert proc.stdout.strip() == ""  # silent skip

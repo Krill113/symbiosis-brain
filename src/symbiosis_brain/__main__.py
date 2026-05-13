@@ -110,12 +110,102 @@ def _run_prewarm(argv: list[str]) -> int:
     return 0
 
 
+def _run_pre_action_recall(argv: list[str]) -> int:
+    """Pre-action recall subcommand for PreToolUse hook (B1).
+
+    Reads hook payload from stdin (piped by bash wrapper to avoid Windows
+    arg-length cap on large Task prompts), applies config + whitelist +
+    type filter, calls SearchEngine, formats top-N hits as JSON for hook.
+
+    Fail-open: any unexpected error → exit 0 + empty stdout.
+    """
+    import argparse
+    import json
+    import os
+    from pathlib import Path
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    # Kill-switch (env var; no config-file roundtrip needed)
+    if os.environ.get("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED") == "1":
+        return 0
+
+    parser = argparse.ArgumentParser(prog="symbiosis_brain pre-action-recall")
+    parser.add_argument("--vault", required=True)
+    args = parser.parse_args(argv)
+
+    # Read PreToolUse payload from stdin (piped by bash wrapper)
+    try:
+        payload_str = sys.stdin.read()
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        return 0  # fail-open
+
+    tool_name = payload.get("tool_name") or ""
+    tool_input = payload.get("tool_input") or {}
+
+    from symbiosis_brain.pre_action_config import load_config
+    from symbiosis_brain.pre_action_recall import (
+        build_query, format_recall_block, run_recall,
+    )
+    from symbiosis_brain.bash_filter import matches_whitelist
+
+    cfg = load_config()
+    if not cfg.enabled:
+        return 0
+    if tool_name not in cfg.matchers:
+        return 0
+    if tool_name == "Bash":
+        cmd = tool_input.get("command") or ""
+        if not matches_whitelist(cmd, cfg.bash_whitelist):
+            return 0
+
+    query = build_query(tool_name, tool_input, cfg.query_max_chars)
+    if not query:
+        return 0
+
+    # Scope from env var (set by SessionStart hook via CLAUDE_ENV_FILE,
+    # propagated to this subprocess by uv run; not a bridge file).
+    scope = os.environ.get("SYMBIOSIS_BRAIN_SCOPE") or None
+
+    # Plug SearchEngine
+    from symbiosis_brain.storage import Storage
+    from symbiosis_brain.search import SearchEngine
+    from symbiosis_brain.sync import VaultSync
+
+    vault_path = Path(args.vault).expanduser().resolve()
+    if not vault_path.exists():
+        return 0
+    db_path = vault_path / ".index" / "brain.db"
+    storage = Storage(db_path)
+    VaultSync(vault_path, storage).sync_all()
+    engine = SearchEngine(storage)
+    engine.index_all()  # build/refresh vector index for semantic matching
+
+    hits = run_recall(query=query, scope=scope, config=cfg, engine=engine)
+    if not hits:
+        return 0
+
+    block = format_recall_block(query, hits)
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": block,
+        }
+    }
+    print(json.dumps(output, ensure_ascii=False))
+    return 0
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "search-gist":
         sys.exit(_run_search_gist(argv[1:]))
     if argv and argv[0] == "prewarm":
         sys.exit(_run_prewarm(argv[1:]))
+    if argv and argv[0] == "pre-action-recall":
+        sys.exit(_run_pre_action_recall(argv[1:]))
     # Default — MCP server
     from symbiosis_brain.server import main as server_main
     server_main()

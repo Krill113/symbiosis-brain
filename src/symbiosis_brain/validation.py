@@ -7,10 +7,11 @@ Two classes of rule:
 Hard-block list (structural breakage):
 - missing_gist: frontmatter has no gist field
 - malformed_frontmatter: frontmatter is not a dict (None, list, scalar, etc.)
+- gist_over_hard_limit: gist >140 chars
 - broken_outgoing_ref: any [[X]] in body resolves broken (excludes [[forward:X]])
 
 Soft-warn list (stylistic):
-- gist_too_long: gist >100 chars
+- gist_too_long: gist >100 chars (recommended ceiling)
 - few_wiki_links: <2 outgoing wiki-links
 
 Type↔folder mismatch is NOT enforced here — it's already enforced by lint.py
@@ -28,7 +29,8 @@ if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
 
-GIST_SOFT_LIMIT = 100  # chars; lint reports >100 as `gist_too_long`
+GIST_SOFT_LIMIT = 100  # chars; lint reports >100 as `gist_too_long`, soft warn at write-time
+GIST_HARD_LIMIT = 140  # chars; brain_write rejects gist >140 (Q5 closure 2026-05-14)
 MIN_WIKILINKS = 2
 FORWARD_REF_PREFIX = "forward:"
 
@@ -63,6 +65,11 @@ def _check_hard_blocks(
         raise ValidationError(
             "gist field is required (1-line summary, ≤100 chars). "
             "Add gist='...' to the brain_write call."
+        )
+    if len(gist_value) > GIST_HARD_LIMIT:
+        raise ValidationError(
+            f"gist {len(gist_value)} chars > hard limit {GIST_HARD_LIMIT}. "
+            f"Shorten gist to ≤{GIST_HARD_LIMIT} chars (recommended ≤{GIST_SOFT_LIMIT})."
         )
 
     # Malformed forward-ref check: `[[forward:X|alias]]` is structurally invalid.

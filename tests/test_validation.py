@@ -97,8 +97,9 @@ def test_forward_ref_marker_does_not_raise(tmp_path):
 
 
 def test_gist_too_long_returns_warning(tmp_path):
+    """gist in soft zone (>100 but ≤140) yields warning, not error."""
     storage = _storage_with_note(tmp_path)
-    long_gist = "x" * 150
+    long_gist = "x" * 130
     warnings = validate_note(
         path="wiki/new.md",
         title="New",
@@ -184,3 +185,36 @@ def test_forward_ref_without_alias_passes(tmp_path):
         storage=storage,
     )
     assert isinstance(warnings, list)
+
+
+def test_gist_above_hard_limit_raises(tmp_path):
+    """gist >140 chars hard-blocks write (Q5 closure 2026-05-14)."""
+    storage = _storage_with_note(tmp_path)
+    over_hard = "x" * 145
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md",
+            title="New",
+            body="# H\n[[wiki/existing]] [[wiki/existing]]",
+            frontmatter={"gist": over_hard},
+            storage=storage,
+        )
+    msg = str(exc.value)
+    assert "145" in msg
+    assert "140" in msg
+
+
+def test_gist_at_hard_limit_passes(tmp_path):
+    """gist exactly at hard limit (140) passes — strict `>` comparison."""
+    storage = _storage_with_note(tmp_path)
+    at_limit = "x" * 140
+    warnings = validate_note(
+        path="wiki/new.md",
+        title="New",
+        body="# H\n[[wiki/existing]] [[wiki/existing]]",
+        frontmatter={"gist": at_limit},
+        storage=storage,
+    )
+    # In soft zone (>100) — warning fires, but no ValidationError.
+    rules = [w.rule for w in warnings]
+    assert "gist_too_long" in rules

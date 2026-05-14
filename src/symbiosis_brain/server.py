@@ -19,6 +19,7 @@ from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.write_lock import note_write_lock
 from symbiosis_brain.validation import validate_note, ValidationError, new_links_introduced
+from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
 import frontmatter
 
@@ -717,6 +718,13 @@ async def _run_server(vault_path: Path):
     global _ready
     _ready = asyncio.Event()
 
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    watchdog = start_parent_watchdog(
+        on_parent_death=lambda: loop.call_soon_threadsafe(shutdown_event.set)
+    )
+
     async def _background_init():
         try:
             await asyncio.to_thread(_init, vault_path)
@@ -726,10 +734,51 @@ async def _run_server(vault_path: Path):
         finally:
             _ready.set()
 
-    asyncio.create_task(_background_init())
+    try:
+        init_task = asyncio.create_task(_background_init())
 
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+        async with stdio_server() as (read_stream, write_stream):
+            server_task = asyncio.create_task(
+                app.run(
+                    read_stream, write_stream, app.create_initialization_options()
+                )
+            )
+            shutdown_task = asyncio.create_task(shutdown_event.wait())
+
+            await asyncio.wait(
+                [server_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for t in (server_task, shutdown_task, init_task):
+                if not t.done():
+                    t.cancel()
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        server_task,
+                        shutdown_task,
+                        init_task,
+                        return_exceptions=True,
+                    ),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("graceful shutdown timed out after 2s")
+    finally:
+        watchdog.stop()
+        # stdio_server() is an anyio task group; its __aexit__ blocks on a
+        # `while self._tasks` loop waiting for stdin_reader/stdout_writer.
+        # On Windows Proactor loop those teardowns are known to hang
+        # (cpython#89237). When watchdog fired (parent dead) there is no
+        # client to receive any graceful response, so force-exit. SQLite
+        # storage is configured with isolation_level=None (autocommit) +
+        # PRAGMA journal_mode=WAL (see storage.py:14, 25), so os._exit is
+        # safe — WAL handles crash recovery by design.
+        if shutdown_event.is_set():
+            import os as _os
+            _os._exit(0)
 
 
 if __name__ == "__main__":

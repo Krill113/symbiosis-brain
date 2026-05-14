@@ -175,3 +175,75 @@ def test_ppid_zero_fires_callback_immediately():
 
     callback.assert_called_once()
     kernel32_mock.OpenProcess.assert_not_called()
+
+
+def test_callback_exception_does_not_crash_thread(caplog):
+    """A raising callback is logged but does not propagate."""
+    import logging
+    caplog.set_level(logging.ERROR, logger="symbiosis_brain.parent_watchdog")
+
+    kernel32_mock, fire_signal = _make_win32_kernel32_mock()
+
+    def raising_callback():
+        raise RuntimeError("intentional test failure")
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=12345):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(raising_callback)
+        fire_signal()
+        handle._thread.join(timeout=2)
+
+    assert not handle._thread.is_alive()
+    # caplog.text is the formatted log output — reliable across pytest versions
+    assert "watchdog callback raised" in caplog.text
+
+
+def test_callback_fires_exactly_once_even_if_thread_loops(caplog):
+    """The fired guard ensures multiple WaitForSingleObject returns can't double-fire.
+    (In practice the thread exits after one WSO return, but the guard is belt-and-suspenders.)"""
+    kernel32_mock, fire_signal = _make_win32_kernel32_mock()
+    fire_count = [0]
+
+    def counting_callback():
+        fire_count[0] += 1
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=12345):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(counting_callback)
+        fire_signal()
+        handle._thread.join(timeout=2)
+
+    assert fire_count[0] == 1
+    assert handle._fired.is_set()
+
+
+def test_handle_close_on_stop():
+    """_wait_loop's finally closes the kernel handle exactly once when signaled.
+    Subsequent stop() on the returned handle is idempotent (no-op since _handle
+    was cleared by _wait_loop, or guarded by exception-swallowing try/except)."""
+    kernel32_mock, fire_signal = _make_win32_kernel32_mock()
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=12345):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(lambda: None)
+        # CloseHandle hasn't been called from stop() yet
+        close_calls_before = kernel32_mock.CloseHandle.call_count
+
+        fire_signal()
+        handle._thread.join(timeout=2)
+        # _wait_loop closes the handle in its finally — that's 1 call.
+        close_calls_after_thread = kernel32_mock.CloseHandle.call_count
+        assert close_calls_after_thread == close_calls_before + 1
+
+    # stop() after the thread already closed it — guarded by _handle = None,
+    # so no extra CloseHandle invocation.
+    handle.stop()

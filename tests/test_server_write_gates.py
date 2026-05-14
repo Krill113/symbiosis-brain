@@ -81,7 +81,8 @@ async def test_brain_write_broken_ref_does_not_write_file(
 async def test_brain_write_long_gist_writes_with_warning(
     initialized_server_with_anchor, tmp_vault_with_taxonomy: Path,
 ):
-    long_gist = "x" * 150
+    """Soft-zone gist (>100 but ≤140) writes successfully with warning."""
+    long_gist = "x" * 130
     text = await _call("brain_write", {
         "path": "wiki/new.md",
         "title": "New",
@@ -89,7 +90,7 @@ async def test_brain_write_long_gist_writes_with_warning(
         "gist": long_gist,
     })
     assert "saved" in text.lower()
-    assert "gist" in text.lower() and "150" in text
+    assert "gist" in text.lower() and "130" in text
     assert (tmp_vault_with_taxonomy / "wiki" / "new.md").exists()
 
 

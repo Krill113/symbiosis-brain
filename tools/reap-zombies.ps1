@@ -46,7 +46,10 @@ function Test-HasLiveClaudeAncestor {
 Write-Host "Scanning for orphaned symbiosis-brain processes..."
 
 $candidates = Get-CimInstance Win32_Process |
-    Where-Object { $_.CommandLine -match 'symbiosis[_-]brain' } |
+    Where-Object {
+        $_.CommandLine -match 'symbiosis[_-]brain' -and
+        ($_.Name -like 'python*' -or $_.Name -like 'symbiosis-brain*')
+    } |
     Where-Object { -not (Test-HasLiveClaudeAncestor $_.ProcessId) }
 
 if (-not $candidates) {

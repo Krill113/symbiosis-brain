@@ -10,12 +10,19 @@ See docs/superpowers/specs/2026-05-14-mcp-zombie-shutdown-design.md.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
+import os
 import sys
 import threading
+from ctypes import wintypes
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+SYNCHRONIZE = 0x00100000
+INFINITE = 0xFFFFFFFF
+WAIT_OBJECT_0 = 0x0
 
 
 class WatchdogHandle:
@@ -35,7 +42,6 @@ class WatchdogHandle:
         """Best-effort handle close. Safe to call multiple times."""
         if self._handle:
             try:
-                import ctypes
                 ctypes.windll.kernel32.CloseHandle(self._handle)
             except Exception:
                 pass
@@ -53,5 +59,54 @@ def start_parent_watchdog(on_parent_death: Callable[[], None]) -> WatchdogHandle
     if sys.platform != "win32":
         return _INERT
 
-    # Win32 path implemented in Task 2.
-    raise NotImplementedError("Win32 path not yet implemented")
+    ppid = os.getppid()
+    if ppid <= 0:
+        on_parent_death()  # already orphaned at startup
+        return _INERT
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, ppid)
+    if not handle:
+        # Degraded path — Task 3 covers tests for this.
+        err = ctypes.get_last_error()
+        logger.warning(
+            "watchdog: OpenProcess(%d) failed err=%d — degraded", ppid, err
+        )
+        return _INERT
+
+    # Race-window check — Task 3 covers tests for this.
+    if kernel32.WaitForSingleObject(handle, 0) == WAIT_OBJECT_0:
+        on_parent_death()
+        kernel32.CloseHandle(handle)
+        return _INERT
+
+    logger.info("watchdog: active, PPID=%d", ppid)
+    fired = threading.Event()
+
+    def _wait_loop():
+        try:
+            kernel32.WaitForSingleObject(handle, INFINITE)
+            if not fired.is_set():
+                fired.set()
+                logger.info(
+                    "watchdog: parent %d terminated, initiating shutdown", ppid
+                )
+                try:
+                    on_parent_death()
+                except Exception:
+                    logger.exception("watchdog callback raised")
+        finally:
+            try:
+                kernel32.CloseHandle(handle)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_wait_loop, daemon=True, name="parent-watchdog")
+    t.start()
+    return WatchdogHandle(thread=t, kernel_handle=handle, fired=fired)

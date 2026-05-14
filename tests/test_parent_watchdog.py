@@ -119,3 +119,59 @@ def test_win32_openprocess_called_with_synchronize_and_ppid():
     assert call_args[0] == SYNCHRONIZE
     assert call_args[1] is False  # bInheritHandle
     assert call_args[2] == 99999  # PPID
+
+
+def test_win32_openprocess_returns_null_degrades_gracefully():
+    """If OpenProcess returns NULL (no permissions / parent gone), watchdog is inert."""
+    kernel32_mock = MagicMock()
+    kernel32_mock.OpenProcess = MagicMock(return_value=0)  # NULL handle
+    callback = MagicMock()
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=12345):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(callback)
+
+    # Inert handle returned, callback never called, no thread spawned.
+    assert handle._thread is None
+    callback.assert_not_called()
+    # WaitForSingleObject not called either — we bailed before that.
+    kernel32_mock.WaitForSingleObject.assert_not_called()
+
+
+def test_win32_parent_already_dead_fires_callback_synchronously():
+    """If WaitForSingleObject(handle, 0) returns WAIT_OBJECT_0 immediately,
+    fire callback synchronously without spawning a thread."""
+    kernel32_mock, _ = _make_win32_kernel32_mock(immediate_signal=True)
+    callback = MagicMock()
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=12345):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(callback)
+
+    # No thread spawned — synchronous fire path.
+    assert handle._thread is None
+    callback.assert_called_once()
+    # Handle was closed.
+    kernel32_mock.CloseHandle.assert_called_once()
+
+
+def test_ppid_zero_fires_callback_immediately():
+    """If os.getppid() returns 0 or negative (impossible-but-defensive), fire fast."""
+    kernel32_mock = MagicMock()  # Should NOT be called
+    callback = MagicMock()
+
+    with patch.object(sys, "platform", "win32"), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("os.getppid", return_value=0):
+        from symbiosis_brain.parent_watchdog import start_parent_watchdog
+
+        handle = start_parent_watchdog(callback)
+
+    callback.assert_called_once()
+    kernel32_mock.OpenProcess.assert_not_called()

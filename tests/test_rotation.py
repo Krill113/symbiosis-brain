@@ -3,7 +3,7 @@ from datetime import date as Date
 
 import pytest
 
-from symbiosis_brain.rotation import HandoffSection, parse_handoff_sections
+from symbiosis_brain.rotation import HandoffSection, extract_gist, parse_handoff_sections
 
 
 def test_module_imports():
@@ -76,3 +76,31 @@ def test_handoff_inside_fenced_code_block_ignored():
     assert sections[0].date == Date(2026, 5, 14)
     assert "## Handoff 2026-05-08" in sections[0].body  # code-fence content stays in body
     assert "more real body" in sections[0].body
+
+
+def test_gist_from_shipped_simple():
+    body = "## Handoff 2026-05-14\n**Shipped:** Closed bug X. More text.\n"
+    assert extract_gist(body) == "Closed bug X"
+
+
+def test_gist_from_shipped_with_parenthetical():
+    body = "## Handoff 2026-05-14\n**Shipped (full day):** Did the thing. Etc.\n"
+    assert extract_gist(body) == "Did the thing"
+
+
+def test_gist_truncates_at_140():
+    long = "x" * 200
+    body = f"## Handoff 2026-05-14\n**Shipped:** {long}\n"
+    g = extract_gist(body)
+    assert len(g) == 140
+    assert g.endswith("…")
+
+
+def test_gist_fallback_first_line():
+    body = "## Handoff 2026-05-14\nFirst informative line. Second.\n"
+    assert extract_gist(body) == "First informative line"
+
+
+def test_gist_literal_fallback():
+    body = "## Handoff 2026-05-14\n"
+    assert extract_gist(body) == "Handoff"

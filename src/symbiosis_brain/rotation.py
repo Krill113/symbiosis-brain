@@ -15,6 +15,13 @@ HANDOFF_HEADING_RE = re.compile(
     r"^## Handoff (\d{4}-\d{2}-\d{2})(?:[ \t]+(.+?))?[ \t]*$"
 )  # used on single line — no MULTILINE flag
 
+GIST_MAX = 140
+
+SHIPPED_RE = re.compile(
+    r"\*\*Shipped[^*\n]*?\*\*\s*(.+?)(?=\n\n|\n-\s|\n\*\*|\Z)",
+    re.DOTALL,
+)
+
 
 @dataclass(frozen=True)
 class HandoffSection:
@@ -62,3 +69,23 @@ def parse_handoff_sections(text: str) -> list[HandoffSection]:
             start=start, end=end, date=d, suffix=suffix, body=text[start:end],
         ))
     return sections
+
+
+def extract_gist(section_body: str) -> str:
+    """Extract gist: first phrase of '**Shipped:**', then first non-heading line, then literal."""
+    m = SHIPPED_RE.search(section_body)
+    raw = m.group(1).strip() if m else None
+    if not raw:
+        # Fallback: first non-empty, non-heading line of body
+        for line in section_body.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                raw = stripped
+                break
+    if not raw:
+        return "Handoff"
+    # First sentence — stop at . ; or : (followed by space or end)
+    first = re.split(r"[.;:](?:\s|$)", raw, maxsplit=1)[0].strip()
+    if len(first) <= GIST_MAX:
+        return first
+    return first[: GIST_MAX - 1] + "…"

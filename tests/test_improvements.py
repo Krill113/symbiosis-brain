@@ -8,7 +8,7 @@ from symbiosis_brain.sync import VAULT_DIRS
 class TestVaultDirs:
     def test_vault_dirs_contains_all_directories(self):
         expected = {"projects", "wiki", "research", "user", "decisions",
-                    "patterns", "mistakes", "feedback", "reference"}
+                    "patterns", "mistakes", "feedback", "reference", "archive"}
         assert set(VAULT_DIRS) == expected
 
     def test_tmp_vault_has_all_dirs(self, tmp_vault: Path):

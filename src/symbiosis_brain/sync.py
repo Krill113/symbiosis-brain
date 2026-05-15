@@ -23,7 +23,7 @@ class SyncResult:
             return self.skipped
         raise KeyError(key)
 
-VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference"]
+VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference", "archive"]
 MD_GLOB = "**/*.md"
 SKIP_FILES = {"CLAUDE.md", "README.md", "log.md"}
 

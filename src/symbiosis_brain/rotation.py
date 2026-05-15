@@ -209,7 +209,7 @@ def render_archive_file(
 
     frontmatter = (
         f"---\n"
-        f"title: {title}\n"
+        f"title: {_yaml_quote_string(title)}\n"
         f"type: project\n"
         f"scope: {scope}\n"
         f"gist: {_yaml_quote_string(gist)}\n"

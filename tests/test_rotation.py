@@ -256,7 +256,7 @@ def test_render_archive_file_with_suffix():
 def test_render_archive_file_no_suffix():
     s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
     out = render_archive_file(s, scope="ld", slug=None, gist="X")
-    assert "title: Handoff 2026-05-14\n" in out
+    assert 'title: "Handoff 2026-05-14"\n' in out
     assert "# Handoff 2026-05-14\n" in out
 
 
@@ -292,6 +292,31 @@ def test_render_archive_file_gist_with_quote_escaped():
     fm_text = out.split("---\n")[1]
     parsed = yaml.safe_load(fm_text)
     assert parsed["gist"] == 'He said "hi"'
+
+
+def test_render_archive_file_title_with_colon_in_suffix():
+    """Regression: title with ':' in suffix must be YAML-quoted to avoid map-key parsing."""
+    import yaml
+    s = _section(
+        Date(2026, 5, 16),
+        suffix="— Refactor: cleanup",
+        body="## Handoff 2026-05-16 — Refactor: cleanup\n**Shipped:** X.\n",
+    )
+    out = render_archive_file(s, scope="demo", slug="refactor-cleanup", gist="X")
+    fm_text = out.split("---\n")[1]
+    parsed = yaml.safe_load(fm_text)
+    assert parsed["title"] == "Handoff 2026-05-16 — Refactor: cleanup"
+    assert isinstance(parsed["title"], str)
+
+
+def test_render_archive_file_title_no_suffix_still_parses():
+    """Regression: title with simple format must still parse correctly as quoted string."""
+    import yaml
+    s = _section(Date(2026, 5, 16), suffix=None, body="## Handoff 2026-05-16\nBody.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="ok")
+    fm_text = out.split("---\n")[1]
+    parsed = yaml.safe_load(fm_text)
+    assert parsed["title"] == "Handoff 2026-05-16"
 
 
 def test_render_archive_index_entry_with_slug():

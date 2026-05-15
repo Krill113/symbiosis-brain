@@ -287,6 +287,34 @@ async def list_tools() -> list[Tool]:
                 "required": ["path"],
             },
         ),
+        Tool(
+            name="brain_rotate_handoffs",
+            description=(
+                "Rotate stale `## Handoff YYYY-MM-DD` sections from project cards "
+                "into archive/handoffs/<scope>-<date>[-<slug>].md. Keeps the N most-recent "
+                "distinct dates inline; archives the rest with a compact `## Archive` index "
+                "in the card. Idempotent — re-running without new handoffs is a no-op."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "description": "Target project scope (e.g. 'symbiosis-brain'). Omit for auto-discovery walk of all projects/*.md.",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Preview without writing files / mutating cards.",
+                    },
+                    "inline_days": {
+                        "type": "integer",
+                        "default": 2,
+                        "description": "How many most-recent distinct handoff dates to keep inline (1-7).",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -696,6 +724,39 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if result["sources_modified"]:
             msg += f"; rewrote {len(result['sources_modified'])} source(s) with stubs"
         return [TextContent(type="text", text=msg)]
+
+    elif name == "brain_rotate_handoffs":
+        from symbiosis_brain.rotation import rotate_handoffs, ConflictError
+        scope = arguments.get("scope")
+        dry_run = arguments.get("dry_run", False)
+        inline_days = arguments.get("inline_days", 2)
+        try:
+            report = rotate_handoffs(
+                vault=_vault_path,
+                scope=scope,
+                dry_run=dry_run,
+                inline_days=inline_days,
+            )
+        except (ValueError, ConflictError) as e:
+            return [TextContent(type="text", text=f"Error: {e}")]
+
+        # After real rotation: re-sync affected files into brain DB
+        if not dry_run:
+            for rel in report.archive_files_created:
+                _sync.sync_one(rel)
+            for rel in report.bytes_freed_per_card:
+                _sync.sync_one(rel)
+
+        payload = {
+            "cards_processed": report.cards_processed,
+            "cards_modified": report.cards_modified,
+            "sections_archived": report.sections_archived,
+            "archive_files_created": report.archive_files_created,
+            "skipped": [{"card": s.card, "reason": s.reason} for s in report.skipped],
+            "bytes_freed_per_card": report.bytes_freed_per_card,
+            "dry_run": dry_run,
+        }
+        return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

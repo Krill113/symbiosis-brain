@@ -228,3 +228,76 @@ def test_select_all_within_window():
     inline, cands = select_candidates_to_archive(sections, inline_days=2)
     assert len(inline) == 2
     assert cands == []
+
+
+from symbiosis_brain.rotation import (
+    render_archive_file, render_archive_index_entry, apply_archive_to_card,
+)
+
+
+def test_render_archive_file_with_suffix():
+    s = _section(
+        Date(2026, 5, 14), suffix="— MCP Zombie Shutdown shipped",
+        body="## Handoff 2026-05-14 — MCP Zombie Shutdown shipped\n\n**Shipped:** Closed bug.\n",
+    )
+    out = render_archive_file(s, scope="symbiosis-brain", slug="mcp-zombie", gist="Closed bug")
+    assert out.startswith("---\n")
+    assert "type: project" in out
+    assert "scope: symbiosis-brain" in out
+    assert "gist: Closed bug" in out
+    assert "valid_from: 2026-05-14" in out
+    assert "tags: [handoff, symbiosis-brain]" in out
+    assert "# Handoff 2026-05-14 — MCP Zombie Shutdown shipped" in out
+    assert "**Shipped:** Closed bug" in out
+    assert "Архивный handoff" in out
+
+
+def test_render_archive_file_no_suffix():
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
+    out = render_archive_file(s, scope="ld", slug=None, gist="X")
+    assert "title: Handoff 2026-05-14\n" in out
+    assert "# Handoff 2026-05-14\n" in out
+
+
+def test_render_archive_index_entry_with_slug():
+    s = _section(Date(2026, 5, 14))
+    line = render_archive_index_entry(s, scope="symbiosis-brain", slug="mcp-zombie", gist="Closed bug X")
+    assert line == "- 2026-05-14: [[archive/handoffs/symbiosis-brain-2026-05-14-mcp-zombie]] — Closed bug X"
+
+
+def test_render_archive_index_entry_no_slug():
+    s = _section(Date(2026, 5, 14))
+    line = render_archive_index_entry(s, scope="ld", slug=None, gist="Some shipped item")
+    assert line == "- 2026-05-14: [[archive/handoffs/ld-2026-05-14]] — Some shipped item"
+
+
+def test_apply_archive_to_card_no_existing_archive_section():
+    card = (
+        "# Project\n\n"
+        "## Roadmap\nrows\n\n"
+        "## Handoff 2026-05-14\nrecent body\n\n"
+        "## Handoff 2026-05-08\nold body\n"
+    )
+    sections = parse_handoff_sections(card)
+    old = [s for s in sections if s.date == Date(2026, 5, 8)]
+    entry = "- 2026-05-08: [[archive/handoffs/x-2026-05-08]] — Old item"
+    out = apply_archive_to_card(card, [(old[0], entry)])
+    assert "## Handoff 2026-05-08" not in out
+    assert "## Handoff 2026-05-14" in out
+    assert "## Archive" in out
+    assert entry in out
+
+
+def test_apply_archive_merges_existing_archive_section():
+    card = (
+        "## Handoff 2026-05-14\nA\n\n"
+        "## Handoff 2026-05-13\nB\n\n"
+        "## Handoff 2026-05-08\nC\n\n"
+        "## Archive\n\nСтарые handoff'ы (по убыванию даты):\n\n"
+        "- 2026-04-29: [[archive/handoffs/x-2026-04-29]] — Older item\n"
+    )
+    sections = parse_handoff_sections(card)
+    old = [s for s in sections if s.date == Date(2026, 5, 8)]
+    entry = "- 2026-05-08: [[archive/handoffs/x-2026-05-08]] — Item C"
+    out = apply_archive_to_card(card, [(old[0], entry)])
+    assert out.index(entry) < out.index("Older item")

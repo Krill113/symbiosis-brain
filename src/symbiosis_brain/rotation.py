@@ -165,6 +165,111 @@ def assign_slugs(sections: list[HandoffSection]) -> list[Optional[str]]:
     return result
 
 
+ARCHIVE_HEADING = "## Archive"
+ARCHIVE_INTRO = "Старые handoff'ы (по убыванию даты):"
+INDEX_ENTRY_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}):")
+INDEX_ONELINER_MAX = 100
+
+
+def render_archive_file(
+    section: HandoffSection,
+    scope: str,
+    slug: Optional[str],
+    gist: str,
+) -> str:
+    """Render full archive file content (frontmatter + body + footer)."""
+    date_str = section.date.isoformat()
+    # Strip leading punctuation from suffix if it starts with em-dash
+    title_suffix = ""
+    if section.suffix:
+        s = section.suffix.lstrip("—-").strip()
+        title_suffix = f" — {s}" if s else ""
+    title = f"Handoff {date_str}{title_suffix}"
+
+    body_lines = section.body.splitlines()
+    # Drop heading line(s) — first '## Handoff ...' line, plus any immediately following blank line
+    if body_lines and body_lines[0].startswith("## Handoff"):
+        body_lines = body_lines[1:]
+    while body_lines and not body_lines[0].strip():
+        body_lines = body_lines[1:]
+    body_content = "\n".join(body_lines).rstrip()
+
+    frontmatter = (
+        f"---\n"
+        f"title: {title}\n"
+        f"type: project\n"
+        f"scope: {scope}\n"
+        f"gist: {gist}\n"
+        f"valid_from: {date_str}\n"
+        f"tags: [handoff, {scope}]\n"
+        f"---\n"
+    )
+    footer = f"\n---\n*Архивный handoff. Свежие — в [[projects/{scope}]] §«Handoff …».*\n"
+    return f"{frontmatter}\n# {title}\n\n{body_content}\n{footer}"
+
+
+def render_archive_index_entry(
+    section: HandoffSection,
+    scope: str,
+    slug: Optional[str],
+    gist: str,
+) -> str:
+    """One '## Archive' index line."""
+    date_str = section.date.isoformat()
+    slug_part = f"-{slug}" if slug else ""
+    link = f"archive/handoffs/{scope}-{date_str}{slug_part}"
+    oneliner = gist[:INDEX_ONELINER_MAX].rstrip()
+    return f"- {date_str}: [[{link}]] — {oneliner}"
+
+
+def apply_archive_to_card(
+    card_text: str,
+    archived: list[tuple[HandoffSection, str]],
+) -> str:
+    """Remove archived sections from card; insert/merge into '## Archive' index."""
+    if not archived:
+        return card_text
+    # Remove spans (in reverse order to keep indices stable)
+    spans = sorted([(s.start, s.end) for s, _ in archived])
+    out_parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        out_parts.append(card_text[cursor:start])
+        cursor = end
+    out_parts.append(card_text[cursor:])
+    cleaned = "".join(out_parts)
+    # Collapse leftover triple+ blank lines
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+
+    new_entries = [entry for _, entry in archived]
+    archive_re = re.compile(r"(^## Archive\b.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+    m = archive_re.search(cleaned)
+
+    def _date_key(line: str) -> str:
+        mm = INDEX_ENTRY_RE.match(line)
+        return mm.group(1) if mm else ""
+
+    if m:
+        existing_block = m.group(1)
+        existing_entries = [
+            line for line in existing_block.splitlines()
+            if INDEX_ENTRY_RE.match(line)
+        ]
+        all_entries = sorted(existing_entries + new_entries, key=_date_key, reverse=True)
+        new_archive_block = (
+            f"{ARCHIVE_HEADING}\n\n{ARCHIVE_INTRO}\n\n"
+            + "\n".join(all_entries) + "\n\n"
+        )
+        return cleaned[: m.start()] + new_archive_block + cleaned[m.end():]
+    else:
+        sorted_new = sorted(new_entries, key=_date_key, reverse=True)
+        new_archive_block = (
+            f"\n{ARCHIVE_HEADING}\n\n{ARCHIVE_INTRO}\n\n"
+            + "\n".join(sorted_new) + "\n"
+        )
+        return cleaned.rstrip() + new_archive_block
+
+
 def select_candidates_to_archive(
     sections: list[HandoffSection],
     inline_days: int = 2,

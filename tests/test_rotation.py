@@ -178,3 +178,53 @@ def test_assign_slugs_separate_dates_no_collision():
         _section(Date(2026, 5, 13), suffix="evening"),
     ]
     assert assign_slugs(sections) == ["evening", "evening"]
+
+
+from symbiosis_brain.rotation import select_candidates_to_archive
+
+
+def test_select_keeps_2_distinct_dates():
+    sections = [
+        _section(Date(2026, 5, 14)),
+        _section(Date(2026, 5, 13)),
+        _section(Date(2026, 5, 12)),
+        _section(Date(2026, 5, 8)),
+    ]
+    inline, cands = select_candidates_to_archive(sections, inline_days=2)
+    assert {s.date for s in inline} == {Date(2026, 5, 14), Date(2026, 5, 13)}
+    assert {s.date for s in cands} == {Date(2026, 5, 12), Date(2026, 5, 8)}
+
+
+def test_select_burst_all_inline():
+    sections = [
+        _section(Date(2026, 5, 14)),
+        _section(Date(2026, 5, 14), suffix="evening"),
+        _section(Date(2026, 5, 14), suffix="late"),
+        _section(Date(2026, 5, 14), suffix="night"),
+        _section(Date(2026, 5, 13)),
+    ]
+    inline, cands = select_candidates_to_archive(sections, inline_days=2)
+    assert len(inline) == 5
+    assert cands == []
+
+
+def test_select_sparse_keeps_recent_distinct():
+    sections = [
+        _section(Date(2026, 5, 14)),
+        _section(Date(2026, 4, 20)),
+        _section(Date(2026, 4, 15)),
+    ]
+    inline, cands = select_candidates_to_archive(sections, inline_days=2)
+    assert {s.date for s in inline} == {Date(2026, 5, 14), Date(2026, 4, 20)}
+    assert {s.date for s in cands} == {Date(2026, 4, 15)}
+
+
+def test_select_empty():
+    assert select_candidates_to_archive([], inline_days=2) == ([], [])
+
+
+def test_select_all_within_window():
+    sections = [_section(Date(2026, 5, 14)), _section(Date(2026, 5, 13))]
+    inline, cands = select_candidates_to_archive(sections, inline_days=2)
+    assert len(inline) == 2
+    assert cands == []

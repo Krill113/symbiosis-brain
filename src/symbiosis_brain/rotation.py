@@ -163,3 +163,23 @@ def assign_slugs(sections: list[HandoffSection]) -> list[Optional[str]]:
                     result[idx] = final
                     used_slugs.add(final)
     return result
+
+
+def select_candidates_to_archive(
+    sections: list[HandoffSection],
+    inline_days: int = 2,
+) -> tuple[list[HandoffSection], list[HandoffSection]]:
+    """Return (inline, candidates_for_archive).
+
+    Inline = sections whose date is one of the N most recent distinct dates.
+    Candidates = everything else.
+    """
+    if not sections:
+        return [], []
+    if inline_days < 1 or inline_days > 7:
+        raise ValueError(f"inline_days must be in [1..7], got {inline_days}")
+    distinct_dates_desc = sorted({s.date for s in sections}, reverse=True)
+    keep_dates = set(distinct_dates_desc[:inline_days])
+    inline = [s for s in sections if s.date in keep_dates]
+    candidates = [s for s in sections if s.date not in keep_dates]
+    return inline, candidates

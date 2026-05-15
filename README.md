@@ -124,3 +124,16 @@ uv tool upgrade symbiosis-brain              # update
 **What about the name?** *Symbiosis* — a mutually beneficial partnership. The tool lives next to Claude; Claude becomes more useful; your knowledge survives the next `/compact`. Build your symbiosis.
 
 **How do I delete everything?** `symbiosis-brain uninstall` restores your `settings.json` from backup. The vault folder is preserved — delete it manually if you want a clean slate.
+
+## Release process (maintainer notes)
+
+Releases are auto-published to PyPI on `v*` git tags via GitHub Actions (Trusted Publisher OIDC, no API tokens).
+
+Workflow:
+
+1. `hatch version <patch|minor|major>` — bumps `src/symbiosis_brain/__init__.py`
+2. Move `[Unreleased]` items in `CHANGELOG.md` into a new `[X.Y.Z] — YYYY-MM-DD` section
+3. `git commit -am "release: vX.Y.Z"`
+4. `git tag vX.Y.Z && git push --follow-tags`
+5. Watch [Actions](https://github.com/Krill113/symbiosis-brain/actions) — `build`, `publish`, `verify` jobs must all pass
+6. Verify on [pypi.org/project/symbiosis-brain](https://pypi.org/project/symbiosis-brain/)

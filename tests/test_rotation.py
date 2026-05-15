@@ -400,3 +400,32 @@ def test_rotate_invalid_inline_days(tmp_path):
         rotate_handoffs(vault=vault, scope="demo", inline_days=0)
     with pytest.raises(ValueError):
         rotate_handoffs(vault=vault, scope="demo", inline_days=10)
+
+
+def test_auto_discovery_walks_all_project_cards(tmp_path):
+    vault = _make_vault(tmp_path)
+    _write(vault / "projects" / "alpha.md", (
+        "## Handoff 2026-05-14\n**Shipped:** A.\n\n"
+        "## Handoff 2026-05-01\n**Shipped:** old A.\n"
+    ))
+    _write(vault / "projects" / "beta.md", (
+        "## Handoff 2026-05-14\n**Shipped:** B.\n"
+    ))
+    report = rotate_handoffs(vault=vault, scope=None, inline_days=1)
+    assert report.cards_processed == 2
+    assert report.sections_archived == 1  # only alpha has stale handoff
+    # Find the actual archive file (filename may include auto-slug)
+    archives = list((vault / "archive" / "handoffs").glob("alpha-2026-05-01*.md"))
+    assert len(archives) == 1
+    assert not list((vault / "archive" / "handoffs").glob("beta-*.md"))
+
+
+def test_auto_discovery_skips_archive_folder(tmp_path):
+    vault = _make_vault(tmp_path)
+    _write(vault / "projects" / "demo.md", "## Handoff 2026-05-14\n**Shipped:** OK.\n")
+    # Pre-existing archive should NOT be re-processed
+    _write(vault / "archive" / "handoffs" / "demo-2026-04-01.md", (
+        "---\ntype: project\nscope: demo\n---\n# Archived\n"
+    ))
+    report = rotate_handoffs(vault=vault, scope=None, inline_days=2)
+    assert report.cards_processed == 1  # only projects/demo.md

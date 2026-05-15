@@ -1,5 +1,6 @@
 """Unit tests for symbiosis_brain.rotation."""
 from datetime import date as Date
+from typing import Optional
 
 import pytest
 
@@ -104,3 +105,76 @@ def test_gist_fallback_first_line():
 def test_gist_literal_fallback():
     body = "## Handoff 2026-05-14\n"
     assert extract_gist(body) == "Handoff"
+
+
+from symbiosis_brain.rotation import _candidate_slug_for, assign_slugs
+
+
+def _section(date: Date, suffix: Optional[str] = None, body: str = "") -> "HandoffSection":
+    from symbiosis_brain.rotation import HandoffSection
+    return HandoffSection(start=0, end=10, date=date, suffix=suffix, body=body)
+
+
+def test_slug_from_em_dash_suffix():
+    s = _section(Date(2026, 5, 14), suffix="— MCP Zombie Shutdown shipped")
+    assert _candidate_slug_for(s) == "mcp-zombie-shutdown"
+
+
+def test_slug_from_word_suffix():
+    s = _section(Date(2026, 5, 14), suffix="evening")
+    assert _candidate_slug_for(s) == "evening"
+
+
+def test_slug_from_compound_suffix():
+    s = _section(Date(2026, 5, 14), suffix="late evening")
+    assert _candidate_slug_for(s) == "late-evening"
+
+
+def test_slug_from_shipped_fallback():
+    body = "## Handoff 2026-05-14\n**Shipped:** Phase 6 concurrency safety shipped.\n"
+    s = _section(Date(2026, 5, 14), suffix=None, body=body)
+    assert _candidate_slug_for(s) == "phase-6-concurrency-safety"
+
+
+def test_slug_none_when_no_signal():
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n")
+    assert _candidate_slug_for(s) is None
+
+
+def test_slug_strips_non_ascii():
+    s = _section(Date(2026, 5, 14), suffix="Финиш B1 shipped")
+    assert _candidate_slug_for(s) in ("b1", "finish-b1")  # transliteration may vary
+
+
+def test_assign_slugs_single_no_suffix():
+    sections = [_section(Date(2026, 5, 14))]
+    assert assign_slugs(sections) == [None]
+
+
+def test_assign_slugs_burst_no_suffix():
+    sections = [_section(Date(2026, 5, 14)), _section(Date(2026, 5, 14))]
+    assert assign_slugs(sections) == [None, "2"]
+
+
+def test_assign_slugs_distinct_suffixes_no_collision():
+    sections = [
+        _section(Date(2026, 5, 14), suffix="evening"),
+        _section(Date(2026, 5, 14), suffix="late evening"),
+    ]
+    assert assign_slugs(sections) == ["evening", "late-evening"]
+
+
+def test_assign_slugs_same_suffix_collision():
+    sections = [
+        _section(Date(2026, 5, 14), suffix="evening"),
+        _section(Date(2026, 5, 14), suffix="evening"),
+    ]
+    assert assign_slugs(sections) == ["evening", "evening-2"]
+
+
+def test_assign_slugs_separate_dates_no_collision():
+    sections = [
+        _section(Date(2026, 5, 14), suffix="evening"),
+        _section(Date(2026, 5, 13), suffix="evening"),
+    ]
+    assert assign_slugs(sections) == ["evening", "evening"]

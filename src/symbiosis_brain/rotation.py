@@ -89,3 +89,77 @@ def extract_gist(section_body: str) -> str:
     if len(first) <= GIST_MAX:
         return first
     return first[: GIST_MAX - 1] + "…"
+
+
+STOP_WORDS = {
+    "shipped", "done", "fix", "wip", "the", "a", "an", "is", "of", "to",
+    "—", "-", "&", "|",
+}
+SLUG_MAX_LEN = 30
+
+
+def _slugify(text: str, max_words: int = 4) -> str:
+    """Kebab-case, ASCII-only, drop stop-words, ≤SLUG_MAX_LEN chars."""
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    raw_words = re.findall(r"[a-zA-Z0-9]+", ascii_text)
+    words = [w.lower() for w in raw_words if w.lower() not in STOP_WORDS]
+    if not words:
+        return ""
+    slug = "-".join(words[:max_words])
+    return slug[:SLUG_MAX_LEN].rstrip("-")
+
+
+def _candidate_slug_for(section: HandoffSection) -> Optional[str]:
+    """Candidate slug from suffix or first phrase of '**Shipped**'. None if neither yields."""
+    if section.suffix:
+        slug = _slugify(section.suffix)
+        if slug:
+            return slug
+    m = SHIPPED_RE.search(section.body)
+    if m:
+        raw = m.group(1).strip()
+        first = re.split(r"[.;:](?:\s|$)", raw, maxsplit=1)[0]
+        slug = _slugify(first)
+        if slug:
+            return slug
+    return None
+
+
+def assign_slugs(sections: list[HandoffSection]) -> list[Optional[str]]:
+    """Assign final slug per section after collision resolution within same date.
+
+    None means filename uses '<scope>-<date>.md' (no -<slug>).
+    """
+    result: list[Optional[str]] = [None] * len(sections)
+    by_date: dict[Date, list[int]] = {}
+    for i, s in enumerate(sections):
+        by_date.setdefault(s.date, []).append(i)
+
+    for d, indices in by_date.items():
+        used_slugs: set[str] = set()
+        used_no_slug = False
+        for idx in indices:
+            cand = _candidate_slug_for(sections[idx])
+            if cand is None:
+                if not used_no_slug:
+                    result[idx] = None
+                    used_no_slug = True
+                else:
+                    n = 2
+                    while str(n) in used_slugs:
+                        n += 1
+                    result[idx] = str(n)
+                    used_slugs.add(str(n))
+            else:
+                if cand not in used_slugs:
+                    result[idx] = cand
+                    used_slugs.add(cand)
+                else:
+                    n = 2
+                    while f"{cand}-{n}" in used_slugs:
+                        n += 1
+                    final = f"{cand}-{n}"
+                    result[idx] = final
+                    used_slugs.add(final)
+    return result

@@ -174,6 +174,16 @@ INDEX_ENTRY_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}):")
 INDEX_ONELINER_MAX = 100
 
 
+def _yaml_quote_string(s: str) -> str:
+    """Wrap string for YAML scalar value: always double-quote, escape \\ and ".
+
+    Ensures the value parses as string regardless of content (digit-only,
+    leading '-', contains ':', etc.).
+    """
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def render_archive_file(
     section: HandoffSection,
     scope: str,
@@ -202,7 +212,7 @@ def render_archive_file(
         f"title: {title}\n"
         f"type: project\n"
         f"scope: {scope}\n"
-        f"gist: {gist}\n"
+        f"gist: {_yaml_quote_string(gist)}\n"
         f"valid_from: {date_str}\n"
         f"tags: [handoff, {scope}]\n"
         f"---\n"

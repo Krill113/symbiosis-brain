@@ -245,7 +245,7 @@ def test_render_archive_file_with_suffix():
     assert out.startswith("---\n")
     assert "type: project" in out
     assert "scope: symbiosis-brain" in out
-    assert "gist: Closed bug" in out
+    assert 'gist: "Closed bug"' in out
     assert "valid_from: 2026-05-14" in out
     assert "tags: [handoff, symbiosis-brain]" in out
     assert "# Handoff 2026-05-14 — MCP Zombie Shutdown shipped" in out
@@ -258,6 +258,40 @@ def test_render_archive_file_no_suffix():
     out = render_archive_file(s, scope="ld", slug=None, gist="X")
     assert "title: Handoff 2026-05-14\n" in out
     assert "# Handoff 2026-05-14\n" in out
+
+
+def test_render_archive_file_gist_with_leading_dash():
+    """Regression: gist that starts with '- ' must not break YAML parsing."""
+    import yaml
+    s = _section(Date(2026, 5, 14), suffix=None,
+                 body="## Handoff 2026-05-14\nBody.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="- Track 1 shipped")
+    fm_text = out.split("---\n")[1]
+    parsed = yaml.safe_load(fm_text)
+    assert parsed["gist"] == "- Track 1 shipped"
+
+
+def test_render_archive_file_gist_digit_only():
+    """Regression: gist = '1' must parse as string, not int."""
+    import yaml
+    s = _section(Date(2026, 5, 14), suffix=None,
+                 body="## Handoff 2026-05-14\nBody.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="1")
+    fm_text = out.split("---\n")[1]
+    parsed = yaml.safe_load(fm_text)
+    assert parsed["gist"] == "1"
+    assert isinstance(parsed["gist"], str)
+
+
+def test_render_archive_file_gist_with_quote_escaped():
+    """Regression: gist with embedded " must be escaped properly."""
+    import yaml
+    s = _section(Date(2026, 5, 14), suffix=None,
+                 body="## Handoff 2026-05-14\nBody.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist='He said "hi"')
+    fm_text = out.split("---\n")[1]
+    parsed = yaml.safe_load(fm_text)
+    assert parsed["gist"] == 'He said "hi"'
 
 
 def test_render_archive_index_entry_with_slug():

@@ -9,6 +9,9 @@ from datetime import date as Date
 from pathlib import Path
 from typing import Optional
 
+from symbiosis_brain.atomic_write import atomic_write_text
+from symbiosis_brain.write_lock import note_write_lock
+
 logger = logging.getLogger(__name__)
 
 HANDOFF_HEADING_RE = re.compile(
@@ -288,3 +291,120 @@ def select_candidates_to_archive(
     inline = [s for s in sections if s.date in keep_dates]
     candidates = [s for s in sections if s.date not in keep_dates]
     return inline, candidates
+
+
+@dataclass
+class SkipReason:
+    card: str
+    reason: str
+
+
+@dataclass
+class RotationReport:
+    cards_processed: int = 0
+    cards_modified: int = 0
+    sections_archived: int = 0
+    archive_files_created: list[str] = field(default_factory=list)
+    skipped: list[SkipReason] = field(default_factory=list)
+    bytes_freed_per_card: dict[str, int] = field(default_factory=dict)
+
+
+class ConflictError(RuntimeError):
+    """Archive file exists with different content than what we'd write."""
+
+
+def _rotate_one_card(
+    vault: Path,
+    card_path: Path,
+    scope: str,
+    inline_days: int,
+    dry_run: bool,
+    report: RotationReport,
+) -> None:
+    report.cards_processed += 1
+    rel_card = card_path.relative_to(vault).as_posix()
+    text = card_path.read_text(encoding="utf-8")
+    sections = parse_handoff_sections(text)
+    if not sections:
+        report.skipped.append(SkipReason(card=rel_card, reason="no handoff sections"))
+        return
+    inline, candidates = select_candidates_to_archive(sections, inline_days=inline_days)
+    if not candidates:
+        report.skipped.append(SkipReason(card=rel_card, reason="all sections within inline window"))
+        return
+
+    slugs = assign_slugs(sections)
+    section_to_slug = {id(s): slugs[i] for i, s in enumerate(sections)}
+
+    archived: list[tuple[HandoffSection, str]] = []
+    archive_dir = vault / "archive" / "handoffs"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    for s in candidates:
+        slug = section_to_slug[id(s)]
+        gist = extract_gist(s.body)
+        archive_content = render_archive_file(s, scope=scope, slug=slug, gist=gist)
+        slug_part = f"-{slug}" if slug else ""
+        archive_path = archive_dir / f"{scope}-{s.date.isoformat()}{slug_part}.md"
+        rel_archive = archive_path.relative_to(vault).as_posix()
+
+        if archive_path.exists():
+            existing = archive_path.read_text(encoding="utf-8")
+            if existing.strip() != archive_content.strip():
+                raise ConflictError(f"Archive file exists with different content: {archive_path}")
+            # Same content → idempotent skip (no new write, but still remove from card if present)
+        else:
+            if not dry_run:
+                with note_write_lock(vault, rel_archive):
+                    atomic_write_text(archive_path, archive_content)
+            report.archive_files_created.append(rel_archive)
+
+        entry = render_archive_index_entry(s, scope=scope, slug=slug, gist=gist)
+        archived.append((s, entry))
+        report.sections_archived += 1
+
+    new_card = apply_archive_to_card(text, archived)
+    if not dry_run and new_card != text:
+        with note_write_lock(vault, rel_card):
+            atomic_write_text(card_path, new_card)
+        report.cards_modified += 1
+        report.bytes_freed_per_card[rel_card] = len(text) - len(new_card)
+
+
+def rotate_handoffs(
+    vault: Path,
+    scope: Optional[str] = None,
+    dry_run: bool = False,
+    inline_days: int = 2,
+) -> RotationReport:
+    """Rotate stale handoffs from project cards into archive/handoffs/.
+
+    If scope is None — walks all projects/*.md (auto-discovery).
+    If scope is given — operates only on projects/<scope>.md.
+
+    Note: this function is the pure-Python core. The MCP wrapper (server.py)
+    is responsible for calling _sync.sync_one(rel_path) on modified files
+    AFTER this returns, to re-index into the brain DB.
+    """
+    if inline_days < 1 or inline_days > 7:
+        raise ValueError(f"inline_days must be in [1..7], got {inline_days}")
+
+    vault = Path(vault)
+    report = RotationReport()
+    projects_dir = vault / "projects"
+    if not projects_dir.exists():
+        return report
+
+    if scope:
+        targets = [projects_dir / f"{scope}.md"]
+    else:
+        targets = sorted(projects_dir.glob("*.md"))
+
+    for card_path in targets:
+        if not card_path.exists():
+            report.skipped.append(SkipReason(card=card_path.name, reason="card not found"))
+            continue
+        # Derive scope from filename if scope=None mode
+        card_scope = scope or card_path.stem
+        _rotate_one_card(vault, card_path, card_scope, inline_days, dry_run, report)
+    return report

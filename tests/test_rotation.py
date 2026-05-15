@@ -1,5 +1,6 @@
 """Unit tests for symbiosis_brain.rotation."""
 from datetime import date as Date
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -301,3 +302,101 @@ def test_apply_archive_merges_existing_archive_section():
     entry = "- 2026-05-08: [[archive/handoffs/x-2026-05-08]] — Item C"
     out = apply_archive_to_card(card, [(old[0], entry)])
     assert out.index(entry) < out.index("Older item")
+
+
+from symbiosis_brain.rotation import (
+    RotationReport, ConflictError, rotate_handoffs,
+)
+
+
+def _write(p: Path, text: str):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def _make_vault(tmp_path: Path) -> Path:
+    vault = tmp_path / "vault"
+    (vault / "projects").mkdir(parents=True)
+    (vault / "archive" / "handoffs").mkdir(parents=True)
+    return vault
+
+
+def test_rotate_dry_run_no_writes(tmp_path):
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    _write(card, (
+        "---\ntype: project\nscope: demo\n---\n# Demo\n\n"
+        "## Handoff 2026-05-14\n**Shipped:** New thing.\n\n"
+        "## Handoff 2026-05-13\n**Shipped:** Other thing.\n\n"
+        "## Handoff 2026-05-08\n**Shipped:** Old thing.\n"
+    ))
+    report = rotate_handoffs(vault=vault, scope="demo", dry_run=True, inline_days=2)
+    assert report.cards_processed == 1
+    assert report.cards_modified == 0  # dry-run
+    assert report.sections_archived == 1
+    assert len(report.archive_files_created) == 1
+    assert not any((vault / "archive" / "handoffs").iterdir())  # no files
+
+
+def test_rotate_writes_files_and_updates_card(tmp_path):
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    _write(card, (
+        "## Handoff 2026-05-14\n**Shipped:** Recent.\n\n"
+        "## Handoff 2026-05-08\n**Shipped:** Old item.\n"
+    ))
+    report = rotate_handoffs(vault=vault, scope="demo", dry_run=False, inline_days=1)
+    assert report.sections_archived == 1
+    archive = vault / "archive" / "handoffs" / "demo-2026-05-08-old-item.md"
+    assert archive.exists()
+    text = archive.read_text(encoding="utf-8")
+    assert "type: project" in text
+    assert "scope: demo" in text
+    assert "Old item" in text
+    new_card = card.read_text(encoding="utf-8")
+    assert "## Handoff 2026-05-08" not in new_card
+    assert "## Archive" in new_card
+    assert "- 2026-05-08: [[archive/handoffs/demo-2026-05-08-old-item]]" in new_card
+
+
+def test_rotate_idempotent(tmp_path):
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    _write(card, (
+        "## Handoff 2026-05-14\n**Shipped:** A.\n\n"
+        "## Handoff 2026-05-08\n**Shipped:** B.\n"
+    ))
+    rotate_handoffs(vault=vault, scope="demo", inline_days=1)
+    report2 = rotate_handoffs(vault=vault, scope="demo", inline_days=1)
+    assert report2.sections_archived == 0
+    assert report2.cards_modified == 0
+
+
+def test_rotate_no_handoffs_skipped(tmp_path):
+    vault = _make_vault(tmp_path)
+    _write(vault / "projects" / "empty.md", "# Empty\nno handoffs here.\n")
+    report = rotate_handoffs(vault=vault, scope="empty", inline_days=2)
+    assert report.cards_processed == 1
+    assert report.sections_archived == 0
+    assert len(report.skipped) == 1
+
+
+def test_rotate_conflict_on_different_content(tmp_path):
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    _write(card, (
+        "## Handoff 2026-05-14\n**Shipped:** A.\n\n"
+        "## Handoff 2026-05-08\n**Shipped:** Original.\n"
+    ))
+    pre_existing = vault / "archive" / "handoffs" / "demo-2026-05-08-original.md"
+    _write(pre_existing, "---\ntype: project\nscope: demo\n---\nDifferent content.\n")
+    with pytest.raises(ConflictError):
+        rotate_handoffs(vault=vault, scope="demo", inline_days=1)
+
+
+def test_rotate_invalid_inline_days(tmp_path):
+    vault = _make_vault(tmp_path)
+    with pytest.raises(ValueError):
+        rotate_handoffs(vault=vault, scope="demo", inline_days=0)
+    with pytest.raises(ValueError):
+        rotate_handoffs(vault=vault, scope="demo", inline_days=10)

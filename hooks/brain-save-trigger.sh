@@ -3,13 +3,15 @@
 # Modes: stop (threshold check) | precompact (last-chance blocker) | prompt-check (inject reminder)
 #
 # Stop-mode logic (decision: decisions/stop-hook-smart-trigger.md):
-#   - Thresholds fire at 40/70/90% absolute context usage
-#   - Delta-guard: skip if (PCT - last_save_pct) < DELTA_GUARD, except ≥90% (always fires)
-#   - SAVE_LATER marker lets the user skip ONE trigger in the soft zone (40-70%)
+#   - Thresholds fire at ascending % of absolute context usage (lowest=soft, top=last-chance)
+#   - Delta-guard: skip if (PCT - last_save_pct) < DELTA_GUARD, except at top threshold (always fires)
+#   - SAVE_LATER marker lets the user skip ONE trigger in the soft zone (lowest threshold only)
 #   - Zone-based messaging (soft / serious / last-chance)
-
-THRESHOLDS=(40 70 90)
-DELTA_GUARD=20
+#
+# Defaults (2026-05) calibrated for 1M-context reality: sessions live in 0-50%,
+# degradation ~40%, manual /compact ~43%. Override via env in settings.json.
+IFS=',' read -ra THRESHOLDS <<< "${SYMBIOSIS_BRAIN_SAVE_THRESHOLDS:-25,35,45}"
+DELTA_GUARD="${SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD:-10}"
 
 MODE="${1:-stop}"
 INPUT=$(cat)
@@ -34,21 +36,26 @@ if [ "$MODE" = "stop" ]; then
 
   SAVE_LATER_FILE="/tmp/brain-save-later-${SESSION_ID}"
 
+  # Zone boundaries derived from the (ascending) threshold list: lowest = soft,
+  # top = last-chance, anything between = serious.
+  SOFT="${THRESHOLDS[0]}"
+  TOP="${THRESHOLDS[${#THRESHOLDS[@]}-1]}"
+
   # Find HIGHEST uncrossed threshold that PCT has crossed (iterate in reverse).
   # Rationale: when PCT jumps past multiple thresholds, we want the message to
-  # reflect the current zone, not the lowest threshold. Example: PCT=72 fires
-  # zone 70 ("serious"), not zone 40 ("soft").
+  # reflect the current zone, not the lowest threshold. Example: with 25/35/45,
+  # PCT=46 fires the top zone ("last-chance"), not the soft zone.
   for (( i=${#THRESHOLDS[@]}-1; i>=0; i-- )); do
     T="${THRESHOLDS[$i]}"
     if [ "$PCT" -ge "$T" ] 2>/dev/null; then
       if ! grep -q "^${T}$" "$TRIGGERED_FILE" 2>/dev/null; then
-        # Delta-guard: skip if recently saved (except at/above 90%, which is critical)
-        if [ "$T" -lt 90 ] && [ "$DELTA" -lt "$DELTA_GUARD" ] 2>/dev/null; then
+        # Delta-guard: skip if recently saved (except at the top threshold, which is critical)
+        if [ "$T" -lt "$TOP" ] && [ "$DELTA" -lt "$DELTA_GUARD" ] 2>/dev/null; then
           exit 0
         fi
 
-        # SAVE_LATER: one-shot skip, soft zone only (40-70%)
-        if [ "$T" -ge 40 ] && [ "$T" -lt 70 ] && [ -f "$SAVE_LATER_FILE" ]; then
+        # SAVE_LATER: one-shot skip, soft zone only (lowest threshold)
+        if [ "$T" -eq "$SOFT" ] && [ "$T" -lt "$TOP" ] && [ -f "$SAVE_LATER_FILE" ]; then
           rm -f "$SAVE_LATER_FILE"
           exit 0
         fi
@@ -61,12 +68,12 @@ if [ "$MODE" = "stop" ]; then
         done
 
         # Zone-based message
-        if [ "$T" -lt 70 ]; then
+        if [ "$T" -eq "$TOP" ]; then
+          echo "🧠 Контекст ${PCT}% — последний шанс сохранить перед /compact." >&2
+        elif [ "$T" -eq "$SOFT" ]; then
           echo "🧠 Контекст ${PCT}%, delta +${DELTA}%. Сохрани если есть что — или скажи SAVE_LATER чтобы пропустить раз." >&2
-        elif [ "$T" -lt 90 ]; then
-          echo "🧠 Контекст ${PCT}% — пора сохранять знание, скоро /compact." >&2
         else
-          echo "🧠 Контекст ${PCT}% — последний шанс сохранить перед авто-компакцией." >&2
+          echo "🧠 Контекст ${PCT}% — пора сохранять знание, скоро /compact." >&2
         fi
         exit 2
       fi

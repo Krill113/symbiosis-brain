@@ -25,58 +25,86 @@ def test_stop_no_pct_returns_0(tmp_path, monkeypatch):
 
 
 def test_stop_below_threshold_returns_0(tmp_path, monkeypatch):
+    # Default soft threshold is 25; 20% is below it.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("30", encoding="utf-8")
+    (tmp_path / "brain-context-pct-s1").write_text("20", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 0
 
 
-def test_stop_at_40_fires_soft_zone(tmp_path, monkeypatch):
+def test_stop_soft_zone_fires_with_default_thresholds(tmp_path, monkeypatch):
+    # Default 25/35/45: 27% lands in the soft (lowest) zone.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("42", encoding="utf-8")
+    (tmp_path / "brain-context-pct-s1").write_text("27", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 2
-    assert "Контекст 42%" in proc.stderr
-    # Trigger marker written
+    assert "Контекст 27%" in proc.stderr
+    assert "SAVE_LATER" in proc.stderr
     triggered = (tmp_path / "brain-triggered-s1").read_text(encoding="utf-8")
-    assert "40" in triggered
+    assert "25" in triggered
 
 
-def test_stop_70_zone_serious_message(tmp_path, monkeypatch):
+def test_stop_serious_zone_message(tmp_path, monkeypatch):
+    # 37% lands in the middle (serious) zone of 25/35/45.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("75", encoding="utf-8")
+    (tmp_path / "brain-context-pct-s1").write_text("37", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 2
     assert "пора сохранять" in proc.stderr
 
 
-def test_stop_90_last_chance_message(tmp_path, monkeypatch):
+def test_stop_last_chance_message(tmp_path, monkeypatch):
+    # 47% is at/above the top threshold 45 → last-chance.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("92", encoding="utf-8")
+    (tmp_path / "brain-context-pct-s1").write_text("47", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 2
     assert "последний шанс" in proc.stderr
 
 
+def test_stop_thresholds_read_from_env(tmp_path, monkeypatch):
+    # Regression guard: SYMBIOSIS_BRAIN_SAVE_THRESHOLDS must actually be honored
+    # (the env vars were declared in settings.json but never read until 2026-05).
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_SAVE_THRESHOLDS", "40,70,90")
+    (tmp_path / "brain-context-pct-s1").write_text("42", encoding="utf-8")
+    proc = _run("stop", json.dumps({"session_id": "s1"}))
+    assert proc.returncode == 2
+    triggered = (tmp_path / "brain-triggered-s1").read_text(encoding="utf-8")
+    assert "40" in triggered and "70" not in triggered
+
+
 def test_stop_already_triggered_zone_no_refire(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("45", encoding="utf-8")
-    (tmp_path / "brain-triggered-s1").write_text("40\n", encoding="utf-8")
+    (tmp_path / "brain-context-pct-s1").write_text("37", encoding="utf-8")
+    (tmp_path / "brain-triggered-s1").write_text("25\n35\n", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 0
 
 
 def test_stop_delta_guard_skips_recent_save(tmp_path, monkeypatch):
+    # delta = 37 - 30 = 7 < default delta-guard 10, and 35 < top(45) → skip.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("45", encoding="utf-8")
-    (tmp_path / "brain-last-save-pct-s1").write_text("40", encoding="utf-8")  # delta=5 < 20
+    (tmp_path / "brain-context-pct-s1").write_text("37", encoding="utf-8")
+    (tmp_path / "brain-last-save-pct-s1").write_text("30", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
     assert proc.returncode == 0
 
 
-def test_stop_save_later_skips_one_in_soft_zone(tmp_path, monkeypatch):
+def test_stop_delta_guard_read_from_env(tmp_path, monkeypatch):
+    # delta = 37 - 30 = 7; with guard lowered to 5 the soft/serious zone fires.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    (tmp_path / "brain-context-pct-s1").write_text("45", encoding="utf-8")
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD", "5")
+    (tmp_path / "brain-context-pct-s1").write_text("37", encoding="utf-8")
+    (tmp_path / "brain-last-save-pct-s1").write_text("30", encoding="utf-8")
+    proc = _run("stop", json.dumps({"session_id": "s1"}))
+    assert proc.returncode == 2
+
+
+def test_stop_save_later_skips_one_in_soft_zone(tmp_path, monkeypatch):
+    # 27% is the soft (lowest) zone where SAVE_LATER applies.
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    (tmp_path / "brain-context-pct-s1").write_text("27", encoding="utf-8")
     save_later = tmp_path / "brain-save-later-s1"
     save_later.write_text("", encoding="utf-8")
     proc = _run("stop", json.dumps({"session_id": "s1"}))
@@ -145,7 +173,7 @@ import threading
 def test_concurrent_stop_hooks_produce_parseable_triggered(tmp_path, monkeypatch):
     """Five parallel `stop` hooks for the same session at 95% must leave
     `brain-triggered-<sid>` parseable (every line a valid int, no torn writes,
-    no garbage). All three thresholds (40, 70, 90) must be recorded."""
+    no garbage). All three default thresholds (25, 35, 45) must be recorded."""
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     (tmp_path / "brain-context-pct-s1").write_text("95", encoding="utf-8")
 
@@ -172,7 +200,7 @@ def test_concurrent_stop_hooks_produce_parseable_triggered(tmp_path, monkeypatch
     for ln in lines:
         assert ln.isdigit(), f"non-numeric line in triggered file: {ln!r}"
     parsed = {int(ln) for ln in lines}
-    assert parsed >= {40, 70, 90}, f"missing thresholds: {parsed}"
+    assert parsed >= {25, 35, 45}, f"missing thresholds: {parsed}"
 
 
 @pytest.mark.skipif(

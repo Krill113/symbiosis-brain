@@ -47,8 +47,28 @@ def _append_debug(path: Path, msg: str) -> None:
         pass
 
 
-THRESHOLDS = (40, 70, 90)
-DELTA_GUARD = 20
+# Defaults calibrated for 1M-context reality (2026-05): sessions live in the
+# 0-50% band, degradation onset ~40%, manual /compact ~43%. Old 40/70/90 had two
+# dead thresholds. Override via env (SYMBIOSIS_BRAIN_SAVE_THRESHOLDS / _DELTA_GUARD).
+DEFAULT_THRESHOLDS = (25, 35, 45)
+DEFAULT_DELTA_GUARD = 10
+
+
+def _thresholds() -> tuple[int, ...]:
+    raw = os.environ.get("SYMBIOSIS_BRAIN_SAVE_THRESHOLDS", "")
+    try:
+        vals = tuple(int(x) for x in raw.split(",") if x.strip())
+    except ValueError:
+        vals = ()
+    # Ascending order is assumed by the reverse-scan in cmd_stop.
+    return tuple(sorted(vals)) or DEFAULT_THRESHOLDS
+
+
+def _delta_guard() -> int:
+    try:
+        return int(os.environ.get("SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD", ""))
+    except ValueError:
+        return DEFAULT_DELTA_GUARD
 
 
 def _tmp_dir() -> Path:
@@ -149,38 +169,42 @@ def cmd_stop(data: dict) -> int:
     save_later_file = _tmp_dir() / f"brain-save-later-{session_id}"
     triggered_file = _tmp_dir() / f"brain-triggered-{session_id}"
 
+    thresholds = _thresholds()
+    delta_guard = _delta_guard()
+    soft, top = thresholds[0], thresholds[-1]
+
     triggered = set()
     if triggered_file.exists():
         triggered = {l.strip() for l in triggered_file.read_text(encoding="utf-8").splitlines() if l.strip()}
 
     # Highest crossed threshold not yet triggered
-    for t in reversed(THRESHOLDS):
+    for t in reversed(thresholds):
         if pct < t:
             continue
         if str(t) in triggered:
             continue
-        # Delta-guard except at 90+
-        if t < 90 and delta < DELTA_GUARD:
+        # Delta-guard except at the top (critical) threshold, which always fires
+        if t < top and delta < delta_guard:
             return 0
-        # SAVE_LATER one-shot in soft zone (40-70)
-        if 40 <= t < 70 and save_later_file.exists():
+        # SAVE_LATER one-shot in the soft zone only (lowest threshold)
+        if t == soft and t < top and save_later_file.exists():
             save_later_file.unlink()
             return 0
         # Mark all crossed thresholds (atomic write to avoid torn lines under
         # concurrent stop hooks within the same session).
-        new_marks = [str(mark) for mark in THRESHOLDS
+        new_marks = [str(mark) for mark in thresholds
                      if mark <= pct and str(mark) not in triggered]
         triggered.update(new_marks)
         if new_marks:
             sorted_marks = sorted(triggered, key=lambda x: int(x))
             atomic_write_text(triggered_file, "".join(f"{m}\n" for m in sorted_marks))
-        # Zone-based message
-        if t < 70:
+        # Zone-based message (by position: top = last-chance, bottom = soft, mid = serious)
+        if t == top:
+            msg = f"🧠 Контекст {pct}% — последний шанс сохранить перед /compact."
+        elif t == soft:
             msg = f"🧠 Контекст {pct}%, delta +{delta}%. Сохрани если есть что — или скажи SAVE_LATER чтобы пропустить раз."
-        elif t < 90:
-            msg = f"🧠 Контекст {pct}% — пора сохранять знание, скоро /compact."
         else:
-            msg = f"🧠 Контекст {pct}% — последний шанс сохранить перед авто-компакцией."
+            msg = f"🧠 Контекст {pct}% — пора сохранять знание, скоро /compact."
         print(msg, file=sys.stderr)
         return 2
     return 0

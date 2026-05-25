@@ -1,12 +1,19 @@
 <#
 .SYNOPSIS
-Find and kill orphaned symbiosis-brain MCP processes left over from closed Claude Code sessions.
+Find and kill orphaned processes left over from closed Claude Code sessions.
 
 .DESCRIPTION
-Walks the parent chain of every process matching 'symbiosis_brain' or 'symbiosis-brain'.
-A process is considered an orphan if no live 'claude.exe' ancestor is found within 20 PPID hops.
+Reaps two classes of leftover process:
+  1. MCP servers   — python/symbiosis-brain processes whose command line matches 'symbiosis_brain'.
+     Orphan = no live 'claude.exe' ancestor within 20 PPID hops.
+  2. Statusline hooks — bash.exe processes whose command line matches '.claude/hooks' (e.g.
+     sb-statusline.sh, sb-line.sh, statusline.sh). These chain bash → bash through short-lived
+     intermediate shells, so the ancestor walk is unreliable here (even a current-session hook
+     loses its live claude ancestor). Instead they are judged by AGE: a healthy statusline render
+     completes in well under a second, so any such bash alive longer than -StaleMinutes (default 2)
+     is stuck/orphaned. This avoids killing the current session's in-flight renders.
 Default mode shows the candidates and asks for [Y/N] confirmation. Use -DryRun to only inspect.
-Use -Force to skip the prompt.
+Use -Force to skip the prompt. Use -StaleMinutes to tune the bash-hook age threshold.
 
 .EXAMPLE
 .\tools\reap-zombies.ps1
@@ -22,7 +29,8 @@ Kill all detected orphans without prompting (use in automation).
 #>
 param(
     [switch]$DryRun,
-    [switch]$Force
+    [switch]$Force,
+    [double]$StaleMinutes = 2
 )
 
 # NOTE: Process name match uses -like 'claude*' to survive future Anthropic
@@ -43,14 +51,23 @@ function Test-HasLiveClaudeAncestor {
     return $false
 }
 
-Write-Host "Scanning for orphaned symbiosis-brain processes..."
+Write-Host "Scanning for orphaned symbiosis-brain MCP and statusline-hook processes..."
 
-$candidates = Get-CimInstance Win32_Process |
-    Where-Object {
-        $_.CommandLine -match 'symbiosis[_-]brain' -and
-        ($_.Name -like 'python*' -or $_.Name -like 'symbiosis-brain*')
-    } |
-    Where-Object { -not (Test-HasLiveClaudeAncestor $_.ProcessId) }
+$staleBefore = (Get-Date).AddMinutes(-$StaleMinutes)
+
+$candidates = Get-CimInstance Win32_Process | Where-Object {
+    # Class 1: MCP servers — orphan if no live claude ancestor
+    if ($_.CommandLine -match 'symbiosis[_-]brain' -and
+        ($_.Name -like 'python*' -or $_.Name -like 'symbiosis-brain*')) {
+        return -not (Test-HasLiveClaudeAncestor $_.ProcessId)
+    }
+    # Class 2: statusline bash hooks — orphan if stuck alive past the age threshold
+    # (ancestor walk is unreliable for the nested bash chain; a healthy render exits in <1s)
+    if ($_.Name -like 'bash*' -and $_.CommandLine -match '[\\/]\.claude[\\/]hooks') {
+        return $_.CreationDate -lt $staleBefore
+    }
+    return $false
+}
 
 if (-not $candidates) {
     Write-Host "OK - no orphans found."

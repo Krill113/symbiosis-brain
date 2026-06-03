@@ -84,11 +84,42 @@ def test_merge_settings_writes_full_block_in_empty_settings(tmp_path):
     )
     data = json.loads(settings.read_text())
     assert data["statusLine"]["command"] == "bash ~/.claude/hooks/sb-statusline.sh"
-    assert "SessionStart" in data["hooks"]
-    assert "Stop" in data["hooks"]
-    assert "PreCompact" in data["hooks"]
-    assert "UserPromptSubmit" in data["hooks"]
+    # All six live hook events are wired
+    for event in ("SessionStart", "Stop", "PreCompact", "UserPromptSubmit",
+                  "PreToolUse", "SessionEnd"):
+        assert event in data["hooks"], event
+    # Bash is the single source of truth — every command invokes bash
+    assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"].startswith("bash ")
+    assert data["hooks"]["SessionEnd"][0]["hooks"][0]["command"] == "bash ~/.claude/hooks/brain-sync.sh auto"
+    # PreToolUse recall resolves via $SYMBIOSIS_BRAIN_TOOLS, not hook_dir
+    assert "$SYMBIOSIS_BRAIN_TOOLS" in data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    # Behavioural env defaults are seeded
+    assert data["env"]["SYMBIOSIS_BRAIN_SAVE_THRESHOLDS"] == "25,35,45"
+    assert data["env"]["SYMBIOSIS_BRAIN_RECALL_ENABLED"] == "true"
     assert "mcp__symbiosis-brain__brain_read" in data["permissions"]["allow"]
+
+
+def test_merge_settings_seeds_paths_and_does_not_clobber_user_env(tmp_path):
+    """VAULT/TOOLS are seeded from the passed paths; a pre-existing user knob survives."""
+    settings = tmp_path / "settings.json"
+    install_lib.atomic_write_json(settings, {
+        "env": {"SYMBIOSIS_BRAIN_SAVE_THRESHOLDS": "40,70,90"},  # user override
+    })
+    install_lib.merge_settings_json(
+        settings,
+        hook_dir="~/.claude/hooks",
+        statusline_cmd="bash ~/.claude/hooks/sb-statusline.sh",
+        permissions=[],
+        vault_path="/home/u/my-vault",
+        tools_path="/opt/symbiosis-brain",
+    )
+    env = json.loads(settings.read_text())["env"]
+    assert env["SYMBIOSIS_BRAIN_VAULT"] == "/home/u/my-vault"
+    assert env["SYMBIOSIS_BRAIN_TOOLS"] == "/opt/symbiosis-brain"
+    # Non-clobbering: the user's tuned threshold is preserved, not reset to the default
+    assert env["SYMBIOSIS_BRAIN_SAVE_THRESHOLDS"] == "40,70,90"
+    # RULES_ZONES is intentionally never seeded (left to the hook fallback)
+    assert "SYMBIOSIS_BRAIN_RULES_ZONES" not in env
 
 
 def test_merge_settings_preserves_user_statusline_in_env(tmp_path):

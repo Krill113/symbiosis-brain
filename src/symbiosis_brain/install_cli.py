@@ -5,7 +5,6 @@ Subcommands:
   setup            — install Symbiosis Brain into Claude Code
   doctor           — health-check current installation
   uninstall        — remove Symbiosis Brain (vault preserved)
-  migrate-hooks    — bash → python hook cutover for legacy users
 """
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ from pathlib import Path
 
 # Force UTF-8 on stdout/stderr — Windows defaults to CP1251 which crashes on
 # argparse arrows (→), doctor checkmarks (✓/✗), and Cyrillic user-facing copy.
-# Same guard as in hooks/brain-session-start.py and hooks/brain-save-trigger.py.
 for _stream in (sys.stdout, sys.stderr):
     if _stream.encoding and _stream.encoding.lower() not in ("utf-8", "utf8"):
         try:
@@ -40,6 +38,8 @@ SB_PERMISSIONS = [
     "mcp__symbiosis-brain__brain_list",
     "mcp__symbiosis-brain__brain_status",
     "mcp__symbiosis-brain__brain_sync",
+    "mcp__symbiosis-brain__brain_append",
+    "mcp__symbiosis-brain__brain_patch",
     "mcp__symbiosis-brain__brain_lint",
 ]
 
@@ -124,8 +124,19 @@ def _check_mcp_running() -> bool:
 
 SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init", "brain-welcome")
 
-HOOK_FILES_PY = ("brain-session-start.py", "brain-save-trigger.py")
-HOOK_FILES_SH = ("sb-statusline.sh", "sb-line.sh", "sb-base-statusline.sh")
+# Bash is the single source of truth. All shipped hooks are .sh (the Python hook
+# shims were removed to kill dual-maintenance drift). brain-pre-action-trigger.sh
+# also runs from the tools repo via $SYMBIOSIS_BRAIN_TOOLS, but we ship it too so a
+# fresh install has it locally; brain-sync.sh backs the SessionEnd vault sync.
+HOOK_FILES_SH = (
+    "brain-session-start.sh",
+    "brain-save-trigger.sh",
+    "brain-pre-action-trigger.sh",
+    "brain-sync.sh",
+    "sb-statusline.sh",
+    "sb-line.sh",
+    "sb-base-statusline.sh",
+)
 
 
 def _packaged_skills_dir() -> Path:
@@ -182,7 +193,7 @@ def _copy_skills(target_dir: Path) -> None:
 def _copy_hooks(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     src_root = _packaged_hooks_dir()
-    for name in HOOK_FILES_PY + HOOK_FILES_SH:
+    for name in HOOK_FILES_SH:
         src = src_root / name
         if not src.exists():
             print(f"WARN: hook {name} missing in package, skipping")
@@ -193,11 +204,10 @@ def _copy_hooks(target_dir: Path) -> None:
         if dst.exists():
             install_lib.backup_file(dst)
         shutil.copyfile(src, dst)
-        if name in HOOK_FILES_SH or name in HOOK_FILES_PY:
-            try:
-                dst.chmod(dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-            except OSError:
-                pass  # Windows etc. — chmod is no-op
+        try:
+            dst.chmod(dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        except OSError:
+            pass  # Windows etc. — chmod is no-op
 
 
 def _ask_vault_path(default: Path) -> Path:
@@ -243,6 +253,8 @@ def cmd_setup(args):
             hook_dir=_hook_dir_str(),
             statusline_cmd=f"bash {_hook_dir_str()}/sb-statusline.sh",
             permissions=SB_PERMISSIONS,
+            vault_path=str(vault),
+            tools_path=str(_packaged_hooks_dir().parent),
         )
         install_lib.append_claude_md_block(claude_md)
 
@@ -253,7 +265,7 @@ def cmd_setup(args):
             f = skill_dir / name / "SKILL.md"
             if f.exists():
                 skills_pre_existing.add(f)
-        for name in HOOK_FILES_PY + HOOK_FILES_SH:
+        for name in HOOK_FILES_SH:
             f = hook_dir / name
             if f.exists():
                 hooks_pre_existing.add(f)
@@ -266,7 +278,7 @@ def cmd_setup(args):
             f = skill_dir / name / "SKILL.md"
             if f.exists() and f not in skills_pre_existing:
                 created_files.append(f)
-        for name in HOOK_FILES_PY + HOOK_FILES_SH:
+        for name in HOOK_FILES_SH:
             f = hook_dir / name
             if f.exists() and f not in hooks_pre_existing:
                 created_files.append(f)
@@ -345,10 +357,11 @@ def cmd_doctor(args) -> int:
 
     # 3. Hooks
     hook_dir = _hook_dir()
-    missing_hooks = [h for h in ("brain-session-start.py", "brain-save-trigger.py", "sb-statusline.sh")
-                     if not (hook_dir / h).exists()]
+    required_hooks = ("brain-session-start.sh", "brain-save-trigger.sh",
+                      "brain-sync.sh", "sb-statusline.sh")
+    missing_hooks = [h for h in required_hooks if not (hook_dir / h).exists()]
     if not missing_hooks:
-        print("✓ Hooks          OK (3/3 present)")
+        print(f"✓ Hooks          OK ({len(required_hooks)}/{len(required_hooks)} present)")
     else:
         print(f"✗ Hooks          MISSING: {', '.join(missing_hooks)}")
         issues += 1
@@ -405,7 +418,7 @@ def cmd_uninstall(args) -> int:
             shutil.rmtree(d)
 
     # Remove our hooks (not sb-statusline.sh — others might depend on it; but spec says clean)
-    for h in HOOK_FILES_PY + HOOK_FILES_SH:
+    for h in HOOK_FILES_SH:
         f = hook_dir / h
         if f.exists():
             f.unlink()
@@ -418,42 +431,6 @@ def cmd_uninstall(args) -> int:
         pass
 
     print("Symbiosis Brain удалён. Vault сохранён, можешь снести вручную.")
-    return 0
-
-
-BASH_TO_PY = {
-    "bash ~/.claude/hooks/brain-session-start.sh": "python ~/.claude/hooks/brain-session-start.py",
-    "bash ~/.claude/hooks/brain-save-trigger.sh stop": "python ~/.claude/hooks/brain-save-trigger.py stop",
-    "bash ~/.claude/hooks/brain-save-trigger.sh precompact": "python ~/.claude/hooks/brain-save-trigger.py precompact",
-    "bash ~/.claude/hooks/brain-save-trigger.sh prompt-check": "python ~/.claude/hooks/brain-save-trigger.py prompt-check",
-}
-PY_TO_BASH = {v: k for k, v in BASH_TO_PY.items()}
-
-
-def _swap_hook_commands(data: dict, mapping: dict) -> dict:
-    """Walk hooks structure and replace `command` strings via mapping."""
-    hooks = data.get("hooks", {})
-    for ev_list in hooks.values():
-        for ev in ev_list:
-            for h in ev.get("hooks", []):
-                cmd = h.get("command")
-                if cmd in mapping:
-                    h["command"] = mapping[cmd]
-    return data
-
-
-def cmd_migrate_hooks(args) -> int:
-    s = _settings_path()
-    if not s.exists():
-        print("settings.json missing, nothing to migrate")
-        return 1
-    install_lib.backup_file(s)
-    data = json.loads(s.read_text(encoding="utf-8"))
-    mapping = PY_TO_BASH if getattr(args, "rollback", False) else BASH_TO_PY
-    data = _swap_hook_commands(data, mapping)
-    install_lib.atomic_write_json(s, data)
-    direction = "rolled back to bash" if args.rollback else "migrated to Python"
-    print(f"Hooks {direction}. Backup: latest .bak.* in {s.parent}.")
     return 0
 
 
@@ -485,11 +462,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_uninstall = sub.add_parser("uninstall", help="Remove Symbiosis Brain")
     p_uninstall.set_defaults(func=cmd_uninstall)
-
-    p_migrate = sub.add_parser("migrate-hooks", help="bash → python hook cutover")
-    p_migrate.add_argument("--rollback", action="store_true",
-                           help="Restore bash hooks from .bak")
-    p_migrate.set_defaults(func=cmd_migrate_hooks)
 
     return parser
 

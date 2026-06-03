@@ -13,7 +13,7 @@ Run on three clean VMs: macOS, Ubuntu 24.04, Windows 11 (no WSL).
 For each platform:
 
 1. [ ] `uv tool install symbiosis-brain`
-2. [ ] `symbiosis-brain --help` lists `serve`, `setup`, `doctor`, `uninstall`, `migrate-hooks`
+2. [ ] `symbiosis-brain --help` lists `serve`, `setup`, `doctor`, `uninstall`
 3. [ ] `symbiosis-brain setup claude-code` — answer with default vault path
 4. [ ] Verify: `~/.claude/settings.json` contains hooks block + statusLine + ≥7 permissions
 5. [ ] Verify: `~/.claude/CLAUDE.md` ends with `<!-- symbiosis-brain v1: global -->`
@@ -26,7 +26,7 @@ For each platform:
 12. [ ] Verify: `<vault>/.sb-initialized` exists
 13. [ ] Restart Claude Code → `brain-welcome` does NOT re-fire
 14. [ ] `symbiosis-brain doctor` — all ✓
-15. [ ] Break something (e.g. `rm ~/.claude/hooks/brain-save-trigger.py`); `doctor` shows ✗ for hooks; `setup --repair` fixes it
+15. [ ] Break something (e.g. `rm ~/.claude/hooks/brain-save-trigger.sh`); `doctor` shows ✗ for hooks; `setup --repair` fixes it
 16. [ ] `symbiosis-brain uninstall` — settings.json/CLAUDE.md restored from .bak; vault preserved
 
 If ANY step fails on ANY platform — fix before merge.

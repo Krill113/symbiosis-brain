@@ -189,7 +189,7 @@ except Exception:
     TURNS=$((TURNS + 1))
 
     # First-turn injection: if shown file doesn't exist and we're at turn 1,
-    # emit the roster once with sentinel "0" written. Mirrors brain-save-trigger.py.
+    # emit the roster once with sentinel "0" written.
     FIRST_TURN_INJECT=0
     if [ ! -f "$SHOWN_FILE" ] && [ "$TURNS" -le 1 ]; then
       FIRST_TURN_INJECT=1

@@ -20,7 +20,7 @@ def test_uninstall_restores_settings_and_claude_md(tmp_path, monkeypatch):
         (skills / s / "SKILL.md").write_text("x", encoding="utf-8")
     hooks = tmp_path / "hooks"
     hooks.mkdir()
-    for h in ("brain-session-start.py", "brain-save-trigger.py", "sb-statusline.sh"):
+    for h in ("brain-session-start.sh", "brain-save-trigger.sh", "brain-sync.sh", "sb-statusline.sh"):
         (hooks / h).write_text("x", encoding="utf-8")
 
     monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
@@ -37,5 +37,5 @@ def test_uninstall_restores_settings_and_claude_md(tmp_path, monkeypatch):
     assert claude_md.read_text() == "# original\n"
     for s in install_cli.SKILL_NAMES:
         assert not (skills / s / "SKILL.md").exists()
-    for h in ("brain-session-start.py", "brain-save-trigger.py"):
+    for h in ("brain-session-start.sh", "brain-save-trigger.sh", "brain-sync.sh"):
         assert not (hooks / h).exists()

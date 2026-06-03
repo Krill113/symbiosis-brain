@@ -16,7 +16,7 @@ def _run_search_gist(argv: list[str]):
 
     # Force UTF-8 stdout — cyrillic + `→` (U+2192) in gists crashes default
     # cp1251 codec on Windows. Hook callers swallow stderr, so the only symptom
-    # is silent empty recall. Mirror of the install_cli.py / brain-save-trigger.py fix.
+    # is silent empty recall. Same UTF-8 guard as install_cli.py.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 

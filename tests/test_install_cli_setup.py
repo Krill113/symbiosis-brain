@@ -110,16 +110,14 @@ def test_copy_skills_backs_up_existing_with_different_content(tmp_path, monkeypa
 def test_copy_hooks_copies_all_files(tmp_path, monkeypatch):
     src = tmp_path / "src_hooks"
     src.mkdir()
-    for h in ("brain-session-start.py", "brain-save-trigger.py",
-              "sb-statusline.sh", "sb-line.sh", "sb-base-statusline.sh"):
+    for h in install_cli.HOOK_FILES_SH:
         (src / h).write_text(f"# {h}\n", encoding="utf-8")
     monkeypatch.setattr(install_cli, "_packaged_hooks_dir", lambda: src)
 
     target = tmp_path / "claude_hooks"
     install_cli._copy_hooks(target)
 
-    for h in ("brain-session-start.py", "brain-save-trigger.py",
-              "sb-statusline.sh", "sb-line.sh", "sb-base-statusline.sh"):
+    for h in install_cli.HOOK_FILES_SH:
         assert (target / h).exists()
 
 

@@ -100,30 +100,45 @@ def scaffold_vault(vault_path: Path) -> None:
 
 
 def _hooks_block(hook_dir: str) -> dict:
-    """Return hooks block structure for settings.json."""
+    """Return hooks block structure for settings.json.
+
+    Bash is the single source of truth (matches the live ~/.claude install).
+    Six events: SessionStart (startup+compact), Stop, PreCompact,
+    UserPromptSubmit, PreToolUse (proactive recall), SessionEnd (vault sync).
+    PreToolUse runs the recall hook from the tools repo via $SYMBIOSIS_BRAIN_TOOLS.
+    """
     return {
         "SessionStart": [
             {"matcher": "startup",
              "hooks": [{"type": "command",
-                        "command": f"python {hook_dir}/brain-session-start.py",
+                        "command": f"bash {hook_dir}/brain-session-start.sh",
                         "timeout": 5}]},
             {"matcher": "compact",
              "hooks": [{"type": "command",
-                        "command": f"python {hook_dir}/brain-session-start.py",
+                        "command": f"bash {hook_dir}/brain-session-start.sh",
                         "timeout": 5}]},
         ],
         "Stop": [
             {"hooks": [{"type": "command",
-                        "command": f"python {hook_dir}/brain-save-trigger.py stop",
-                        "asyncRewake": True}]},
+                        "command": f"bash {hook_dir}/brain-save-trigger.sh stop"}]},
         ],
         "PreCompact": [
             {"hooks": [{"type": "command",
-                        "command": f"python {hook_dir}/brain-save-trigger.py precompact"}]},
+                        "command": f"bash {hook_dir}/brain-save-trigger.sh precompact"}]},
         ],
         "UserPromptSubmit": [
             {"hooks": [{"type": "command",
-                        "command": f"python {hook_dir}/brain-save-trigger.py prompt-check"}]},
+                        "command": f"bash {hook_dir}/brain-save-trigger.sh prompt-check"}]},
+        ],
+        "PreToolUse": [
+            {"matcher": "Task|Edit|Write|MultiEdit|NotebookEdit|Bash",
+             "hooks": [{"type": "command",
+                        "command": 'bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/brain-pre-action-trigger.sh"'}]},
+        ],
+        "SessionEnd": [
+            {"hooks": [{"type": "command",
+                        "command": f"bash {hook_dir}/brain-sync.sh auto",
+                        "timeout": 35}]},
         ],
     }
 
@@ -131,14 +146,35 @@ def _hooks_block(hook_dir: str) -> dict:
 SB_STATUSLINE_MARKER = "sb-statusline"
 
 
+# Behavioural env defaults seeded into settings.json (values mirror the hook-code
+# fallbacks in brain-save-trigger.sh). NOT included on purpose: RULES_ZONES (leave
+# to the hook fallback 30,60,85 — never bake a personal recalibration into the public
+# installer), MCP_TIMEOUT and CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING (harness prefs,
+# not ours to impose). All seeding is non-clobbering — a pre-existing user value wins.
+SB_ENV_DEFAULTS = {
+    "SYMBIOSIS_BRAIN_RECALL_ENABLED": "true",
+    "SYMBIOSIS_BRAIN_RECALL_TOP_K": "5",
+    "SYMBIOSIS_BRAIN_RECALL_SKIP_SHORT_CHARS": "15",
+    "SYMBIOSIS_BRAIN_RULES_ENABLED": "true",
+    "SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL": "10",
+    "SYMBIOSIS_BRAIN_SAVE_THRESHOLDS": "25,35,45",
+    "SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD": "10",
+}
+
+
 def merge_settings_json(settings_path: Path,
                         hook_dir: str,
                         statusline_cmd: str,
-                        permissions: list[str]) -> None:
-    """Idempotent deep-merge of our hooks/statusLine/permissions into settings.json.
+                        permissions: list[str],
+                        vault_path: str | None = None,
+                        tools_path: str | None = None) -> None:
+    """Idempotent deep-merge of our hooks/statusLine/permissions/env into settings.json.
 
     Caller (cmd_setup) is the single owner of the pre-task backup.
     - Preserves a non-SB statusLine command in env.SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD.
+    - Seeds SB_ENV_DEFAULTS plus VAULT/TOOLS paths, non-clobbering (existing user
+      values are never overwritten) — required for PreToolUse recall and SessionEnd
+      sync to resolve their paths and knobs.
     - Deduplicates permissions.allow.
     """
     if not settings_path.exists():
@@ -152,7 +188,17 @@ def merge_settings_json(settings_path: Path,
         env = settings.setdefault("env", {})
         env["SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD"] = current_status
 
+    # Env seeding — non-clobbering: only add keys absent from the live config.
+    env_defaults = dict(SB_ENV_DEFAULTS)
+    if vault_path:
+        env_defaults["SYMBIOSIS_BRAIN_VAULT"] = vault_path
+    if tools_path:
+        env_defaults["SYMBIOSIS_BRAIN_TOOLS"] = tools_path
+    cur_env = settings.get("env") or {}
+    seed_env = {k: v for k, v in env_defaults.items() if k not in cur_env}
+
     overlay = {
+        "env": seed_env,
         "hooks": _hooks_block(hook_dir),
         "statusLine": {"type": "command", "command": statusline_cmd, "refreshInterval": 10},
         "permissions": {"allow": list(permissions)},

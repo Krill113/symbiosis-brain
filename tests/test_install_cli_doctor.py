@@ -7,7 +7,7 @@ from symbiosis_brain import install_cli, install_lib
 def test_doctor_reports_all_ok(tmp_path, monkeypatch, capsys):
     settings = tmp_path / "settings.json"
     install_lib.atomic_write_json(settings, {
-        "hooks": {"SessionStart": [{"hooks": [{"command": "python ~/.claude/hooks/brain-session-start.py"}]}]},
+        "hooks": {"SessionStart": [{"hooks": [{"command": "bash ~/.claude/hooks/brain-session-start.sh"}]}]},
         "statusLine": {"command": "bash ~/.claude/hooks/sb-statusline.sh"},
         "permissions": {"allow": [
             "mcp__symbiosis-brain__brain_read",
@@ -27,7 +27,7 @@ def test_doctor_reports_all_ok(tmp_path, monkeypatch, capsys):
         (skills / s / "SKILL.md").write_text("ok", encoding="utf-8")
     hooks = tmp_path / "hooks"
     hooks.mkdir()
-    for h in ("brain-session-start.py", "brain-save-trigger.py", "sb-statusline.sh"):
+    for h in ("brain-session-start.sh", "brain-save-trigger.sh", "brain-sync.sh", "sb-statusline.sh"):
         (hooks / h).write_text("ok", encoding="utf-8")
     vault = tmp_path / "vault"
     install_lib.scaffold_vault(vault)
@@ -49,7 +49,7 @@ def test_doctor_reports_all_ok(tmp_path, monkeypatch, capsys):
 def test_doctor_reports_missing_hook(tmp_path, monkeypatch, capsys):
     settings = tmp_path / "settings.json"
     install_lib.atomic_write_json(settings, {
-        "hooks": {"SessionStart": [{"hooks": [{"command": "python ~/.claude/hooks/brain-session-start.py"}]}]},
+        "hooks": {"SessionStart": [{"hooks": [{"command": "bash ~/.claude/hooks/brain-session-start.sh"}]}]},
         "statusLine": {"command": "bash ~/.claude/hooks/sb-statusline.sh"},
         "permissions": {"allow": [
             "mcp__symbiosis-brain__brain_read",
@@ -69,8 +69,9 @@ def test_doctor_reports_missing_hook(tmp_path, monkeypatch, capsys):
         (skills / s / "SKILL.md").write_text("ok", encoding="utf-8")
     hooks = tmp_path / "hooks"
     hooks.mkdir()
-    # brain-save-trigger.py missing
-    (hooks / "brain-session-start.py").write_text("ok", encoding="utf-8")
+    # brain-save-trigger.sh missing
+    (hooks / "brain-session-start.sh").write_text("ok", encoding="utf-8")
+    (hooks / "brain-sync.sh").write_text("ok", encoding="utf-8")
     (hooks / "sb-statusline.sh").write_text("ok", encoding="utf-8")
     vault = tmp_path / "vault"
     install_lib.scaffold_vault(vault)
@@ -86,7 +87,7 @@ def test_doctor_reports_missing_hook(tmp_path, monkeypatch, capsys):
     rc = install_cli.cmd_doctor(args)
     out = capsys.readouterr().out
     assert "✗" in out
-    assert "brain-save-trigger.py" in out
+    assert "brain-save-trigger.sh" in out
     assert rc == 1
 
 

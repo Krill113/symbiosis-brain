@@ -16,9 +16,9 @@ import sys
 import time
 from pathlib import Path
 
-VENV_PY = Path(
-    r"C:\Repos\dev\acmeNetwork\My\others\symbiosis-brain\.venv\Scripts\python.exe"
-)
+# The interpreter running this script — the repo venv when invoked as
+# `.venv/Scripts/python tools/repro/repro_runner.py ...`. Override via REPRO_VENV_PY.
+VENV_PY = Path(os.environ.get("REPRO_VENV_PY", sys.executable))
 TIMEOUT_S = 180
 
 

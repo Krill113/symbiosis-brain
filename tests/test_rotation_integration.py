@@ -1,11 +1,11 @@
-"""Integration test against real symbiosis-brain card snapshot."""
+"""Integration test against a synthetic card snapshot fixture."""
 import shutil
 from pathlib import Path
 
 from symbiosis_brain.rotation import rotate_handoffs, parse_handoff_sections
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "symbiosis-brain-card-snapshot-2026-05-15.md"
+FIXTURE = Path(__file__).parent / "fixtures" / "card-snapshot-synthetic.md"
 
 
 def test_rotation_on_real_card_snapshot(tmp_path):
@@ -17,7 +17,7 @@ def test_rotation_on_real_card_snapshot(tmp_path):
 
     pre_text = card.read_text(encoding="utf-8")
     pre_sections = parse_handoff_sections(pre_text)
-    assert len(pre_sections) >= 7  # was 11 on 2026-05-15
+    assert len(pre_sections) >= 7  # synthetic fixture has 8 handoff sections
 
     report = rotate_handoffs(vault=vault, scope="symbiosis-brain", inline_days=2)
 

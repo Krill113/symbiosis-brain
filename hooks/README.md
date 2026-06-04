@@ -29,7 +29,7 @@ Three modes in one script:
 - **Thresholds** `25 / 35 / 45%` — soft / serious / last-chance zones with escalating messages. Calibrated for the 1M-context envelope (sessions typically stay in 0–50%, quality degrades around 40%).
 - **Delta-guard** `10%` — below the top zone, skip a trigger if context grew by less than this since the last `brain-save` (avoids double-dipping after a recent save).
 - **SAVE_LATER marker** — the user can postpone one soft-zone trigger by saying "потом"/"save later"; the top zone always fires.
-- **Marker coordination** — skill `brain-save` writes `/tmp/brain-last-save-pct-${SESSION_ID}` after each meaningful save so the hook knows it was recently fed.
+- **Marker coordination** — skill `brain-save` writes `brain-last-save-pct-${SESSION_ID}` (under `SB_TMP`, resolved via the `${TMPDIR:-${TEMP:-/tmp}}` env-chain — same temp dir the hooks use) after each meaningful save so the hook knows it was recently fed.
 
 **Changing thresholds or delta-guard:** set env vars in `~/.claude/settings.json` —
 `SYMBIOSIS_BRAIN_SAVE_THRESHOLDS` (default `25,35,45`) and

@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from symbiosis_brain.storage import Storage
-from symbiosis_brain.resolver import resolve_target, build_path_index
+from symbiosis_brain.resolver import (
+    resolve_target,
+    build_path_index,
+    compute_linked_canonicals,
+)
 from symbiosis_brain.taxonomy import load_valid_scopes, load_folder_type_map
 
 _TAXONOMY_PATH = "reference/scope-taxonomy.md"
@@ -18,11 +22,15 @@ class VaultLinter:
         notes = self._storage.list_notes()
         valid_scopes = load_valid_scopes(self._vault_path)
         folder_type_map = load_folder_type_map(self._vault_path)
-        # Build the resolution index ONCE: broken-link detection re-resolves every
-        # outgoing link live (the persisted relations.broken flag goes stale when a
-        # link target is renamed/deleted without re-syncing the referrer — see
-        # mistakes/brain-sync-skips-stale-relations-via-content-hash, 2026-06-04).
+        # Build the resolution index ONCE; both broken-link detection AND orphan
+        # detection re-resolve links LIVE (the persisted relations.broken flag goes
+        # stale when a link target is renamed/deleted/made-ambiguous without
+        # re-syncing the referrer — see mistakes/brain-sync-skips-stale-relations-
+        # via-content-hash, 2026-06-04). `linked` is the set of canonicals with a
+        # live-resolving inbound edge; count_orphans uses the same helper so the
+        # write counter and brain_lint never disagree.
         path_index = build_path_index(self._storage)
+        linked = compute_linked_canonicals(self._storage, index=path_index)
 
         orphans: list[dict] = []
         weak_links: list[dict] = []
@@ -45,20 +53,10 @@ class VaultLinter:
                 r for r in self._storage.get_relations(canonical, direction="outgoing")
                 if r["relation_type"] == "references"
             ]
-            # Orphan/incoming detection still uses the cached broken flag (NOT live
-            # re-resolution like broken_links below). Deliberate scope: keeping it
-            # cache-based stays consistent with Storage.count_orphans (the per-write
-            # counter, which must be cheap and can't afford a live pass on every
-            # write). On a stale cache the two axes can momentarily disagree; a
-            # full live orphan recompute is a tracked follow-up. (Stage 3.)
-            incoming_refs = [
-                r for r in self._storage.get_relations(canonical, direction="incoming")
-                if r["relation_type"] == "references" and not r.get("broken")
-            ]
 
-            # Orphan (no inbound) and weak_link (few outbound) are independent axes:
-            # a note can appear in both buckets.
-            if not incoming_refs:
+            # Orphan (no live-resolving inbound) and weak_link (few outbound) are
+            # independent axes: a note can appear in both buckets.
+            if canonical not in linked:
                 orphans.append({"path": note["path"], "title": note["title"]})
 
             if 0 < len(outgoing) < 2:

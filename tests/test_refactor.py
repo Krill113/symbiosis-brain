@@ -43,6 +43,55 @@ def _vault_with_refs(tmp_path: Path) -> tuple[Path, Storage, VaultSync]:
     return vault, storage, sync
 
 
+def _vault_with_code_region_ref(tmp_path: Path) -> tuple[Path, Storage, VaultSync]:
+    """Note `a` links to `b` in prose AND shows [[wiki/b]] in inline-code + a fence."""
+    vault = tmp_path / "vault"
+    (vault / "wiki").mkdir(parents=True)
+    storage = Storage(tmp_path / "test.db")
+    sync = VaultSync(vault_path=vault, storage=storage)
+
+    (vault / "wiki" / "b.md").write_text(
+        "---\ntitle: B\ntype: wiki\nscope: global\ngist: x\n---\n# B\n",
+        encoding="utf-8",
+    )
+    sync.sync_one("wiki/b.md")
+
+    (vault / "wiki" / "a.md").write_text(
+        "---\ntitle: A\ntype: wiki\nscope: global\ngist: x\n---\n# A\n"
+        "Real link [[wiki/b]].\n\n"
+        "Inline example: `[[wiki/b]]`.\n\n"
+        "```\n[[wiki/b]]\n```\n",
+        encoding="utf-8",
+    )
+    sync.sync_one("wiki/a.md")
+    return vault, storage, sync
+
+
+def test_brain_rename_skips_links_in_code_regions(tmp_path):
+    vault, storage, sync = _vault_with_code_region_ref(tmp_path)
+
+    brain_rename("wiki/b.md", "wiki/b-renamed.md", storage=storage, sync=sync, vault_path=vault)
+
+    a_body = (vault / "wiki" / "a.md").read_text()
+    # Prose link rewritten:
+    assert "Real link [[wiki/b-renamed]]." in a_body
+    # Code-region links untouched:
+    assert "`[[wiki/b]]`" in a_body
+    assert "```\n[[wiki/b]]\n```" in a_body
+
+
+def test_brain_delete_cascade_skips_links_in_code_regions(tmp_path):
+    vault, storage, sync = _vault_with_code_region_ref(tmp_path)
+
+    brain_delete("wiki/b.md", mode="cascade", storage=storage, sync=sync, vault_path=vault)
+
+    a_body = (vault / "wiki" / "a.md").read_text()
+    # Prose link replaced by a stub; the two code-region links remain literal.
+    assert "Real link [[wiki/b]]." not in a_body
+    assert a_body.count("[[wiki/b]]") == 2  # inline + fenced survive
+    assert "```\n[[wiki/b]]\n```" in a_body
+
+
 def test_brain_rename_rewrites_inbound_refs(tmp_path):
     vault, storage, sync = _vault_with_refs(tmp_path)
 

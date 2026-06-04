@@ -57,6 +57,34 @@ def build_path_index(storage: Storage) -> dict:
     return {"by_canonical": by_canonical, "by_basename": by_basename}
 
 
+def compute_linked_canonicals(storage: Storage, index: dict | None = None) -> set[str]:
+    """Return the set of canonical paths that currently have at least one
+    LIVE-resolving inbound `references` edge (i.e. some note links to them now).
+
+    Single source of truth for "is this note connected": used by both the linter's
+    orphan detection and Storage.count_orphans (the per-write counter), so the two
+    always agree. Re-resolves each edge's raw_target live rather than trusting the
+    persisted relations.broken flag — the same fix as the broken-link loop.
+    """
+    if index is None:
+        index = build_path_index(storage)
+    linked: set[str] = set()
+    for rel in storage.get_reference_relations():
+        raw_t = rel.get("raw_target")
+        if raw_t:
+            # Mirror extract_wikilinks: unescape \| before splitting the alias.
+            target = raw_t.replace(r"\|", "|").split("|", 1)[0].strip()
+        else:
+            tn = rel.get("to_name") or ""
+            target = tn[len("broken:"):] if tn.startswith("broken:") else tn
+        if not target:
+            continue
+        canonical, is_broken = resolve_target(target, storage, index=index)
+        if not is_broken and canonical is not None:
+            linked.add(canonical)
+    return linked
+
+
 def resolve_target(
     target: str, storage: Storage, index: dict | None = None
 ) -> tuple[str | None, bool]:

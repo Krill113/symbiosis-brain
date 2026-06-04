@@ -420,16 +420,30 @@ class TestWriteCounters:
         # b has inbound; a and c are orphans.
         assert storage.count_orphans() == 2
 
-    def test_count_orphans_ignores_broken_inbound(self, db_path):
+    def test_count_orphans_credits_existing_target_despite_stale_broken_flag(self, db_path):
+        # Live: a stale broken=True flag is ignored — wiki/b exists, so the edge
+        # credits it; only wiki/a (no inbound) is an orphan.
         storage = Storage(db_path)
         for p in ["wiki/a.md", "wiki/b.md"]:
             storage.upsert_note(path=p, title="T", content="", note_type="wiki",
                                 scope="global", tags=[])
-        # Only a broken inbound edge to b -> b is still an orphan.
         storage.upsert_relation(from_name="wiki/a", to_name="broken:wiki/b",
                                 relation_type="references", source_note="wiki/a.md",
                                 raw_target="wiki/b", broken=True)
-        assert storage.count_orphans() == 2
+        assert storage.count_orphans() == 1
+
+    def test_count_orphans_live_resolves_inbound_not_cached_flag(self, db_path):
+        # Live: an inbound edge whose basename is now AMBIGUOUS credits nobody
+        # (resolve_target -> broken) even though the flag says broken=0.
+        storage = Storage(db_path)
+        for p in ["wiki/a.md", "wiki/b.md", "projects/b.md"]:
+            storage.upsert_note(path=p, title="T", content="", note_type="wiki",
+                                scope="global", tags=[])
+        storage.upsert_relation(from_name="wiki/a", to_name="wiki/b",
+                                relation_type="references", source_note="wiki/a.md",
+                                raw_target="b", broken=False)
+        # 'b' is ambiguous (wiki/b + projects/b) -> all 3 orphans.
+        assert storage.count_orphans() == 3
 
     def test_count_orphans_excludes_taxonomy(self, db_path):
         storage = Storage(db_path)

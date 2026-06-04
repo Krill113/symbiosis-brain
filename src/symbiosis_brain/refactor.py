@@ -14,14 +14,11 @@ relations table stays consistent in the same transaction-ish window. Phase 6
 concurrency-safety guarantees: sync_one holds the per-note write lock; we
 process source notes one at a time.
 
-Known gap (out of Stage 3 scope, tracked follow-up): the link-rewrite passes
-below (`_rewrite_links_in_body`, `_replace_with_stub`) use a bare [[...]] regex
-that does NOT skip fenced/inline code regions, unlike extract_wikilinks (which
-Stage 3/FR4 taught to ignore code examples). So if a note has a real [[old]]
-link in prose AND a [[old]] documentation example in a code fence, rename/delete
-rewrites BOTH — corrupting the example. Notes whose only [[old]] is in code are
-unaffected (they never enter find_inbound_refs). Fix when prioritized: reuse
-markdown_parser._mask_code_regions to skip in-code matches here too.
+Code-region safety: the link-rewrite passes (`_rewrite_links_in_body`,
+`_replace_with_stub`) skip [[...]] tokens inside inline-code/fenced blocks via
+markdown_parser._mask_code_regions, consistent with extract_wikilinks (FR4) — a
+[[old]] shown as a documentation example is never rewritten or stubbed, even
+when the same note has a real [[old]] link in prose.
 """
 from __future__ import annotations
 
@@ -30,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from symbiosis_brain.atomic_write import atomic_write_text
-from symbiosis_brain.markdown_parser import extract_wikilinks
+from symbiosis_brain.markdown_parser import extract_wikilinks, _mask_code_regions
 from symbiosis_brain.write_lock import note_write_lock
 
 if TYPE_CHECKING:
@@ -57,7 +54,11 @@ def _rewrite_links_in_body(body: str, old_canonical: str, new_canonical: str) ->
     Preserves alias text. Case-insensitive match on the target portion (matches
     how the resolver canonicalizes — lowercase-equality).
     """
+    masked = _mask_code_regions(body)
+
     def repl(m: re.Match[str]) -> str:
+        if "[[" not in masked[m.start():m.end()]:
+            return m.group(0)  # inside a code region — a documented example, not a link
         inner = m.group(1)
         unescaped = inner.replace(r"\|", "|")
         parts = unescaped.split("|", 1)
@@ -74,7 +75,11 @@ def _rewrite_links_in_body(body: str, old_canonical: str, new_canonical: str) ->
 
 def _replace_with_stub(body: str, old_canonical: str) -> str:
     """For brain_delete cascade: replace [[old]] with ~~old~~ (alias preserved)."""
+    masked = _mask_code_regions(body)
+
     def repl(m: re.Match[str]) -> str:
+        if "[[" not in masked[m.start():m.end()]:
+            return m.group(0)  # inside a code region — leave the example intact
         inner = m.group(1)
         unescaped = inner.replace(r"\|", "|")
         parts = unescaped.split("|", 1)

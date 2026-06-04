@@ -281,27 +281,22 @@ class Storage:
         return row["cnt"]
 
     def count_orphans(self) -> int:
-        """Count notes with no non-broken incoming `references` edge.
+        """Count notes with no LIVE-resolving incoming `references` edge.
 
-        Mirrors VaultLinter's orphan definition (lint.py) so the write counter's
-        orphans_now agrees with brain_lint. Excludes the scope-taxonomy index
-        file (kept in sync with lint's _TAXONOMY_PATH). Cheap: two scans + set ops.
+        Uses resolver.compute_linked_canonicals — the SAME live connectivity logic
+        as VaultLinter — so the write counter's orphans_now always agrees with
+        brain_lint (even on a stale relations.broken cache). Excludes the
+        scope-taxonomy index (kept in sync with lint's _TAXONOMY_PATH).
         """
-        linked = {
-            r["to_name"]
-            for r in self._conn.execute(
-                "SELECT DISTINCT to_name FROM relations "
-                "WHERE relation_type='references' AND broken=0"
-            ).fetchall()
-        }
+        from symbiosis_brain.resolver import compute_linked_canonicals
+        linked = compute_linked_canonicals(self)
         count = 0
         for p in self.get_all_paths():
             if p == "reference/scope-taxonomy.md":
                 continue
             # Strip the same way VaultLinter.lint does (removesuffix), so the
             # two orphan counts agree exactly.
-            canonical = p.removesuffix(".md")
-            if canonical not in linked:
+            if p.removesuffix(".md") not in linked:
                 count += 1
         return count
 
@@ -361,6 +356,15 @@ class Storage:
                 "SELECT * FROM relations WHERE from_name=? OR to_name=?",
                 (entity_name, entity_name)
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_reference_relations(self) -> list[dict]:
+        """Return all `references` relations (from_name, to_name, raw_target).
+        Used by resolver.compute_linked_canonicals for live connectivity."""
+        rows = self._conn.execute(
+            "SELECT from_name, to_name, raw_target FROM relations "
+            "WHERE relation_type='references'"
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def get_in_degree_map(self) -> dict[str, int]:

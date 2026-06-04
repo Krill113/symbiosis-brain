@@ -210,6 +210,30 @@ class TestVaultLinter:
         assert "projects/symbiosis-brain" not in broken_targets
         assert "symbiosis-brain" not in broken_targets
 
+    def test_orphan_live_when_inbound_becomes_ambiguous(
+        self, tmp_vault_with_taxonomy: Path, db_path: Path
+    ):
+        """Full-live orphan detection: an inbound edge that no longer live-resolves
+        (its basename became ambiguous after sync) must NOT keep its target off the
+        orphan list. Cache-based detection would wrongly credit the stale edge."""
+        (tmp_vault_with_taxonomy / "wiki" / "target.md").write_text(
+            "---\ntitle: T\ntype: wiki\nscope: global\n---\n\nbody\n", encoding="utf-8")
+        (tmp_vault_with_taxonomy / "wiki" / "ref.md").write_text(
+            "---\ntitle: R\ntype: wiki\nscope: global\n---\n\nSee [[target]].\n", encoding="utf-8")
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        pre = {o["path"] for o in
+               VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()["orphans"]}
+        assert "wiki/target.md" not in pre  # ref credits it while 'target' is unique
+
+        # Make 'target' an ambiguous basename WITHOUT re-syncing ref (stale edge).
+        storage.upsert_note(path="projects/target.md", title="T2", content="",
+                            note_type="project", scope="global", tags=[])
+        post = {o["path"] for o in
+                VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()["orphans"]}
+        assert "wiki/target.md" in post, post
+
     def test_orphan_defined_by_absence_of_incoming_edges(
         self, tmp_vault_with_taxonomy: Path, db_path: Path
     ):

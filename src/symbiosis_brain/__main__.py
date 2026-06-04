@@ -81,7 +81,8 @@ def _run_prewarm(argv: list[str]) -> int:
     if not vault.exists():
         return 0  # graceful no-op for missing vault
 
-    debug = Path(os.environ.get("TMPDIR") or os.environ.get("TEMP") or "/tmp") / "brain-hook-debug.log"
+    from symbiosis_brain.pre_action_config import _tmp_dir
+    debug = _tmp_dir() / "brain-hook-debug.log"
 
     try:
         # Triggers fastembed import + onnx file IO into page cache.

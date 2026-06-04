@@ -5,19 +5,20 @@
 # tests/test_brain_save_trigger_py.py — kept after the python hook shim was removed
 # (bash is the single source of truth).
 #
-# The bash hook hardcodes /tmp/ flag paths (TMPDIR is NOT consulted on the stop
-# path), so we isolate with a unique pid-based session id and clean every flag
-# file we touch — no real session collides. See
-# [[mistakes/test-subprocess-inherits-system-tmpdir]].
+# The bash hook resolves flag paths via ${TMPDIR:-${TEMP:-/tmp}} (SB_TMP), so the
+# fixtures below use the same chain to stay in sync. We isolate with a unique
+# pid-based session id and clean every flag file we touch — no real session
+# collides. See [[mistakes/test-subprocess-inherits-system-tmpdir]].
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/brain-save-trigger.sh"
 SID="test-stop-$$"
-PCT_FILE="/tmp/brain-context-pct-${SID}"
-TRIGGERED="/tmp/brain-triggered-${SID}"
-LAST_SAVE="/tmp/brain-last-save-pct-${SID}"
-SAVE_LATER="/tmp/brain-save-later-${SID}"
-PRECOMPACT="/tmp/brain-precompact-${SID}"
-PENDING="/tmp/brain-precompact-pending-${SID}"
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
+PCT_FILE="$SB_TMP/brain-context-pct-${SID}"
+TRIGGERED="$SB_TMP/brain-triggered-${SID}"
+LAST_SAVE="$SB_TMP/brain-last-save-pct-${SID}"
+SAVE_LATER="$SB_TMP/brain-save-later-${SID}"
+PRECOMPACT="$SB_TMP/brain-precompact-${SID}"
+PENDING="$SB_TMP/brain-precompact-pending-${SID}"
 
 cleanup() {
   rm -f "$PCT_FILE" "$TRIGGERED" "$LAST_SAVE" "$SAVE_LATER" "$PRECOMPACT" "$PENDING"

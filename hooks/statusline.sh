@@ -11,9 +11,10 @@ model=$(get_str display_name | sed 's/Claude //')
 effort=$(grep -o '"effortLevel":"[^"]*"' ~/.claude/settings.json 2>/dev/null | sed 's/.*:"//;s/"//')
 ctx=$(get_num used_percentage | head -1 | cut -d. -f1)
 session_id=$(get_str session_id)
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
 # Export context % per-session for brain-save-trigger.sh (avoid cross-session bleed)
-[ -n "$ctx" ] && [ -n "$session_id" ] && echo "$ctx" > "/tmp/brain-context-pct-${session_id}"
+[ -n "$ctx" ] && [ -n "$session_id" ] && echo "$ctx" > "$SB_TMP/brain-context-pct-${session_id}"
 
 # Rate limit data
 rate5h=$(echo "$data" | grep -o '"five_hour":{[^}]*}' | grep -o '"used_percentage":[0-9.]*' | sed 's/.*://' | cut -d. -f1)

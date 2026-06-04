@@ -4,6 +4,7 @@
 INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
 SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
 SAVE_THR=$(echo "${SYMBIOSIS_BRAIN_SAVE_THRESHOLDS:-40,70,90}" | tr ',' '/')
@@ -12,7 +13,7 @@ RULES_R="${SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL:-10}"
 
 LAST_SAVE=0
 if [ -n "$SESSION_ID" ]; then
-  LAST_SAVE=$(cat "/tmp/brain-last-save-pct-${SESSION_ID}" 2>/dev/null || echo 0)
+  LAST_SAVE=$(cat "$SB_TMP/brain-last-save-pct-${SESSION_ID}" 2>/dev/null || echo 0)
 fi
 
 echo "🧠 [Symbiosis-Brain]  scope: ${SCOPE}  auto-save: [${SAVE_THR}]  rules: [${RULES_THR}·R${RULES_R}]  last-save: ${LAST_SAVE}%"

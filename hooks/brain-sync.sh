@@ -5,6 +5,7 @@
 
 VAULT="${SYMBIOSIS_BRAIN_VAULT:-$HOME/symbiosis-brain-vault}"
 MODE="${1:-auto}"
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
 # Soft-fail guards
 [ ! -d "$VAULT/.git" ] && exit 0
@@ -23,7 +24,7 @@ if [ "$MODE" = "manual" ]; then
   timeout 30 git push 2>&1
 else
   timeout 30 git push >/dev/null 2>&1 \
-    || echo "$(date) brain-sync push failed" >> /tmp/brain-sync-errors.log 2>/dev/null
+    || echo "$(date) brain-sync push failed" >> "$SB_TMP/brain-sync-errors.log" 2>/dev/null
 fi
 
 exit 0

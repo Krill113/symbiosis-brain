@@ -18,23 +18,24 @@ INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
-TRIGGERED_FILE="/tmp/brain-triggered-${SESSION_ID}"
+TRIGGERED_FILE="$SB_TMP/brain-triggered-${SESSION_ID}"
 
 if [ "$MODE" = "stop" ]; then
   # Prevent infinite loop in blocking mode
   echo "$INPUT" | grep -q '"stop_hook_active":true' && exit 0
 
   # Read context percentage from statusline export (per-session, updated every 10s)
-  PCT=$(cat "/tmp/brain-context-pct-${SESSION_ID}" 2>/dev/null)
+  PCT=$(cat "$SB_TMP/brain-context-pct-${SESSION_ID}" 2>/dev/null)
   [ -z "$PCT" ] && exit 0
 
   # Read last-save marker (written by skill brain-save after successful brain_write)
-  LAST_SAVE_PCT=$(cat "/tmp/brain-last-save-pct-${SESSION_ID}" 2>/dev/null)
+  LAST_SAVE_PCT=$(cat "$SB_TMP/brain-last-save-pct-${SESSION_ID}" 2>/dev/null)
   [ -z "$LAST_SAVE_PCT" ] && LAST_SAVE_PCT=0
   DELTA=$((PCT - LAST_SAVE_PCT))
 
-  SAVE_LATER_FILE="/tmp/brain-save-later-${SESSION_ID}"
+  SAVE_LATER_FILE="$SB_TMP/brain-save-later-${SESSION_ID}"
 
   # Zone boundaries derived from the (ascending) threshold list: lowest = soft,
   # top = last-chance, anything between = serious.
@@ -83,10 +84,10 @@ if [ "$MODE" = "stop" ]; then
 fi  # end of stop mode
 
 if [ "$MODE" = "precompact" ]; then
-  PRECOMPACT_FILE="/tmp/brain-precompact-${SESSION_ID}"
+  PRECOMPACT_FILE="$SB_TMP/brain-precompact-${SESSION_ID}"
   if [ ! -f "$PRECOMPACT_FILE" ]; then
     touch "$PRECOMPACT_FILE"
-    touch "/tmp/brain-precompact-pending-${SESSION_ID}"
+    touch "$SB_TMP/brain-precompact-pending-${SESSION_ID}"
     echo "🧠 Save memory? Type any message to trigger brain-save. Just /compact again to skip." >&2
     exit 2
   fi
@@ -100,7 +101,7 @@ if [ "$MODE" = "prompt-check" ]; then
 
   # Pending compact relay (existing behaviour)
   PENDING_BLOCK=""
-  PENDING="/tmp/brain-precompact-pending-${SESSION_ID}"
+  PENDING="$SB_TMP/brain-precompact-pending-${SESSION_ID}"
   if [ -f "$PENDING" ]; then
     rm -f "$PENDING"
     PENDING_BLOCK="🧠 Compaction was blocked. Run brain-save to preserve knowledge, then tell user to repeat /compact."
@@ -136,7 +137,7 @@ if [ "$MODE" = "prompt-check" ]; then
   fi
 
   if [ "$SKIP_RECALL" = "0" ] && [ -n "$VAULT" ]; then
-    DEBUG_LOG="${SYMBIOSIS_BRAIN_DEBUG_LOG:-/tmp/brain-hook-debug.log}"
+    DEBUG_LOG="${SYMBIOSIS_BRAIN_DEBUG_LOG:-$SB_TMP/brain-hook-debug.log}"
     GIST_TOOLS="${SYMBIOSIS_BRAIN_TOOLS:-}"
 
     # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.
@@ -180,10 +181,10 @@ except Exception:
   # ── A2: rules ───────────────────────────────────────────
   RULES_BLOCK=""
   if [ "$RULES_ENABLED" = "true" ]; then
-    PCT=$(cat "/tmp/brain-context-pct-${SESSION_ID}" 2>/dev/null || echo 0)
+    PCT=$(cat "$SB_TMP/brain-context-pct-${SESSION_ID}" 2>/dev/null || echo 0)
     [ -z "$PCT" ] && PCT=0
-    SHOWN_FILE="/tmp/brain-rules-shown-${SESSION_ID}"
-    TURN_FILE="/tmp/brain-rules-turn-counter-${SESSION_ID}"
+    SHOWN_FILE="$SB_TMP/brain-rules-shown-${SESSION_ID}"
+    TURN_FILE="$SB_TMP/brain-rules-turn-counter-${SESSION_ID}"
     TURNS=$(cat "$TURN_FILE" 2>/dev/null || echo 0)
     [ -z "$TURNS" ] && TURNS=0
     TURNS=$((TURNS + 1))

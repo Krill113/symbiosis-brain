@@ -28,6 +28,7 @@ if [ "$1" = "--source-only-normalize" ]; then return 0 2>/dev/null || exit 0; fi
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
 VAULT="${SYMBIOSIS_BRAIN_VAULT:-$HOME/symbiosis-brain-vault}"
 TOOLS="${SYMBIOSIS_BRAIN_TOOLS}"
@@ -68,14 +69,20 @@ fi
 
 # Clean THIS session's trigger flags (threshold reset on compaction; no-op on fresh startup)
 if [ -n "$SESSION_ID" ]; then
-  rm -f "/tmp/brain-triggered-${SESSION_ID}" \
-        "/tmp/brain-precompact-${SESSION_ID}" \
-        "/tmp/brain-precompact-pending-${SESSION_ID}" \
-        "/tmp/brain-last-save-pct-${SESSION_ID}" \
-        "/tmp/brain-save-later-${SESSION_ID}" \
-        "/tmp/brain-rules-shown-${SESSION_ID}" \
-        "/tmp/brain-rules-turn-counter-${SESSION_ID}"
-  echo "$SESSION_ID" > /tmp/brain-current-session
+  rm -f "$SB_TMP/brain-triggered-${SESSION_ID}" \
+        "$SB_TMP/brain-precompact-${SESSION_ID}" \
+        "$SB_TMP/brain-precompact-pending-${SESSION_ID}" \
+        "$SB_TMP/brain-last-save-pct-${SESSION_ID}" \
+        "$SB_TMP/brain-save-later-${SESSION_ID}" \
+        "$SB_TMP/brain-rules-shown-${SESSION_ID}" \
+        "$SB_TMP/brain-rules-turn-counter-${SESSION_ID}" \
+        "$SB_TMP/brain-context-pct-${SESSION_ID}"
+  echo "$SESSION_ID" > "$SB_TMP/brain-current-session"
+fi
+
+# Opportunistic GC of orphaned recall dedup files from dead/idle sessions
+if command -v find >/dev/null 2>&1; then
+  find "$SB_TMP" -maxdepth 1 -name 'brain-recall-seen-*.json' -mmin +60 -delete 2>/dev/null || true
 fi
 
 exit 0

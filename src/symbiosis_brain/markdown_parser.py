@@ -6,6 +6,104 @@ import frontmatter
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
+_FENCE_CHARS = "`~"
+
+
+def _fence_marker(stripped: str) -> tuple[str, int] | None:
+    """If `stripped` (a leading-whitespace-stripped line) opens/closes a code
+    fence, return (fence_char, run_length); else None. A fence is a run of >=3
+    of the same char in {`, ~} at the start of the line."""
+    if not stripped:
+        return None
+    ch = stripped[0]
+    if ch not in _FENCE_CHARS:
+        return None
+    n = len(stripped) - len(stripped.lstrip(ch))
+    return (ch, n) if n >= 3 else None
+
+
+def _mask_inline_code(s: str) -> str:
+    """Replace inline-code spans in a single line with spaces (length-preserving).
+
+    A backtick run of length N opens a span that closes at the next run of
+    EXACTLY N backticks (CommonMark). An unterminated run is literal (left as-is).
+    """
+    chars = list(s)
+    n = len(s)
+    i = 0
+    while i < n:
+        if s[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < n and s[j] == "`":
+            j += 1
+        run = j - i
+        # Search for a closing run of exactly `run` backticks.
+        k = j
+        closed_at = -1
+        while k < n:
+            if s[k] == "`":
+                m = k
+                while m < n and s[m] == "`":
+                    m += 1
+                if m - k == run:
+                    closed_at = m
+                    break
+                k = m
+            else:
+                k += 1
+        if closed_at == -1:
+            # Unterminated: backticks are literal. Skip past the opening run.
+            i = j
+            continue
+        for x in range(i, closed_at):
+            chars[x] = " "
+        i = closed_at
+    return "".join(chars)
+
+
+def _mask_code_regions(text: str) -> str:
+    """Return `text` with every char inside a code region replaced by a space,
+    preserving length, line structure, and byte offsets so match positions still
+    index into the original text.
+
+    Masked regions: fenced code blocks (``` / ~~~, >=3 chars, info-string allowed
+    on the opening fence) and inline-code spans (`...`). Used to keep wiki-link
+    extraction from seeing [[...]] tokens that are only code examples.
+    """
+    out: list[str] = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    segments = text.split("\n")
+    for seg in segments:
+        cr = ""
+        content = seg
+        if content.endswith("\r"):
+            cr = "\r"
+            content = content[:-1]
+        stripped = content.lstrip()
+        marker = _fence_marker(stripped)
+        if in_fence:
+            # A closing fence: same char, run >= opening, nothing but whitespace after.
+            if (
+                marker
+                and marker[0] == fence_char
+                and marker[1] >= fence_len
+                and stripped[marker[1]:].strip() == ""
+            ):
+                in_fence = False
+            out.append(" " * len(content) + cr)
+            continue
+        if marker:
+            in_fence = True
+            fence_char, fence_len = marker
+            out.append(" " * len(content) + cr)
+            continue
+        out.append(_mask_inline_code(content) + cr)
+    return "\n".join(out)
+
 
 def parse_note(content: str) -> dict[str, Any]:
     """Parse markdown with optional YAML frontmatter into structured dict."""
@@ -41,11 +139,18 @@ def extract_wikilinks(text: str) -> list[dict]:
 
     Deduplicates by `raw`, preserves order of first occurrence.
     Empty/whitespace-only links are skipped.
+
+    Wiki-links inside inline-code spans (`...`) and fenced code blocks (``` / ~~~)
+    are skipped, so documenting [[...]] syntax in a code example neither creates
+    nor validates a link.
     """
     seen_raw: set[str] = set()
     result: list[dict] = []
-    for match in WIKILINK_RE.finditer(text):
-        raw = match.group(1)
+    # Mask code regions before scanning. The mask is length-preserving, so match
+    # offsets still index into `text` — slice `raw` from the original, not the mask.
+    scan_text = _mask_code_regions(text)
+    for match in WIKILINK_RE.finditer(scan_text):
+        raw = text[match.start(1):match.end(1)]
         if raw in seen_raw:
             continue
         seen_raw.add(raw)

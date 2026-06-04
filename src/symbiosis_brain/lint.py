@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from symbiosis_brain.storage import Storage
+from symbiosis_brain.resolver import resolve_target, build_path_index
 from symbiosis_brain.taxonomy import load_valid_scopes, load_folder_type_map
 
 _TAXONOMY_PATH = "reference/scope-taxonomy.md"
@@ -17,6 +18,11 @@ class VaultLinter:
         notes = self._storage.list_notes()
         valid_scopes = load_valid_scopes(self._vault_path)
         folder_type_map = load_folder_type_map(self._vault_path)
+        # Build the resolution index ONCE: broken-link detection re-resolves every
+        # outgoing link live (the persisted relations.broken flag goes stale when a
+        # link target is renamed/deleted without re-syncing the referrer — see
+        # mistakes/brain-sync-skips-stale-relations-via-content-hash, 2026-06-04).
+        path_index = build_path_index(self._storage)
 
         orphans: list[dict] = []
         weak_links: list[dict] = []
@@ -39,6 +45,12 @@ class VaultLinter:
                 r for r in self._storage.get_relations(canonical, direction="outgoing")
                 if r["relation_type"] == "references"
             ]
+            # Orphan/incoming detection still uses the cached broken flag (NOT live
+            # re-resolution like broken_links below). Deliberate scope: keeping it
+            # cache-based stays consistent with Storage.count_orphans (the per-write
+            # counter, which must be cheap and can't afford a live pass on every
+            # write). On a stale cache the two axes can momentarily disagree; a
+            # full live orphan recompute is a tracked follow-up. (Stage 3.)
             incoming_refs = [
                 r for r in self._storage.get_relations(canonical, direction="incoming")
                 if r["relation_type"] == "references" and not r.get("broken")
@@ -57,8 +69,25 @@ class VaultLinter:
                 })
 
             for rel in outgoing:
-                # Broken-link detection uses ONLY the relations.broken flag.
-                if rel.get("broken"):
+                # Broken-link detection re-resolves the target LIVE rather than
+                # trusting the persisted relations.broken flag (which goes stale).
+                raw_t = rel.get("raw_target")
+                if raw_t:
+                    # Mirror extract_wikilinks: unescape \| BEFORE splitting on the
+                    # alias pipe, else an aliased [[path\|alias]] leaves a trailing
+                    # backslash and resolve_target wrongly reports it broken.
+                    target = raw_t.replace(r"\|", "|").split("|", 1)[0].strip()
+                else:
+                    # Legacy/hand-built rows without raw_target: derive from to_name,
+                    # stripping the "broken:" marker sync uses for unresolved targets.
+                    tn = rel["to_name"]
+                    target = tn[len("broken:"):] if tn.startswith("broken:") else tn
+                if not target:
+                    continue
+                _canonical, is_broken = resolve_target(
+                    target, self._storage, index=path_index
+                )
+                if is_broken:
                     # raw_target holds the original link text; fall back to to_name.
                     reported_target = rel.get("raw_target") or rel["to_name"]
                     broken_links.append({

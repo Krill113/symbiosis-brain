@@ -241,33 +241,42 @@ class TestVaultLinter:
         )
 
 
-class TestLintBrokenViaFlag:
-    def test_broken_links_sourced_from_flag(self, tmp_path, tmp_vault_with_taxonomy: Path):
-        """Broken-link detection uses ONLY the relations.broken flag, not name heuristics."""
-        storage = Storage(tmp_path / "t.db")
-        # Minimal note so linter iterates at least one source.
-        storage._conn.execute(
-            "INSERT INTO notes (path, title, content, note_type, scope, tags, "
-            "frontmatter, created_at, updated_at) "
-            "VALUES ('projects/src.md', 'Src', '', 'wiki', 'global', '[]', '{}', "
-            "'2026-04-20T12:00:00+00:00', '2026-04-20T12:00:00+00:00')"
-        )
+class TestLintBrokenViaLiveResolve:
+    def _seed_src_and_foo(self, storage: Storage) -> None:
+        now = "2026-04-20T12:00:00+00:00"
+        for p in ["projects/src.md", "projects/foo.md"]:
+            storage._conn.execute(
+                "INSERT INTO notes (path, title, content, note_type, scope, tags, "
+                "frontmatter, created_at, updated_at) "
+                "VALUES (?, 'T', '', 'wiki', 'global', '[]', '{}', ?, ?)",
+                (p, now, now),
+            )
         storage._conn.commit()
 
-        storage.upsert_entity(name="projects/src")
-        storage.upsert_entity(name="projects/foo")
+    def test_broken_links_from_live_resolution(self, tmp_path, tmp_vault_with_taxonomy: Path):
+        """Broken-link detection re-resolves targets LIVE, not via the cached flag.
+
+        Two hand-built relations both carry broken=True. One target
+        (projects/foo) actually exists → live resolve clears it; the other
+        (nowhere) does not → live resolve confirms broken. Proves lint trusts
+        live resolution over the persisted broken flag (both directions).
+        """
+        storage = Storage(tmp_path / "t.db")
+        self._seed_src_and_foo(storage)
+
+        storage.upsert_entity(name="broken:projects/foo")
         storage.upsert_entity(name="broken:nowhere")
 
-        # Good link: broken=False
+        # Stale broken=True even though projects/foo exists → live must clear it.
         storage.upsert_relation(
             from_name="projects/src",
-            to_name="projects/foo",
+            to_name="broken:projects/foo",
             relation_type="references",
             source_note="projects/src.md",
             raw_target="projects/foo",
-            broken=False,
+            broken=True,
         )
-        # Broken link: broken=True
+        # Genuinely missing target → stays broken.
         storage.upsert_relation(
             from_name="projects/src",
             to_name="broken:nowhere",
@@ -280,10 +289,63 @@ class TestLintBrokenViaFlag:
         report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
         broken = report["broken_links"]
 
-        # Exactly ONE broken link, identified by flag=True
         assert len(broken) == 1, f"Expected 1 broken link, got {len(broken)}: {broken}"
         assert broken[0]["target"] == "nowhere", f"Expected target='nowhere', got {broken[0]['target']}"
         assert broken[0]["source"] == "projects/src.md", f"Expected source='projects/src.md', got {broken[0]['source']}"
+
+    def test_lint_aliased_link_not_broken(
+        self, tmp_vault_with_taxonomy: Path, db_path: Path
+    ):
+        """A [[path\\|alias]] link to an EXISTING note must NOT be reported broken:
+        the live-resolve target derivation must unescape \\| before splitting (the
+        parser does), else the trailing backslash makes resolve_target fail."""
+        (tmp_vault_with_taxonomy / "wiki" / "target.md").write_text(
+            "---\ntitle: Target\ntype: wiki\nscope: global\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        (tmp_vault_with_taxonomy / "wiki" / "ref.md").write_text(
+            "---\ntitle: Ref\ntype: wiki\nscope: global\n---\n\n"
+            "See [[wiki/target\\|nice name]] and [[wiki/target]].\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+        assert all(
+            bl["source"] != "wiki/ref.md" for bl in report["broken_links"]
+        ), f"aliased link to existing note wrongly broken: {report['broken_links']}"
+
+    def test_lint_reports_broken_when_cache_says_clean(
+        self, tmp_vault_with_taxonomy: Path, db_path: Path
+    ):
+        """The stale-cache under-report bug (2026-06-04): a target vanishes after
+        sync without re-syncing the referrer, so relations.broken stays 0 — live
+        lint must still report the now-broken link."""
+        (tmp_vault_with_taxonomy / "wiki" / "a.md").write_text(
+            "---\ntitle: A\ntype: wiki\nscope: global\n---\n\nSee [[wiki/b]].\n",
+            encoding="utf-8",
+        )
+        (tmp_vault_with_taxonomy / "wiki" / "b.md").write_text(
+            "---\ntitle: B\ntype: wiki\nscope: global\n---\n\nNo outgoing.\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        # Cache currently clean for a->b.
+        pre = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+        assert all(bl["source"] != "wiki/a.md" for bl in pre["broken_links"])
+
+        # Target row removed WITHOUT re-syncing A — a->b relation keeps broken=0.
+        storage._conn.execute("DELETE FROM notes WHERE path='wiki/b.md'")
+        storage._conn.commit()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+        assert any(
+            bl["source"] == "wiki/a.md" and bl["target"] == "wiki/b"
+            for bl in report["broken_links"]
+        ), f"Expected wiki/a.md -> wiki/b broken, got {report['broken_links']}"
 
 
 def test_lint_loads_valid_scopes_from_taxonomy(tmp_path: Path, db_path: Path):

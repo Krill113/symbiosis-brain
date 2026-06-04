@@ -164,3 +164,33 @@ def test_target_starting_with_digit_not_a_scope(tmp_path):
     storage = _storage_with_paths(tmp_path, [])
     canonical, broken = resolve_target("2026: note", storage)
     assert broken is True
+
+
+class TestResolveTargetIndexed:
+    """build_path_index + resolve_target(index=...) — cached path lookup for lint."""
+
+    def test_indexed_matches_uncached(self, storage_with_notes):
+        from symbiosis_brain.resolver import build_path_index
+        index = build_path_index(storage_with_notes)
+        for target in [
+            "projects/alpha-seti", "Projects/Alpha-Seti", "projects/alpha-seti.md",
+            "alpha-seti", "WIDGETCOMPARE", "graphics-optimization",
+            "projects/nonexistent", "nowhere-note", "",
+        ]:
+            assert resolve_target(target, storage_with_notes, index=index) == \
+                resolve_target(target, storage_with_notes), target
+
+    def test_index_avoids_storage_scan(self, storage_with_notes):
+        from symbiosis_brain.resolver import build_path_index
+        index = build_path_index(storage_with_notes)
+        calls = {"n": 0}
+        orig = storage_with_notes.get_all_paths
+
+        def spy():
+            calls["n"] += 1
+            return orig()
+
+        storage_with_notes.get_all_paths = spy
+        resolve_target("alpha-seti", storage_with_notes, index=index)
+        resolve_target("projects/alpha-seti", storage_with_notes, index=index)
+        assert calls["n"] == 0

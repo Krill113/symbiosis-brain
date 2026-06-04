@@ -43,14 +43,31 @@ class TestSplitSections:
         result = split_sections(body)
         assert "Next Up" in result["sections"]
 
-    def test_preserves_h1_and_h3(self):
+    def test_finds_h1_section(self):
+        body = "# Title\n\nbody text\n"
+        result = split_sections(body)
+        assert "Title" in result["sections"]
+        assert result["sections"]["Title"].startswith("# Title\n")
+
+    def test_finds_all_heading_levels(self):
+        # SC1: every heading level (h1-h6) is a section boundary now.
         body = "# Title\n\n### Subsection\n\nfoo\n\n## Real Section\n\nbar\n"
         result = split_sections(body)
-        assert list(result["sections"].keys()) == ["Real Section"]
-        assert "### Subsection" in result["preamble"]
+        assert list(result["sections"].keys()) == ["Title", "Subsection", "Real Section"]
+        assert result["preamble"] == ""
+
+    def test_ignores_headings_inside_fences(self):
+        # A '#'-comment inside a fenced code block must NOT become a section.
+        body = "## Setup\n\nRun it.\n\n```bash\n# Install deps\nnpm i\n```\n\n## Usage\n\nGo.\n"
+        result = split_sections(body)
+        assert list(result["sections"].keys()) == ["Setup", "Usage"]
 
 
-from symbiosis_brain.sections import append_to_section, SectionNotFoundError
+from symbiosis_brain.sections import (
+    append_to_section,
+    SectionNotFoundError,
+    SectionAmbiguousError,
+)
 
 
 class TestAppendToSection:
@@ -125,6 +142,59 @@ class TestAppendToSection:
         result = append_to_section(body, "A", "- y")
         assert "\r" not in result
         assert result == "## A\n\n- x\n- y\n"
+
+    # SC1 — append must also find h1 (and any heading level) sections.
+
+    def test_appends_to_h1_section(self):
+        body = "# Notes\n\nfirst\n"
+        result = append_to_section(body, "Notes", "second")
+        assert result == "# Notes\n\nfirst\nsecond\n"
+
+    def test_appends_to_h1_crlf(self):
+        body = "# A\r\n\r\n- x\r\n"
+        result = append_to_section(body, "A", "- new")
+        assert "- x\r\n- new\r\n" in result
+        stripped = result.replace("\r\n", "")
+        assert "\n" not in stripped  # CRLF non-regression for h1
+
+    def test_h2_still_works_after_generalization(self):
+        body = "## Next Up\n\n- item A\n"
+        result = append_to_section(body, "Next Up", "- item B")
+        assert result == "## Next Up\n\n- item A\n- item B\n"
+
+    def test_missing_section_lists_h1_available(self):
+        body = "# Real\n\nfoo\n"
+        with pytest.raises(SectionNotFoundError) as exc:
+            append_to_section(body, "Ghost", "x")
+        assert "Real" in str(exc.value)  # h1 sections now appear in available list
+
+    def test_append_preserves_fenced_hash_comment(self):
+        # The fence + its '#'-comment must survive; the new line lands at the
+        # end of the Setup section (after the fence, before ## Usage).
+        body = (
+            "## Setup\n\nRun the installer.\n\n"
+            "```bash\n# Install dependencies\nnpm install\n```\n\n"
+            "## Usage\n\nStart.\n"
+        )
+        result = append_to_section(body, "Setup", "- extra step")
+        assert "```bash\n# Install dependencies\nnpm install\n```" in result
+        assert "- extra step" in result
+        assert result.index("- extra step") > result.index("npm install")
+        assert result.index("- extra step") < result.index("## Usage")
+
+    def test_append_ambiguous_section_raises(self):
+        body = "# Foo\n\nalpha\n\n## Foo\n\nbeta\n"
+        with pytest.raises(SectionAmbiguousError):
+            append_to_section(body, "Foo", "- x")
+
+    def test_append_to_unique_section_preserves_duplicate_named_sections(self):
+        # Appending to a UNIQUE section must not drop/reorder same-named sections.
+        body = "# Foo\n\nalpha\n\n## Bar\n\nbar\n\n## Foo\n\nbeta\n"
+        result = append_to_section(body, "Bar", "- new")
+        assert "alpha" in result
+        assert "beta" in result
+        assert "- new" in result
+        assert result.index("alpha") < result.index("bar") < result.index("beta")
 
 
 from symbiosis_brain.sections import (

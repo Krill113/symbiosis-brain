@@ -204,6 +204,65 @@ def test_gist_above_hard_limit_raises(tmp_path):
     assert "140" in msg
 
 
+def test_malformed_forward_ref_in_inline_code_not_rejected(tmp_path):
+    """`[[forward:X|alias]]` inside inline-code is a doc example, not a real link.
+
+    FR4/Q3: the validator must not extract wiki-link syntax from code regions,
+    so documenting the syntax no longer trips the malformed-forward-ref gate.
+    """
+    storage = _storage_with_note(tmp_path)
+    warnings = validate_note(
+        path="wiki/new.md",
+        title="New",
+        body="# H\nDoc: `[[forward:X|alias]]` is invalid. See [[wiki/existing]] [[wiki/existing]].",
+        frontmatter={"gist": "x"},
+        storage=storage,
+    )
+    assert isinstance(warnings, list)
+
+
+def test_broken_outgoing_ref_in_fenced_block_not_rejected(tmp_path):
+    """A broken [[link]] inside a fenced code block is a code example, not a real ref."""
+    storage = _storage_with_note(tmp_path)
+    body = (
+        "# H\n\n```\n[[wiki/does-not-exist]]\n```\n\n"
+        "[[wiki/existing]] [[wiki/existing]]"
+    )
+    warnings = validate_note(
+        path="wiki/new.md", title="New", body=body,
+        frontmatter={"gist": "x"}, storage=storage,
+    )
+    assert isinstance(warnings, list)
+
+
+def test_broken_outgoing_ref_in_prose_still_raises(tmp_path):
+    """Guard against over-skipping: a real broken link in prose STILL hard-blocks."""
+    storage = _storage_with_note(tmp_path)
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md", title="New",
+            body="# H\n[[wiki/does-not-exist]] [[wiki/existing]]",
+            frontmatter={"gist": "x"}, storage=storage,
+        )
+    assert "wiki/does-not-exist" in str(exc.value)
+
+
+def test_few_wiki_links_counts_only_prose_links(tmp_path):
+    """A distinct link inside inline-code does not count toward MIN_WIKILINKS."""
+    storage = _storage_with_note(tmp_path)
+    storage.upsert_note(
+        path="wiki/second.md", title="Second", content="# S", note_type="wiki",
+        scope="global", tags=[], frontmatter={"gist": "x"},
+        valid_from=None, valid_to=None,
+    )
+    warnings = validate_note(
+        path="wiki/new.md", title="New",
+        body="# H\n[[wiki/existing]] plus a code example `[[wiki/second]]`",
+        frontmatter={"gist": "x"}, storage=storage,
+    )
+    assert "few_wiki_links" in [w.rule for w in warnings]
+
+
 def test_gist_at_hard_limit_passes(tmp_path):
     """gist exactly at hard limit (140) passes — strict `>` comparison."""
     storage = _storage_with_note(tmp_path)

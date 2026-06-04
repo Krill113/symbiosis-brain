@@ -152,6 +152,19 @@ def _write_note_body(rel_path: str, new_text: str, op: str, title: str) -> None:
         _write_note_body_unlocked(rel_path, new_text, op, title)
 
 
+def _write_counter(canonical: str, broken_before: int) -> str:
+    """Build the trailing write-impact counter line appended to write-tool
+    responses (FR2): wrote=1, broken_added = new broken outgoing links from this
+    write (delta, clamped ≥0, includes dangling forward-refs), orphans_now =
+    whole-vault orphan count (matches brain_lint). `broken_before` is the source's
+    broken-outgoing count captured BEFORE the write.
+    """
+    broken_after = _storage.count_broken_outgoing(canonical)
+    broken_added = max(0, broken_after - broken_before)
+    orphans_now = _storage.count_orphans()
+    return f"\n\n[counter] wrote=1 broken_added={broken_added} orphans_now={orphans_now}"
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
@@ -192,11 +205,11 @@ async def list_tools() -> list[Tool]:
             },
             "required": ["path", "title", "body"],
         }),
-        Tool(name="brain_append", description="Append content to an existing '## section' of a note without rewriting the whole file. Use for incremental updates.", inputSchema={
+        Tool(name="brain_append", description="Append content to an existing section of a note without rewriting the whole file. Matches a heading of any level (h1-h6). Use for incremental updates.", inputSchema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative path in vault"},
-                "section": {"type": "string", "description": "Exact '## heading' name without the '## ' prefix. Case-sensitive."},
+                "section": {"type": "string", "description": "Exact heading text without the leading '#'/'##' marker. Matches any heading level (h1-h6). Case-sensitive."},
                 "content": {"type": "string", "description": "Markdown fragment to append at end of the section."},
                 "create_if_missing": {"type": "boolean", "default": False, "description": "If true and section does not exist, create it at the end of the file."},
             },
@@ -413,6 +426,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text="Error: path must be within vault")]
         is_new = not file_path.exists()
         file_path.parent.mkdir(parents=True, exist_ok=True)
+        canonical = arguments["path"].removesuffix(".md")
+        broken_before = _storage.count_broken_outgoing(canonical)
         _write_note_body(arguments["path"], md_content, "write", arguments["title"])
 
         msg = f"Saved: {arguments['path']}"
@@ -423,10 +438,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if note_count > 0 and note_count % 25 == 0:
                 msg += (f"\n\n(Vault has {note_count} notes."
                         " Consider reviewing for duplicates.)")
+        msg += _write_counter(canonical, broken_before)
         return [TextContent(type="text", text=msg)]
 
     elif name == "brain_append":
-        from symbiosis_brain.sections import append_to_section, SectionNotFoundError
+        from symbiosis_brain.sections import (
+            append_to_section,
+            SectionNotFoundError,
+            SectionAmbiguousError,
+        )
 
         rel_path = arguments["path"]
         file_path = (_vault_path / rel_path).resolve()
@@ -448,7 +468,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments["content"],
                     create_if_missing=arguments.get("create_if_missing", False),
                 )
-            except SectionNotFoundError as e:
+            except (SectionNotFoundError, SectionAmbiguousError) as e:
                 return [TextContent(type="text", text=f"Error: {e}")]
 
             if new_links_introduced(post.content, new_body):
@@ -465,8 +485,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             post.content = new_body
             new_text = frontmatter.dumps(post) + "\n"
+            canonical = rel_path.removesuffix(".md")
+            broken_before = _storage.count_broken_outgoing(canonical)
             _write_note_body_unlocked(rel_path, new_text, "append", post.metadata.get("title", ""))
-        return [TextContent(type="text", text=f"Appended to '## {arguments['section']}' in {rel_path}")]
+        msg = f"Appended to '{arguments['section']}' in {rel_path}"
+        msg += _write_counter(canonical, broken_before)
+        return [TextContent(type="text", text=msg)]
 
     elif name == "brain_patch":
         from symbiosis_brain.sections import (
@@ -513,9 +537,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             post.content = new_body
             new_text = frontmatter.dumps(post) + "\n"
+            canonical = rel_path.removesuffix(".md")
+            broken_before = _storage.count_broken_outgoing(canonical)
             _write_note_body_unlocked(rel_path, new_text, "patch",
                                       post.metadata.get("title", ""))
-        return [TextContent(type="text", text=f"Patched {rel_path}")]
+        msg = f"Patched {rel_path}"
+        msg += _write_counter(canonical, broken_before)
+        return [TextContent(type="text", text=msg)]
 
     elif name == "brain_context":
         result = _graph.traverse(

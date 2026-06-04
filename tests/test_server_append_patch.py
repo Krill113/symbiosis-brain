@@ -64,6 +64,25 @@ class TestBrainAppend:
         assert "Nonexistent" in msg
         assert "Next Up" in msg  # lists available
 
+    async def test_appends_to_h1_section(self, initialized_server, tmp_vault_with_taxonomy: Path):
+        await _call("brain_write", {
+            "path": "wiki/h1note.md",
+            "title": "H1 Note",
+            "body": "# Log\n\n- entry one\n",
+            "note_type": "wiki",
+            "scope": "global",
+            "gist": "note with an h1 section",
+        })
+        msg = await _call("brain_append", {
+            "path": "wiki/h1note.md",
+            "section": "Log",
+            "content": "- entry two",
+        })
+        assert "Appended" in msg
+        text = (tmp_vault_with_taxonomy / "wiki" / "h1note.md").read_text(encoding="utf-8")
+        assert "- entry one" in text
+        assert "- entry two" in text
+
     async def test_create_if_missing(self, seeded_backlog: Path):
         msg = await _call("brain_append", {
             "path": "projects/sample-backlog.md",
@@ -102,6 +121,85 @@ class TestBrainAppend:
         })
         search_result = await _call("brain_search", {"query": "unique_marker_zxcv"})
         assert "unique_marker_zxcv" in search_result
+
+
+class TestWriteCounter:
+    """FR2: brain_write/append/patch append a `[counter] wrote=.. broken_added=.. orphans_now=..` line."""
+
+    async def test_brain_write_counter_resolvable_links(
+        self, initialized_server, tmp_vault_with_taxonomy: Path
+    ):
+        await _call("brain_write", {
+            "path": "wiki/target.md", "title": "Target",
+            "body": "# H\nbody only", "gist": "target note",
+        })
+        msg = await _call("brain_write", {
+            "path": "wiki/referrer.md", "title": "Referrer",
+            "body": "# H\nSee [[wiki/target]] and [[wiki/target]].", "gist": "referrer note",
+        })
+        assert msg.startswith("Saved:")  # legacy prefix preserved
+        assert "wrote=1" in msg
+        assert "broken_added=0" in msg
+        assert "orphans_now=" in msg
+
+    async def test_brain_write_forward_ref_counts_as_broken_added(self, initialized_server):
+        msg = await _call("brain_write", {
+            "path": "wiki/withfwd.md", "title": "Fwd",
+            "body": "# H\n[[forward:wiki/not-yet]] and [[forward:wiki/also-not]]",
+            "gist": "note with two forward refs",
+        })
+        assert msg.startswith("Saved:")
+        assert "broken_added=2" in msg
+
+    async def test_brain_append_counter_no_new_broken(self, seeded_backlog: Path):
+        msg = await _call("brain_append", {
+            "path": "projects/sample-backlog.md", "section": "Ideas",
+            "content": "- plain idea, no links",
+        })
+        assert msg.startswith("Appended to")
+        assert "broken_added=0" in msg
+
+    async def test_brain_patch_removing_link_clamps_broken_added(self, seeded_backlog: Path):
+        msg = await _call("brain_patch", {
+            "path": "projects/sample-backlog.md",
+            "anchor": "- [[forward:Alpha]] task [[forward:Beta]]",
+            "replacement": "- no more forward refs",
+        })
+        assert msg.startswith("Patched")
+        assert "broken_added=0" in msg  # delta clamped at 0, never negative
+
+    async def test_brain_write_overwrite_removing_forward_ref_clamps(
+        self, initialized_server, tmp_vault_with_taxonomy: Path
+    ):
+        await _call("brain_write", {
+            "path": "wiki/target.md", "title": "T", "body": "# H\nbody", "gist": "g",
+        })
+        first = await _call("brain_write", {
+            "path": "wiki/ref.md", "title": "R",
+            "body": "# H\nSee [[wiki/target]] and [[forward:wiki/missing]]", "gist": "g",
+        })
+        assert "broken_added=1" in first
+        # Overwrite removes the dangling forward-ref: delta = 0 - 1 = -1 -> clamp 0.
+        second = await _call("brain_write", {
+            "path": "wiki/ref.md", "title": "R",
+            "body": "# H\nSee [[wiki/target]] and [[wiki/target]]", "gist": "g",
+        })
+        assert "broken_added=0" in second
+
+    async def test_brain_write_new_note_satisfying_inbound_counts_zero(
+        self, initialized_server
+    ):
+        # A forward-refs B; writing B clears A's broken inbound edge, but B's OWN
+        # counter is per-source: B has no broken outgoing -> broken_added=0.
+        await _call("brain_write", {
+            "path": "wiki/aaa.md", "title": "A",
+            "body": "# H\n[[forward:wiki/bbb]] [[forward:wiki/ccc]]", "gist": "g",
+        })
+        msg = await _call("brain_write", {
+            "path": "wiki/bbb.md", "title": "B",
+            "body": "# H\nplain body no links", "gist": "g",
+        })
+        assert "broken_added=0" in msg
 
 
 class TestBrainPatch:

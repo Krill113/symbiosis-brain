@@ -36,7 +36,30 @@ def _strip_scope_prefix(p: str) -> str:
     return rest if rest else p
 
 
-def resolve_target(target: str, storage: Storage) -> tuple[str | None, bool]:
+def build_path_index(storage: Storage) -> dict:
+    """Precompute path lookups so resolve_target avoids a full notes scan per call.
+
+    Returns {"by_canonical": {lower_canonical: canonical},
+             "by_basename":  {lower_basename: [canonical, ...]}}.
+    Basename stays a list so the ambiguous-basename → broken rule is preserved.
+    Used by the linter's hot loop (one build per lint run instead of one scan
+    per link).
+    """
+    by_canonical: dict[str, str] = {}
+    by_basename: dict[str, list[str]] = {}
+    for p in storage.get_all_paths():
+        c = _strip_md(p)
+        # setdefault preserves first-match (matches the old linear-scan loop) on
+        # the vanishingly rare case-only canonical collision.
+        by_canonical.setdefault(c.lower(), c)
+        base = c.rsplit("/", 1)[-1].lower()
+        by_basename.setdefault(base, []).append(c)
+    return {"by_canonical": by_canonical, "by_basename": by_basename}
+
+
+def resolve_target(
+    target: str, storage: Storage, index: dict | None = None
+) -> tuple[str | None, bool]:
     """Resolve a wiki-link target to canonical path (without .md extension).
 
     Returns (canonical_path, is_broken).
@@ -48,6 +71,10 @@ def resolve_target(target: str, storage: Storage) -> tuple[str | None, bool]:
       - contains '/' → path-match (case-insensitive), .md-stripped
       - no '/'        → basename-match across all notes (case-insensitive);
                         unique match returns path; ambiguous/none → broken
+
+    Pass a prebuilt `index` (from build_path_index) to skip re-scanning all note
+    paths; when None, an index is built from storage on each call (unchanged for
+    existing 2-arg callers).
     """
     norm = _strip_scope_prefix(_strip_anchor(target.strip()))
     if not norm:
@@ -56,15 +83,14 @@ def resolve_target(target: str, storage: Storage) -> tuple[str | None, bool]:
     norm_nomd = _strip_md(norm)
     norm_lower = norm_nomd.lower()
 
-    all_paths = storage.get_all_paths()
+    if index is None:
+        index = build_path_index(storage)
 
     if "/" in norm:
-        for p in all_paths:
-            if _strip_md(p).lower() == norm_lower:
-                return _strip_md(p), False
-        return None, True
+        hit = index["by_canonical"].get(norm_lower)
+        return (hit, False) if hit is not None else (None, True)
 
-    matches = [p for p in all_paths if _strip_md(p).rsplit("/", 1)[-1].lower() == norm_lower]
+    matches = index["by_basename"].get(norm_lower, [])
     if len(matches) == 1:
-        return _strip_md(matches[0]), False
+        return matches[0], False
     return None, True

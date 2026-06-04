@@ -388,3 +388,51 @@ def test_phase8_migration_on_fresh_vault_marks_done(tmp_path):
     assert s.get_schema_version("wikilink_normalization_reindex") is None
     assert s.needs_full_reindex() is True
     s.close()
+
+
+class TestWriteCounters:
+    """FR2: per-source broken count + whole-vault orphan count for the write counter."""
+
+    def test_count_broken_outgoing_includes_forward_refs(self, db_path):
+        storage = Storage(db_path)
+        storage.upsert_note(path="projects/src.md", title="S", content="",
+                            note_type="project", scope="global", tags=[])
+        storage.upsert_relation(from_name="projects/src", to_name="wiki/ok",
+                                relation_type="references", source_note="projects/src.md",
+                                raw_target="wiki/ok", broken=False)
+        storage.upsert_relation(from_name="projects/src", to_name="broken:gone",
+                                relation_type="references", source_note="projects/src.md",
+                                raw_target="gone", broken=True)
+        storage.upsert_relation(from_name="projects/src", to_name="broken:also",
+                                relation_type="references", source_note="projects/src.md",
+                                raw_target="also", broken=True)
+        assert storage.count_broken_outgoing("projects/src") == 2
+        assert storage.count_broken_outgoing("projects/other") == 0
+
+    def test_count_orphans_counts_notes_without_inbound(self, db_path):
+        storage = Storage(db_path)
+        for p in ["wiki/a.md", "wiki/b.md", "wiki/c.md"]:
+            storage.upsert_note(path=p, title="T", content="", note_type="wiki",
+                                scope="global", tags=[])
+        storage.upsert_relation(from_name="wiki/a", to_name="wiki/b",
+                                relation_type="references", source_note="wiki/a.md",
+                                raw_target="wiki/b", broken=False)
+        # b has inbound; a and c are orphans.
+        assert storage.count_orphans() == 2
+
+    def test_count_orphans_ignores_broken_inbound(self, db_path):
+        storage = Storage(db_path)
+        for p in ["wiki/a.md", "wiki/b.md"]:
+            storage.upsert_note(path=p, title="T", content="", note_type="wiki",
+                                scope="global", tags=[])
+        # Only a broken inbound edge to b -> b is still an orphan.
+        storage.upsert_relation(from_name="wiki/a", to_name="broken:wiki/b",
+                                relation_type="references", source_note="wiki/a.md",
+                                raw_target="wiki/b", broken=True)
+        assert storage.count_orphans() == 2
+
+    def test_count_orphans_excludes_taxonomy(self, db_path):
+        storage = Storage(db_path)
+        storage.upsert_note(path="reference/scope-taxonomy.md", title="Tax",
+                            content="", note_type="wiki", scope="global", tags=[])
+        assert storage.count_orphans() == 0

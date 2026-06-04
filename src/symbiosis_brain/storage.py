@@ -268,6 +268,43 @@ class Storage:
         row = self._conn.execute("SELECT COUNT(*) as cnt FROM notes").fetchone()
         return row["cnt"]
 
+    def count_broken_outgoing(self, source_canonical: str) -> int:
+        """Count broken outgoing `references` relations for one source note
+        (canonical path, no .md). Includes forward-refs, which are stored
+        broken=True. Cheap: O(edges of one note). Used by the write counter
+        to compute the broken-link delta of a single write."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS cnt FROM relations "
+            "WHERE from_name=? AND relation_type='references' AND broken=1",
+            (source_canonical,),
+        ).fetchone()
+        return row["cnt"]
+
+    def count_orphans(self) -> int:
+        """Count notes with no non-broken incoming `references` edge.
+
+        Mirrors VaultLinter's orphan definition (lint.py) so the write counter's
+        orphans_now agrees with brain_lint. Excludes the scope-taxonomy index
+        file (kept in sync with lint's _TAXONOMY_PATH). Cheap: two scans + set ops.
+        """
+        linked = {
+            r["to_name"]
+            for r in self._conn.execute(
+                "SELECT DISTINCT to_name FROM relations "
+                "WHERE relation_type='references' AND broken=0"
+            ).fetchall()
+        }
+        count = 0
+        for p in self.get_all_paths():
+            if p == "reference/scope-taxonomy.md":
+                continue
+            # Strip the same way VaultLinter.lint does (removesuffix), so the
+            # two orphan counts agree exactly.
+            canonical = p.removesuffix(".md")
+            if canonical not in linked:
+                count += 1
+        return count
+
     def _row_to_note(self, row: sqlite3.Row) -> dict:
         d = dict(row)
         d["tags"] = json.loads(d["tags"])

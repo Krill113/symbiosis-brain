@@ -78,6 +78,51 @@ class TestExtractWikilinks:
         links = extract_wikilinks("Some [regular](link) and [[wiki]]")
         assert links == [{"raw": "wiki", "target": "wiki", "alias": None}]
 
+    # FR4/Q3 — wiki-links inside code regions are documentation, not real links.
+
+    def test_ignores_wikilink_in_inline_code(self):
+        links = extract_wikilinks("Use `[[forward:X|y]]` syntax and [[real]]")
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
+    def test_ignores_wikilink_in_fenced_block(self):
+        text = "Before\n\n```\n[[wiki/x]]\n```\n\nSee [[real]]\n"
+        links = extract_wikilinks(text)
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
+    def test_ignores_wikilink_in_tilde_fence(self):
+        text = "Before\n\n~~~\n[[wiki/x]]\n~~~\n\nSee [[real]]\n"
+        links = extract_wikilinks(text)
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
+    def test_inline_code_with_multiple_backticks(self):
+        # A 2-backtick span closes only on an exactly-2 run; the inner lone
+        # backtick is literal, so [[x]] stays inside the code span.
+        links = extract_wikilinks("``code with [[x]] and a ` tick``")
+        assert links == []
+
+    def test_prose_link_kept_when_inline_code_on_same_line(self):
+        links = extract_wikilinks("[[real]] then `[[x]]`")
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
+    def test_offsets_preserved_for_raw_after_code(self):
+        # raw must be sliced from the ORIGINAL text, not the masked filler.
+        links = extract_wikilinks(r"`[[a]]` [[b\|c]]")
+        assert links == [{"raw": r"b\|c", "target": "b", "alias": "c"}]
+
+    def test_unterminated_inline_backtick_is_prose(self):
+        links = extract_wikilinks("a ` lone backtick then [[real]]")
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
+    def test_unterminated_fence_masks_to_eof(self):
+        text = "intro [[keep]]\n\n```\n[[gone]]\nstill in fence [[gone2]]\n"
+        links = extract_wikilinks(text)
+        assert links == [{"raw": "keep", "target": "keep", "alias": None}]
+
+    def test_fence_with_info_string_is_masked(self):
+        text = "```python\n[[wiki/x]]\n```\n[[real]]\n"
+        links = extract_wikilinks(text)
+        assert links == [{"raw": "real", "target": "real", "alias": None}]
+
 
 class TestRenderNote:
     def test_renders_note_to_markdown(self):

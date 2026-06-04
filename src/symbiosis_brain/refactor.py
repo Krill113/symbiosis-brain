@@ -13,6 +13,15 @@ Both operations propagate via `sync.sync_one()` on each touched note so the
 relations table stays consistent in the same transaction-ish window. Phase 6
 concurrency-safety guarantees: sync_one holds the per-note write lock; we
 process source notes one at a time.
+
+Known gap (out of Stage 3 scope, tracked follow-up): the link-rewrite passes
+below (`_rewrite_links_in_body`, `_replace_with_stub`) use a bare [[...]] regex
+that does NOT skip fenced/inline code regions, unlike extract_wikilinks (which
+Stage 3/FR4 taught to ignore code examples). So if a note has a real [[old]]
+link in prose AND a [[old]] documentation example in a code fence, rename/delete
+rewrites BOTH — corrupting the example. Notes whose only [[old]] is in code are
+unaffected (they never enter find_inbound_refs). Fix when prioritized: reuse
+markdown_parser._mask_code_regions to skip in-code matches here too.
 """
 from __future__ import annotations
 

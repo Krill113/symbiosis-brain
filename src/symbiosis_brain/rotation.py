@@ -25,6 +25,28 @@ SHIPPED_RE = re.compile(
     re.DOTALL,
 )
 
+_FM_BLOCK_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+_FM_SCOPE_RE = re.compile(r"^scope:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+
+
+def _safe_read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _frontmatter_scope(text: str) -> Optional[str]:
+    """Extract `scope:` from a card's YAML frontmatter block. Authoritative when a
+    card's filename differs from its scope (card renamed). Returns None if absent."""
+    m = _FM_BLOCK_RE.match(text)
+    if not m:
+        return None
+    sm = _FM_SCOPE_RE.search(m.group(1))
+    if not sm:
+        return None
+    return sm.group(1).strip().strip('"').strip("'") or None
+
 
 @dataclass(frozen=True)
 class HandoffSection:
@@ -406,7 +428,19 @@ def rotate_handoffs(
         return report
 
     if scope:
-        targets = [projects_dir / f"{scope}.md"]
+        direct = projects_dir / f"{scope}.md"
+        if direct.exists():
+            targets = [direct]
+        else:
+            # Card filename may differ from its scope (card renamed) — resolve by
+            # frontmatter scope across all cards. (backlog 2026-05-21)
+            targets = [
+                p for p in sorted(projects_dir.glob("*.md"))
+                if _frontmatter_scope(_safe_read(p)) == scope
+            ]
+            if not targets:
+                report.skipped.append(SkipReason(card=f"{scope}.md", reason="card not found"))
+                return report
     else:
         targets = sorted(projects_dir.glob("*.md"))
 
@@ -414,7 +448,7 @@ def rotate_handoffs(
         if not card_path.exists():
             report.skipped.append(SkipReason(card=card_path.name, reason="card not found"))
             continue
-        # Derive scope from filename if scope=None mode
-        card_scope = scope or card_path.stem
+        # Scope resolution: explicit arg > card frontmatter scope > filename stem.
+        card_scope = scope or _frontmatter_scope(_safe_read(card_path)) or card_path.stem
         _rotate_one_card(vault, card_path, card_scope, inline_days, dry_run, report)
     return report

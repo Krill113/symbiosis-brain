@@ -120,6 +120,22 @@ Output 1 line: what was saved and where. Example: "Saved: decision about X → d
 - Set `valid_to` on the old note via `brain_patch` (closes the bi-temporal lifecycle).
 - If you need to RENAME or DELETE an existing note (not just supersede via valid_to), use `brain_rename` or `brain_delete` MCP tools — never raw Edit on the file. Direct file edits leave inbound `[[old]]` references stale, which is the dominant source of vault broken-links. `brain_rename` rewrites inbound refs atomically; `brain_delete` (mode=safe) refuses if inbound refs exist, so you don't accidentally orphan callers.
 
+### Step 8: Signal the save to the Stop-hook delta-guard
+
+After a successful save, record the current context % as "last saved" so the
+proactive Stop-hook's delta-guard doesn't re-nag until enough *new* context
+accrues. Without this the guard always reads 0 and over-fires. Run (Bash):
+
+```bash
+SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
+SID="${CLAUDE_SESSION_ID:-$(cat "$SB_TMP/brain-current-session" 2>/dev/null)}"
+[ -n "$SID" ] && cp "$SB_TMP/brain-context-pct-$SID" "$SB_TMP/brain-last-save-pct-$SID" 2>/dev/null
+```
+
+Fail-open: if the context-pct marker isn't present yet, the copy silently
+no-ops and the guard just falls back to 0 (no harm). The `SB_TMP` chain matches
+the bash hooks, so the marker lands exactly where `brain-save-trigger.sh` reads it.
+
 ### MCP fallback
 
 If `brain_write` is unavailable, save to auto-memory (MEMORY.md) with a note:

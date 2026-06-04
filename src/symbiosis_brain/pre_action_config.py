@@ -14,9 +14,18 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / ".claude" / "symbiosis-brain-pre-action.json"
 
 
-def _debug_log_path() -> Path:
+def _tmp_dir() -> Path:
+    """Temp dir, matching the bash hooks' ${TMPDIR:-${TEMP:-/tmp}} chain.
+
+    Single source of truth for hook-side temp artifacts (debug log, recall
+    seen-files) so they stay co-located and test-isolatable via env override
+    (see [[mistakes/test-subprocess-inherits-system-tmpdir]])."""
     base = os.environ.get("TMPDIR") or os.environ.get("TEMP") or "/tmp"
-    return Path(base) / "brain-hook-debug.log"
+    return Path(base)
+
+
+def _debug_log_path() -> Path:
+    return _tmp_dir() / "brain-hook-debug.log"
 
 
 def _debug_log(msg: str) -> None:
@@ -50,6 +59,8 @@ class PreActionConfig:
     hit_limit: int = 3
     query_max_chars: int = 500
     timeout_seconds: int = 30
+    recall_dedup_enabled: bool = True
+    recall_dedup_ttl_seconds: int = 120
 
 
 def load_config(path: Path = CONFIG_PATH) -> PreActionConfig:

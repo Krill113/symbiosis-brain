@@ -53,6 +53,45 @@ class TestHybridSearch:
         assert len(results) >= 1
         assert results[0]["title"] == "Dapper Choice"
 
+    def test_hybrid_attaches_score_and_in_both(self, search_engine: SearchEngine):
+        """Stage 0: search() attaches _score (post-boost RRF) and _in_both
+        (returned by both FTS and vector) to every hit. _score-sorted desc."""
+        results = search_engine.search("database ORM choice", limit=5)
+        assert results
+        scores = [r["_score"] for r in results]
+        assert all(isinstance(s, float) for s in scores)
+        assert scores == sorted(scores, reverse=True)
+        assert all(isinstance(r["_in_both"], bool) for r in results)
+
+    def test_hybrid_score_in_both_present_in_gist_mode(self, search_engine: SearchEngine):
+        results = search_engine.search("Dapper", limit=5, mode="gist")
+        assert results
+        for r in results:
+            assert "_score" in r and "_in_both" in r
+            assert "gist" in r  # gist mode still populated
+
+    def test_hybrid_in_both_true_for_note_matched_both_ways(self, search_engine: SearchEngine):
+        # Single keyword present in content (FTS) AND semantically central (vector)
+        # → surfaces in both → _in_both True. NB: a multi-token natural-language
+        # query (e.g. "why did we choose Dapper") would be VECTOR-ONLY because FTS5
+        # ANDs tokens — which is exactly why _in_both is a label, never a drop-gate
+        # (see [[decisions/2026-06-03-recall-behavior]]).
+        if not search_engine._vec_enabled:
+            pytest.skip("vector backend unavailable — _in_both requires hybrid")
+        results = search_engine.search("Dapper", limit=5)
+        dapper = next((r for r in results if r["path"] == "d/dapper.md"), None)
+        assert dapper is not None
+        assert dapper["_in_both"] is True
+
+    def test_hybrid_fts_only_emits_capped_when_vector_disabled(self, search_engine, monkeypatch):
+        """Locked constraint: cold/disabled vector → recall must still emit
+        cap-top-N (FTS-only), NEVER strong-only. All hits _in_both False, no ★."""
+        monkeypatch.setattr(search_engine, "_vec_enabled", False)
+        results = search_engine.search("Dapper", limit=5)
+        assert results  # FTS-only still emits — not gated to empty
+        assert all(r["_in_both"] is False for r in results)
+        assert all(isinstance(r["_score"], float) for r in results)
+
 
 class TestScopeBoost:
     @pytest.fixture

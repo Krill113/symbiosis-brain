@@ -148,6 +148,7 @@ def _run_pre_action_recall(argv: list[str]) -> int:
 
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
+    session_id = payload.get("session_id") or ""
 
     from symbiosis_brain.pre_action_config import load_config
     from symbiosis_brain.pre_action_recall import (
@@ -192,8 +193,19 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
         # In production the vector index is prewarmed at SessionStart and
         # persists across sessions. Tests pre-populate the index in fixture.
+        if not getattr(engine, "_vec_enabled", True):
+            from symbiosis_brain.pre_action_config import _debug_log
+            _debug_log("pre-action-recall: vector index cold/disabled — FTS-only recall")
 
-        hits = run_recall(query=query, scope=scope, config=cfg, engine=engine)
+        seen = None
+        if cfg.recall_dedup_enabled and session_id:
+            try:
+                from symbiosis_brain.recall_dedup import SeenStore
+                seen = SeenStore(session_id, ttl_seconds=cfg.recall_dedup_ttl_seconds)
+            except Exception:
+                seen = None  # fail-open: dedup is best-effort, never block recall
+
+        hits = run_recall(query=query, scope=scope, config=cfg, engine=engine, seen=seen)
         if not hits:
             return 0
 

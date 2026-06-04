@@ -303,6 +303,17 @@ class SearchEngine:
         sorted_paths = sorted(scores, key=lambda p: scores[p], reverse=True)
         results = [all_notes[p] for p in sorted_paths[:limit]]
 
+        # Attach ranking metadata (Stage 0, recall-hardening). Purely additive,
+        # underscore-prefixed (cf. _distance), visible to both preview and gist
+        # callers. _score is post-boost RRF; _in_both means the note surfaced in
+        # BOTH FTS and vector — a strength LABEL for recall (★), never a filter
+        # (see [[decisions/2026-06-03-recall-behavior]]).
+        seen_fts = {n["path"] for n in fts_results}
+        seen_vec = {n["path"] for n in vec_results}
+        for note in results:
+            note["_score"] = float(scores.get(note["path"], 0.0))
+            note["_in_both"] = note["path"] in seen_fts and note["path"] in seen_vec
+
         if mode == "gist":
             for note in results:
                 fm = note.get("frontmatter") or {}

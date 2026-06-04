@@ -55,12 +55,21 @@ def run_recall(
     scope: Optional[str],
     config: PreActionConfig,
     engine: Any,
+    seen: Any = None,
 ) -> list[dict[str, Any]]:
-    """Run search via injected engine, filter excluded types, trim to hit_limit.
+    """Run search via injected engine, filter excluded types, dedup, trim to hit_limit.
 
     `engine` is a duck-typed object with `search(query, scope, limit, mode="gist")`
     returning a list of dicts with shape {path, title, scope, frontmatter, gist}.
-    Injected so this fn is unit-testable.
+    `seen` is an optional duck-typed dedup store (`is_seen(path) -> bool`,
+    `record(paths)`); when supplied and `config.recall_dedup_enabled`, already-shown
+    hits are dropped BEFORE the cap so fresh hits fill the N slots, then the emitted
+    hits are recorded. Both injected so this fn stays unit-testable (no I/O here).
+
+    The cap (`hit_limit`) is itself the relevance gate — top-N of fused RRF, never
+    emit-only-STRONG (a multi-token tool-input often matches vector-only, so an
+    `_in_both` drop-gate would empty recall in production; see
+    [[decisions/2026-06-03-recall-behavior]]). `_in_both` is a label, not a filter.
     """
     if not query:
         return []
@@ -68,7 +77,19 @@ def run_recall(
     raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist")
     excluded = set(config.excluded_note_types)
     filtered = [r for r in raw if _note_type(r) not in excluded]
-    return filtered[:config.hit_limit]
+    dedup_on = seen is not None and config.recall_dedup_enabled
+    if dedup_on:
+        try:
+            filtered = [r for r in filtered if not seen.is_seen(r.get("path", ""))]
+        except Exception:
+            pass  # fail-open: a dedup error must never drop or empty recall
+    hits = filtered[:config.hit_limit]
+    if dedup_on:
+        try:
+            seen.record(h.get("path", "") for h in hits)
+        except Exception:
+            pass  # fail-open
+    return hits
 
 
 def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
@@ -80,5 +101,6 @@ def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
     for h in hits:
         path = h.get("path", "?")
         gist = h.get("gist") or "(no gist)"
-        lines.append(f"- {path} — {gist}")
+        mark = "★ " if h.get("_in_both") else ""
+        lines.append(f"- {mark}{path} — {gist}")
     return "\n".join(lines)

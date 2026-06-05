@@ -13,16 +13,36 @@ if [ "$SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED" = "1" ]; then
   exit 0
 fi
 
+INPUT=$(cat)
+if [ -z "$INPUT" ]; then
+  exit 0
+fi
+
+# ── C5 Tier-1: pure-bash best-effort tool_used appender (Stage-4) ──
+# Records routed-tool invocations for opportunistic compliance signal.
+# NOT uv-run (would pay cold-start on every tool call). Routed-set =
+# seed expected_tools (WebSearch/WebFetch/PowerShell/Serena/Playwright/
+# brain/civil3d). Fail-open: never blocks the tool.
+PA_SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
+PA_TOOL=$(printf '%s' "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+PA_SID=$(printf '%s' "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+[ -z "$PA_SID" ] && PA_SID="default"
+case "$PA_TOOL" in
+  WebSearch|WebFetch|PowerShell|mcp__serena__*|mcp__playwright__*|mcp__symbiosis-brain__*|mcp__civil3d-bridge__*)
+    PA_TURN=$(cat "$PA_SB_TMP/brain-route-turn-${PA_SID}" 2>/dev/null || echo 0)
+    case "$PA_TURN" in ''|*[!0-9]*) PA_TURN=0 ;; esac
+    PA_TS=$(date -Iseconds 2>/dev/null || date)
+    printf '{"ts":"%s","monotonic_turn":%s,"event":"tool_used","tool":"%s","session_id":"%s"}\n' \
+      "$PA_TS" "$PA_TURN" "$PA_TOOL" "$PA_SID" \
+      >> "$PA_SB_TMP/brain-route-events-${PA_SID}.jsonl" 2>/dev/null || true
+    ;;
+esac
+
 if [ -z "$SYMBIOSIS_BRAIN_TOOLS" ] || [ -z "$SYMBIOSIS_BRAIN_VAULT" ]; then
   exit 0
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  exit 0
-fi
-
-INPUT=$(cat)
-if [ -z "$INPUT" ]; then
   exit 0
 fi
 

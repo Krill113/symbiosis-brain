@@ -106,6 +106,24 @@ else
   FAIL=$((FAIL+1))
 fi
 
+# Routed mcp tool → one JSONL tool_used line carrying the monotonic turn.
+SID='test-route-1'
+EVT="/tmp/brain-route-events-${SID}.jsonl"
+rm -f "$EVT"
+echo '7' > "/tmp/brain-route-turn-${SID}"
+INPUT='{"tool_name":"mcp__serena__find_referencing_symbols","tool_input":{},"session_id":"'$SID'"}'
+echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1
+if [ -f "$EVT" ] && grep -q '"event":"tool_used"' "$EVT" && grep -q '"monotonic_turn":7' "$EVT" && grep -q 'find_referencing_symbols' "$EVT"; then echo 'PASS: routed tool appends tool_used w/ turn'; PASS=$((PASS+1)); else echo "FAIL: routed append (got: $(cat "$EVT" 2>/dev/null))"; FAIL=$((FAIL+1)); fi
+LINES=$(wc -l < "$EVT"); if [ "$LINES" -eq 1 ]; then echo 'PASS: exactly one JSONL line'; PASS=$((PASS+1)); else echo "FAIL: expected 1 line got $LINES"; FAIL=$((FAIL+1)); fi
+INPUT='{"tool_name":"Read","tool_input":{},"session_id":"'$SID'"}'
+echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1
+if [ "$(wc -l < "$EVT")" -eq 1 ]; then echo 'PASS: non-routed tool appends nothing'; PASS=$((PASS+1)); else echo 'FAIL: non-routed tool wrote a line'; FAIL=$((FAIL+1)); fi
+rm -f "/tmp/brain-route-turn-${SID}"
+INPUT='{"tool_name":"WebSearch","tool_input":{},"session_id":"'$SID'"}'
+echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1; RC=$?
+if [ "$RC" -eq 0 ] && grep -q '"monotonic_turn":0' "$EVT"; then echo 'PASS: missing counter → fail-open turn 0'; PASS=$((PASS+1)); else echo 'FAIL: missing counter not fail-open'; FAIL=$((FAIL+1)); fi
+rm -f "$EVT"
+
 # Cleanup
 rm -rf "$TMP_VAULT"
 

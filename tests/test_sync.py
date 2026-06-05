@@ -1,6 +1,11 @@
 from pathlib import Path
 from symbiosis_brain.storage import Storage
-from symbiosis_brain.sync import SyncResult, VaultSync
+from symbiosis_brain.sync import MD_GLOB, SyncResult, VaultSync
+
+
+def test_sync_md_glob_excludes_json():
+    assert MD_GLOB == "**/*.md"
+    assert not MD_GLOB.endswith(".json")
 
 
 class TestVaultSync:

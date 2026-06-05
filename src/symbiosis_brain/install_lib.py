@@ -98,6 +98,24 @@ def scaffold_vault(vault_path: Path) -> None:
         memory.write_text("# MEMORY\n\nFallback for when MCP is unavailable.\n",
                           encoding="utf-8")
 
+    # Vault .gitignore — keep machine-local + private files out of git.
+    # Idempotent: only appends lines that are not already present.
+    gitignore = vault_path / ".gitignore"
+    needed = [".index/", "tool-routing.local.json"]
+    if not gitignore.exists():
+        gitignore.write_text(
+            "# Symbiosis Brain — keep machine-local + private files out of git.\n"
+            + "\n".join(needed) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        existing = gitignore.read_text(encoding="utf-8")
+        present = set(existing.splitlines())
+        missing = [p for p in needed if p not in present]
+        if missing:
+            sep = "" if existing.endswith("\n") else "\n"
+            gitignore.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
+
 
 def _hooks_block(hook_dir: str) -> dict:
     """Return hooks block structure for settings.json.

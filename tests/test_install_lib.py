@@ -193,3 +193,17 @@ def test_append_claude_md_block_idempotent_when_marker_present(tmp_path):
     install_lib.append_claude_md_block(target)
     second = target.read_text(encoding="utf-8")
     assert first == second
+
+
+def test_scaffold_vault_gitignores_local_override(tmp_path):
+    from symbiosis_brain.install_lib import scaffold_vault
+
+    vault = tmp_path / "vault"
+    scaffold_vault(vault)
+    gi = (vault / ".gitignore").read_text(encoding="utf-8")
+    assert "tool-routing.local.json" in gi
+    assert ".index/" in gi
+    # Idempotent — second call must not duplicate lines
+    scaffold_vault(vault)
+    gi2 = (vault / ".gitignore").read_text(encoding="utf-8")
+    assert gi2.count("tool-routing.local.json") == 1

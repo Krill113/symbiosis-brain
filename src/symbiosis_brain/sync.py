@@ -24,7 +24,7 @@ class SyncResult:
         raise KeyError(key)
 
 VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference", "archive"]
-MD_GLOB = "**/*.md"
+MD_GLOB = "**/*.md"  # md-only by design: .json (incl. tool-routing.local.json) stays out of the index
 SKIP_FILES = {"CLAUDE.md", "README.md", "log.md"}
 
 

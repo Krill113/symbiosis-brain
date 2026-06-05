@@ -67,6 +67,22 @@ if [ -n "$TOOLS" ] && [ -n "$VAULT" ] && command -v uv >/dev/null 2>&1; then
       >/dev/null 2>&1 & ) >/dev/null 2>&1
 fi
 
+# Background roster prime: cache `claude mcp list` for UPS routing MCP-presence
+# gates (brain-mcp-roster-<sid>). claude mcp list runs healthchecks (~7s) which
+# blows the 5s SessionStart timeout, so it MUST be detached like the prewarm above.
+# Atomic publish (write tmp + mv) so a concurrent UPS reader never sees a partial
+# file. Fail-open: no cache → MCP `*-present` gates read 'undeterminable' (silent).
+if [ -n "$SESSION_ID" ] && command -v claude >/dev/null 2>&1; then
+  (
+    _roster="$SB_TMP/brain-mcp-roster-${SESSION_ID}"
+    if claude mcp list >"$_roster.tmp" 2>/dev/null; then
+      mv -f "$_roster.tmp" "$_roster" 2>/dev/null || rm -f "$_roster.tmp" 2>/dev/null
+    else
+      rm -f "$_roster.tmp" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+fi
+
 # Clean THIS session's trigger flags (threshold reset on compaction; no-op on fresh startup)
 if [ -n "$SESSION_ID" ]; then
   rm -f "$SB_TMP/brain-triggered-${SESSION_ID}" \
@@ -77,12 +93,19 @@ if [ -n "$SESSION_ID" ]; then
         "$SB_TMP/brain-rules-shown-${SESSION_ID}" \
         "$SB_TMP/brain-rules-turn-counter-${SESSION_ID}" \
         "$SB_TMP/brain-context-pct-${SESSION_ID}"
+  # NOTE: brain-route-turn-${SESSION_ID} is DELIBERATELY excluded here —
+  # the monotonic routing counter must survive compact (SessionStart runs
+  # on compact). See stage4 design §6.2. Orphan-GC reaps it by mtime only.
   echo "$SESSION_ID" > "$SB_TMP/brain-current-session"
 fi
 
 # Opportunistic GC of orphaned recall dedup files from dead/idle sessions
 if command -v find >/dev/null 2>&1; then
   find "$SB_TMP" -maxdepth 1 -name 'brain-recall-seen-*.json' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-route-events-*.jsonl' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-route-seen-*.json' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-route-turn-*' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-roster-*' -mmin +60 -delete 2>/dev/null || true
 fi
 
 exit 0

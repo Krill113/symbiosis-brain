@@ -186,6 +186,131 @@ test_session_start_emits_tool_roster() {
 test_session_start_cleans_rules_flags
 test_session_start_emits_tool_roster
 
+# === Stage-4 routing: roster prime + route-file GC + counter exclusion ===
+# NOTE: these target the DEPLOYED hook ($HOME/.claude/hooks/brain-session-start.sh).
+# Until a go-live redeploy publishes the Stage-4 bash edits, the roster-prime and
+# stale-GC assertions are RED-BY-DESIGN. The counter-survives assertion is GREEN
+# already (the per-session rm-block never listed brain-route-turn-<sid>).
+
+# (1) SessionStart primes the MCP roster cache in a detached subshell: with a
+# stubbed `claude` on PATH it must write brain-mcp-roster-<sid> (atomic mv).
+test_session_start_primes_roster_cache() {
+  setup_vault
+  local sid="roster-prime-$$"
+  local roster="/tmp/brain-mcp-roster-${sid}"
+  rm -f "$roster"
+  local stub_bin
+  stub_bin="$(mktemp -d)"
+  cat > "$stub_bin/claude" <<'EOF'
+#!/bin/sh
+# stub `claude mcp list` — mimic the connected-roster stdout
+echo "serena: uvx ... - ✓ Connected"
+echo "duckduckgo: npx ... - ✓ Connected"
+EOF
+  chmod +x "$stub_bin/claude"
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"startup\"}" | \
+    PATH="$stub_bin:$PATH" SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" \
+    bash "$HOOK" >/dev/null 2>&1
+
+  # Background subshell writes the cache async — wait briefly for atomic publish.
+  local waited=0
+  while [ ! -f "$roster" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+
+  if [ -f "$roster" ] && grep -q "duckduckgo" "$roster"; then
+    echo "PASS: session_start_primes_roster_cache"
+  else
+    echo "FAIL: session_start_primes_roster_cache — roster cache not written at $roster"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -f "$roster"
+  rm -rf "$stub_bin"
+}
+
+# (2) The monotonic routing counter (brain-route-turn-<sid>) MUST survive a
+# SessionStart run (it is deliberately EXCLUDED from the per-session rm-block).
+test_route_turn_counter_survives_session_start() {
+  setup_vault
+  local sid="counter-survive-$$"
+  local counter="/tmp/brain-route-turn-${sid}"
+  echo "7" > "$counter"
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"compact\"}" | \
+    SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" >/dev/null 2>&1
+
+  if [ -f "$counter" ] && [ "$(cat "$counter" 2>/dev/null)" = "7" ]; then
+    echo "PASS: route_turn_counter_survives_session_start"
+  else
+    echo "FAIL: route_turn_counter_survives_session_start — counter removed/changed by rm-block"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -f "$counter"
+}
+
+# (3) Opportunistic GC sweeps STALE route temp files (mtime > 60min) while
+# leaving FRESH ones (including a fresh counter) untouched.
+test_route_files_gc_when_stale() {
+  setup_vault
+  local sid="gc-$$"
+  local stale_events="/tmp/brain-route-events-stale-${sid}.jsonl"
+  local stale_seen="/tmp/brain-route-seen-stale-${sid}.json"
+  local stale_turn="/tmp/brain-route-turn-stale-${sid}"
+  local stale_roster="/tmp/brain-mcp-roster-stale-${sid}"
+  local fresh_turn="/tmp/brain-route-turn-${sid}"
+  for f in "$stale_events" "$stale_seen" "$stale_turn" "$stale_roster"; do
+    echo "x" > "$f"
+    touch -d "120 minutes ago" "$f" 2>/dev/null || touch -t "$(date -d '120 minutes ago' +%Y%m%d%H%M 2>/dev/null)" "$f" 2>/dev/null
+  done
+  echo "3" > "$fresh_turn"
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"startup\"}" | \
+    SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" >/dev/null 2>&1
+
+  local ok=1
+  for f in "$stale_events" "$stale_seen" "$stale_turn" "$stale_roster"; do
+    if [ -f "$f" ]; then ok=0; echo "  stale survived: $f"; fi
+  done
+  if [ ! -f "$fresh_turn" ]; then ok=0; echo "  fresh counter wrongly deleted: $fresh_turn"; fi
+
+  if [ "$ok" = "1" ]; then
+    echo "PASS: route_files_gc_when_stale"
+  else
+    echo "FAIL: route_files_gc_when_stale — stale route files not swept or fresh deleted"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -f "$stale_events" "$stale_seen" "$stale_turn" "$stale_roster" "$fresh_turn"
+}
+
+# (4) Structural guard (GREEN now, deploy-independent): the per-session rm-block
+# must contain ZERO brain-route entries — the monotonic counter is excluded by
+# design so it survives compact (stage4 design §6.2).
+test_route_turn_excluded_from_sessionstart_rm() {
+  # Extract the per-session rm-block from the REPO source-of-truth and assert
+  # no brain-route-* path is listed inside it.
+  local block
+  block=$(awk '/^if \[ -n "\$SESSION_ID" \]; then/{c=1} c{print} /brain-current-session/{if(c)exit}' "$HOOK_SOURCE")
+  local n
+  n=$(printf '%s\n' "$block" | grep -c 'rm -f' )
+  # Count brain-route ONLY on the rm-target path lines, never in comments — the
+  # exclusion is documented by a comment that legitimately names the file.
+  local routes
+  routes=$(printf '%s\n' "$block" | grep -v '^[[:space:]]*#' | grep -c 'brain-route')
+  if [ "$n" -ge 1 ] && [ "$routes" = "0" ]; then
+    echo "PASS: route_turn_excluded_from_sessionstart_rm"
+  else
+    echo "FAIL: route_turn_excluded_from_sessionstart_rm — rm-block has $routes brain-route entr(ies) (must be 0)"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+test_session_start_primes_roster_cache
+test_route_turn_counter_survives_session_start
+test_route_files_gc_when_stale
+test_route_turn_excluded_from_sessionstart_rm
+
 # Cleanup
 rm -rf "$VAULT" "$FAKE_ROOT"
 

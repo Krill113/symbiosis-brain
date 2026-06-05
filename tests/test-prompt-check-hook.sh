@@ -7,9 +7,10 @@ SESSION_ID="test-prompt-$$"
 PCT_FILE="/tmp/brain-context-pct-${SESSION_ID}"
 SHOWN="/tmp/brain-rules-shown-${SESSION_ID}"
 TURNS="/tmp/brain-rules-turn-counter-${SESSION_ID}"
+ROUTE_TURN="/tmp/brain-route-turn-${SESSION_ID}"
 
 cleanup() {
-  rm -f "$PCT_FILE" "$SHOWN" "$TURNS" \
+  rm -f "$PCT_FILE" "$SHOWN" "$TURNS" "$ROUTE_TURN" \
         "/tmp/brain-precompact-${SESSION_ID}" \
         "/tmp/brain-precompact-pending-${SESSION_ID}"
 }
@@ -139,6 +140,39 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
 if [[ "$out" != *"[memory:"* ]]; then t "failure produces no memory block" PASS; else t "failure produces no memory block" FAIL; fi
 if [ -s "$DEBUG_LOG" ] && grep -q "search-gist" "$DEBUG_LOG"; then t "debug log captured failure" PASS; else t "debug log captured failure" FAIL; fi
 rm -rf "$TMPBIN" "$TMPLOGDIR"
+
+# Test 11: Monotonic turn-counter (C5 §6.2) — increments UNCONDITIONALLY, even
+# with RULES_ENABLED=false, on <15-char prompts, and on slash-command turns
+# (outside the recall/rules gates). It must SURVIVE a SessionStart run with the
+# same session_id (SessionStart deliberately EXCLUDES brain-route-turn-<sid>
+# from its per-session rm-block so monotonicity carries across compact).
+cleanup
+SESSION_START_HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/brain-session-start.sh"
+
+# (a) grows with RULES_ENABLED=false on a normal turn → 1
+SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+  run_hook "long enough prompt to bypass guard" >/dev/null
+if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "1" ]; then t "monotonic counter starts at 1 (rules off)" PASS; else t "monotonic counter starts at 1 (rules off)" FAIL; fi
+
+# (b) grows on a <15-char prompt → 2
+SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+  run_hook "ok" >/dev/null
+if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "2" ]; then t "monotonic counter grows on short prompt" PASS; else t "monotonic counter grows on short prompt" FAIL; fi
+
+# (c) grows on a slash-command turn → 3
+SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+  run_hook "/compact" >/dev/null
+if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "3" ]; then t "monotonic counter grows on slash turn" PASS; else t "monotonic counter grows on slash turn" FAIL; fi
+
+# (d) survives a SessionStart run with the same session_id (counter NOT reset)
+echo "{\"session_id\":\"${SESSION_ID}\",\"source\":\"compact\"}" | \
+  SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault CLAUDE_ENV_FILE="" bash "$SESSION_START_HOOK" >/dev/null 2>&1
+if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "3" ]; then t "monotonic counter survives session-start (compact)" PASS; else t "monotonic counter survives session-start (compact)" FAIL; fi
+
+# (e) keeps growing after compact → 4
+SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+  run_hook "another long enough prompt after compact" >/dev/null
+if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "4" ]; then t "monotonic counter resumes after compact" PASS; else t "monotonic counter resumes after compact" FAIL; fi
 
 echo ""
 echo "Results: $pass passed, $fail failed"

@@ -20,33 +20,107 @@ def _run_search_gist(argv: list[str]):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    parser = argparse.ArgumentParser(prog="symbiosis_brain search-gist")
+    parser.add_argument("--vault", required=True, help="Vault path")
+    # --query is now OPTIONAL (was required): stdin-only callers pass the prompt
+    # via --prompt-from-stdin and need not supply --query at all.
+    parser.add_argument("--query", default=None)
+    parser.add_argument("--prompt-from-stdin", action="store_true")
+    parser.add_argument("--envelope", action="store_true")
+    parser.add_argument("--scope", default=None)
+    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--skip-memory", action="store_true")
+    parser.add_argument("--session-id", default="")
+    parser.add_argument("--routing-mode", default="decompose")
+    parser.add_argument("--monotonic-turn", type=int, default=0)
+    parser.add_argument("--rules-emitted", action="store_true")
+    args = parser.parse_args(argv)
+
+    # 🚨 BACKWARD-COMPAT (controller correction 2026-06-05): the DEPLOYED
+    # ~/.claude bash hook calls this `search-gist` (via `uv run`) and parses the
+    # OLD BARE LIST `[{path,title,scope,gist}]`. It is NOT redeployed until
+    # Phase B. So we MUST return the bare list BY DEFAULT (byte-shape-identical
+    # to the legacy contract) and emit the `{memory_hits, route_hints}` envelope
+    # ONLY when a NEW flag opts in: --prompt-from-stdin (the Phase-B hook) or an
+    # explicit --envelope. This keeps live memory recall working pre-Phase-B.
+    envelope = args.prompt_from_stdin or args.envelope
+
+    # Resolve the prompt. --prompt-from-stdin reads the RAW hook JSON and takes
+    # ["prompt"] untruncated (do NOT rely on the truncated --query); embedded
+    # quotes survive json.loads.
+    prompt = args.query or ""
+    if args.prompt_from_stdin:
+        try:
+            raw = sys.stdin.read()
+            data = json.loads(raw) if raw else {}
+            prompt = (data.get("prompt") if isinstance(data, dict) else "") or ""
+        except (json.JSONDecodeError, ValueError):
+            prompt = ""
+
+    vault_path = Path(args.vault).expanduser().resolve()
+
+    # Legacy bare-list path: keep the exact old behavior, including the early
+    # "[]" return for a missing vault. Routing is NOT run here (the deployed
+    # hook does not consume route_hints yet).
+    if not envelope:
+        if not vault_path.exists():
+            print("[]")
+            return 0
+        results = _gist_search(vault_path, args.query, args.scope, args.limit)
+        print(json.dumps(results, ensure_ascii=False))
+        return 0
+
+    # Envelope path (Phase B / opt-in). Fold the routing engine in and emit
+    # {memory_hits, route_hints}. Every routing step is fail-open.
+    route_hint_list: list = []
+    try:
+        from symbiosis_brain import tool_routing as tr
+
+        routes = tr.load_routes(vault=vault_path if vault_path.exists() else None)
+        matched = tr.match_routes(
+            prompt, routes, scope=args.scope, vault=vault_path,
+            roster=tr._roster_set(args.session_id),
+        )
+        matched = tr.dedup_augment(matched, args.session_id)
+        route_hint_list = tr.route_hints(matched)
+        # Tier-0 telemetry via the engine appender (the canonical writer for the
+        # CLI fold). Task 6 owns the env-reading _append_route_events variant —
+        # we do NOT call it here, so events are not double-written.
+        tr.append_route_fired(
+            args.session_id, matched, monotonic_turn=args.monotonic_turn,
+            routing_mode=args.routing_mode, rules_emitted=args.rules_emitted,
+            prompt=prompt,
+        )
+    except Exception:
+        route_hint_list = []
+
+    memory_hits: list = []
+    if not args.skip_memory and vault_path.exists() and prompt:
+        memory_hits = _gist_search(vault_path, prompt, args.scope, args.limit)
+
+    print(json.dumps(
+        {"memory_hits": memory_hits, "route_hints": route_hint_list},
+        ensure_ascii=False,
+    ))
+    return 0
+
+
+def _gist_search(vault_path, query, scope, limit) -> list:
+    """Run the gist-mode vault search and shape each hit as
+    `{path,title,scope,gist}`. Shared by the legacy bare-list and envelope paths
+    so both return byte-identical hit objects."""
     from symbiosis_brain.storage import Storage
     from symbiosis_brain.search import SearchEngine
     from symbiosis_brain.sync import VaultSync
 
-    parser = argparse.ArgumentParser(prog="symbiosis_brain search-gist")
-    parser.add_argument("--vault", required=True, help="Vault path")
-    parser.add_argument("--query", required=True)
-    parser.add_argument("--scope", default=None)
-    parser.add_argument("--limit", type=int, default=5)
-    args = parser.parse_args(argv)
-
-    vault_path = Path(args.vault).expanduser().resolve()
-    if not vault_path.exists():
-        print("[]")
-        return 0
-
     db_path = vault_path / ".index" / "brain.db"
     storage = Storage(db_path)
-    sync = VaultSync(vault_path, storage)
-    sync.sync_all()
+    VaultSync(vault_path, storage).sync_all()
     search = SearchEngine(storage)
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
-    results = search.search(
-        query=args.query, scope=args.scope, limit=args.limit, mode="gist"
-    )
-    out = [
+    results = search.search(query=query, scope=scope, limit=limit, mode="gist")
+    return [
         {
             "path": r["path"],
             "title": r["title"],
@@ -55,8 +129,6 @@ def _run_search_gist(argv: list[str]):
         }
         for r in results
     ]
-    print(json.dumps(out, ensure_ascii=False))
-    return 0
 
 
 def _run_prewarm(argv: list[str]) -> int:

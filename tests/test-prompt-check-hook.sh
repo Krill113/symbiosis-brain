@@ -2,6 +2,10 @@
 # Test brain-save-trigger.sh prompt-check mode (A1 + A2 + composer)
 set -e
 
+# Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} matches the /tmp paths
+# used below (Linux CI often presets TMPDIR to a non-/tmp dir).
+export TMPDIR=/tmp TEMP=/tmp
+
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/brain-save-trigger.sh"
 SESSION_ID="test-prompt-$$"
 PCT_FILE="/tmp/brain-context-pct-${SESSION_ID}"
@@ -68,13 +72,17 @@ out=$(run_hook "another long enough prompt for guard")
 if [[ "$out" == *"[rules"* ]]; then t "turn counter triggers rules" PASS; else t "turn counter triggers rules" FAIL; fi
 if [ "$(cat "$TURNS" 2>/dev/null)" = "0" ]; then t "turn counter reset" PASS; else t "turn counter reset" FAIL; fi
 
-# Test 5: zone already shown → no re-show
+# Test 5: zone already shown → cadence-gated TOOLS line not re-shown.
+# decompose default still emits DISCIPLINE every turn; only the throttled
+# TOOLS/roster portion (keyed on the ASCII marker ".claude/docs/catalog/")
+# must not repeat once its zone was shown.
 cleanup
 echo "63" > "$PCT_FILE"
 echo "60" > "$SHOWN"
 echo "0" > "$TURNS"
 out=$(run_hook "long enough prompt to bypass guard")
-if [[ "$out" != *"[rules"* ]]; then t "marked zone not re-shown" PASS; else t "marked zone not re-shown" FAIL; fi
+if [[ "$out" != *".claude/docs/catalog/"* ]]; then t "marked zone: tools not re-shown" PASS; else t "marked zone: tools not re-shown" FAIL; fi
+if [[ "$out" == *"[rules"* ]]; then t "marked zone: discipline still present" PASS; else t "marked zone: discipline still present" FAIL; fi
 
 # Test 6: rules disabled → no rules section
 cleanup
@@ -108,13 +116,15 @@ out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true ru
 if [[ "$out" == *"[rules"* ]]; then t "first-turn roster fires below all zones" PASS; else t "first-turn roster fires below all zones" FAIL; fi
 if [ -f "$SHOWN" ] && grep -q "^0$" "$SHOWN"; then t "sentinel 0 written to shown file" PASS; else t "sentinel 0 written to shown file" FAIL; fi
 
-# Test 9: First-turn injection only once (no spam).
+# Test 9: First-turn injection only once (no spam). Under decompose default,
+# DISCIPLINE persists every turn; the cadence-gated TOOLS roster (keyed on
+# ".claude/docs/catalog/") must not repeat after the first turn.
 # Self-contained: explicitly seed $SHOWN with sentinel "0" so this test
 # doesn't silently break if anyone reorders or adds cleanup before it.
 echo "10" > "$PCT_FILE"
 echo "0" > "$SHOWN"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "another long enough prompt below zones")
-if [[ "$out" != *"[rules"* ]]; then t "first-turn roster doesn't repeat" PASS; else t "first-turn roster doesn't repeat" FAIL; fi
+if [[ "$out" != *".claude/docs/catalog/"* ]]; then t "first-turn tools roster doesn't repeat" PASS; else t "first-turn tools roster doesn't repeat" FAIL; fi
 
 # Test 10: Bash hook writes debug log on search-gist failure
 # Isolated via SYMBIOSIS_BRAIN_DEBUG_LOG so the test doesn't pollute (or destroy

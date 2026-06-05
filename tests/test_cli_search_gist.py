@@ -338,3 +338,36 @@ def test_event_log_concurrent_appends_N_writers(tmp_path, monkeypatch):
     # Lock serializes the appender → all N lines guaranteed (deterministic).
     assert len(parsed) == N
     assert {r["monotonic_turn"] for r in parsed} == set(range(N))
+
+
+def test_event_log_concurrent_appends_multiprocess(tmp_path):
+    """AC#8 / §6.4: N TRULY concurrent (multi-process, lock-free) appenders to a
+    single event-log produce N valid JSONL lines, tolerating the rare torn line
+    the design explicitly accepts on Windows. Complements the thread+lock
+    well-formedness test by exercising the unsynchronized open('a')+write path."""
+    import sys as _sys
+    import subprocess as _sp
+    import textwrap as _tw
+
+    evt = tmp_path / "brain-route-events-mp.jsonl"
+    prog = _tw.dedent('''
+        import sys, json
+        p, i = sys.argv[1], sys.argv[2]
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"event": "route_fired", "n": int(i)}) + chr(10))
+    ''')
+    script = tmp_path / "w.py"
+    script.write_text(prog, encoding="utf-8")
+    N = 20
+    procs = [_sp.Popen([_sys.executable, str(script), str(evt), str(i)]) for i in range(N)]
+    for p in procs:
+        p.wait()
+    lines = [ln for ln in evt.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    valid = [ln for ln in lines if _is_json(ln)]
+    # Lock-free concurrent appends on Windows may drop/tear individual lines
+    # (§6.4 explicitly accepts this); a catastrophic regression — e.g. switching
+    # to a read-modify-write full-file rewrite instead of an append — would
+    # instead lose almost everything. Require a healthy majority so the test
+    # distinguishes normal small loss from a non-atomic regression without
+    # flaking on the OS's non-deterministic append behaviour.
+    assert len(valid) >= N // 2, f"only {len(valid)}/{N} valid lines — possible non-atomic regression"

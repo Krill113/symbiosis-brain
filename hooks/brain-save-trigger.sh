@@ -221,7 +221,11 @@ try:
 except Exception:
     pass
 " 2>/dev/null)
-    if [ -n "$HITS" ]; then MEMORY_BLOCK="$HITS"; fi
+    if [ -n "$HITS" ]; then
+      HIT_COUNT=$(echo "$HITS" | grep -c '^- ')
+      MEMORY_BLOCK="[memory: ${HIT_COUNT} hits, scope=${SCOPE}]
+$HITS"
+    fi
 
     # ── Routing: extract route_hints[] from the SAME envelope (C3/C4) ──
     ROUTE_HINTS=$(echo "$GIST_JSON" | python -c "import sys,json

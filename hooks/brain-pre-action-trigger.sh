@@ -24,8 +24,8 @@ fi
 # seed expected_tools (WebSearch/WebFetch/PowerShell/Serena/Playwright/
 # brain/civil3d). Fail-open: never blocks the tool.
 PA_SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
-PA_TOOL=$(printf '%s' "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
-PA_SID=$(printf '%s' "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+PA_TOOL=$(printf '%s' "$INPUT" | grep -oE '"tool_name": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
+PA_SID=$(printf '%s' "$INPUT" | grep -oE '"session_id": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
 [ -z "$PA_SID" ] && PA_SID="default"
 case "$PA_TOOL" in
   WebSearch|WebFetch|PowerShell|mcp__serena__*|mcp__playwright__*|mcp__symbiosis-brain__*|mcp__civil3d-bridge__*)

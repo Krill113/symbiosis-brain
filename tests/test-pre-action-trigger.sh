@@ -2,6 +2,10 @@
 # Bash fixture for PreToolUse hook (B1). Mirrors tests/test-prompt-check-hook.sh pattern.
 set -u
 
+# Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} resolves to the SAME
+# place the hardcoded /tmp paths below use (Linux CI often presets TMPDIR).
+export TMPDIR=/tmp TEMP=/tmp
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$REPO_ROOT/hooks/brain-pre-action-trigger.sh"
 
@@ -123,6 +127,16 @@ INPUT='{"tool_name":"WebSearch","tool_input":{},"session_id":"'$SID'"}'
 echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1; RC=$?
 if [ "$RC" -eq 0 ] && grep -q '"monotonic_turn":0' "$EVT"; then echo 'PASS: missing counter → fail-open turn 0'; PASS=$((PASS+1)); else echo 'FAIL: missing counter not fail-open'; FAIL=$((FAIL+1)); fi
 rm -f "$EVT"
+
+# Spaced-JSON payload (Claude Code may emit pretty JSON) → space-tolerant parse still appends.
+SID='test-route-spaced'
+EVT2="/tmp/brain-route-events-${SID}.jsonl"
+rm -f "$EVT2"
+echo '4' > "/tmp/brain-route-turn-${SID}"
+INPUT='{"tool_name": "WebSearch", "tool_input": {}, "session_id": "'$SID'"}'
+echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1
+if [ -f "$EVT2" ] && grep -q '"event":"tool_used"' "$EVT2" && grep -q '"monotonic_turn":4' "$EVT2" && grep -q 'WebSearch' "$EVT2"; then echo 'PASS: spaced-JSON routed tool appends tool_used'; PASS=$((PASS+1)); else echo "FAIL: spaced-JSON append (got: $(cat "$EVT2" 2>/dev/null))"; FAIL=$((FAIL+1)); fi
+rm -f "$EVT2" "/tmp/brain-route-turn-${SID}"
 
 # Cleanup
 rm -rf "$TMP_VAULT"

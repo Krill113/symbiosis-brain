@@ -4,6 +4,10 @@
 
 set -u
 
+# Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} matches the /tmp paths
+# used below (Linux CI often presets TMPDIR to a non-/tmp dir).
+export TMPDIR=/tmp TEMP=/tmp
+
 HOOK="$HOME/.claude/hooks/brain-session-start.sh"
 # Repo source-of-truth (used for sourcing normalize_scope helper in tests).
 HOOK_SOURCE="${HOOK_SOURCE:-hooks/brain-session-start.sh}"

@@ -1,0 +1,116 @@
+[
+  {
+    "id": "web-research-dual-engine",
+    "class": "augment",
+    "when": "duckduckgo-present",
+    "priority": 70,
+    "observable": false,
+    "expected_tool": "WebSearch",
+    "triggers": [
+      {"re": "(поищ|найд|посмотр|глянь)[а-я]*\\s+(в\\s+)?(сети|интернете|гугле|google|вебе)", "flags": "i"},
+      {"re": "search\\s+the\\s+web", "flags": "i"},
+      {"re": "что\\s+пишут\\s+(про|о)", "flags": "i"},
+      {"re": "github\\s+issue", "flags": "i"},
+      {"re": "(на\\s+)?(форуме|reddit|stack\\s*overflow)", "flags": "i"}
+    ],
+    "hint": "Веб: WebSearch(US,дайджест)+DDG(регион/форумы); сниппеты врут — deep-fetch ключевые ссылки.",
+    "chain": [],
+    "trial": false
+  },
+  {
+    "id": "version-date-from-registry",
+    "class": "augment",
+    "priority": 80,
+    "observable": false,
+    "expected_tool": "WebFetch",
+    "triggers": [
+      {"re": "(точн[а-я]*\\s+верси|release\\s+date|когда\\s+вышел|когда\\s+вышл)", "flags": "i"},
+      {"re": "(latest|последн[а-я]*)\\s+(version|верси)", "flags": "i"},
+      {"re": "(свободно|занято)\\s+(на\\s+)?(pypi|npm|crates)", "flags": "i"}
+    ],
+    "hint": "Точная версия/дата = registry JSON (SSOT), не web-сводка.",
+    "chain": [],
+    "trial": false
+  },
+  {
+    "id": "powershell-on-windows",
+    "class": "augment",
+    "when": "platform:windows",
+    "priority": 60,
+    "observable": false,
+    "expected_tool": "PowerShell",
+    "triggers": [
+      {"re": "(msbuild|dotnet)\\b.*\\s/[A-Za-z]", "flags": "i"},
+      {"re": "\\\\\\\\[A-Za-z0-9_.-]+\\\\[A-Za-z0-9_.$-]+", "flags": "i"},
+      {"re": "запиш[а-я]*\\s+путь\\s+в\\s+settings\\.json", "flags": "i"},
+      {"re": "(uv|[A-Za-z0-9_.-]+\\.exe)\\s+--?[A-Za-z]", "flags": "i"}
+    ],
+    "hint": "Windows non-trivial shell → PowerShell/Python: MSYS ломает /флаги, bash считает байты, не видит uv.",
+    "chain": [],
+    "trial": false
+  },
+  {
+    "id": "playwright-escalation",
+    "class": "augment",
+    "when": "playwright-present",
+    "priority": 50,
+    "observable": false,
+    "trial": true,
+    "triggers": [
+      {"re": "(js[- ]?spa|спа)\\s+не\\s+(читается|грузится)", "flags": "i"},
+      {"re": "(cloudflare|бот[- ]?блок|403)\\b", "flags": "i"},
+      {"re": "нужен\\s+(скриншот|клик|пагинаци)", "flags": "i"}
+    ],
+    "hint": "Headed-браузер для страниц, что текстовый fetch не берёт. Видит как человек, не за паролем.",
+    "chain": [],
+    "expected_tool": null
+  },
+  {
+    "id": "systematic-debugging",
+    "class": "augment",
+    "when": "skill:systematic-debugging-present",
+    "priority": 65,
+    "observable": false,
+    "triggers": [
+      {"re": "почему\\s+(падает|крашится|ломается|не\\s+работает)", "flags": "i"},
+      {"re": "тест\\s+(валится|падает|красн|fail)", "flags": "i"},
+      {"re": "разбер[а-я]*\\s+почему\\s+баг", "flags": "i"}
+    ],
+    "hint": "Баг/тест-фейл → systematic-debugging (root cause через дискриминацию) ДО фикса.",
+    "chain": [],
+    "expected_tool": null,
+    "trial": false
+  },
+  {
+    "id": "catalog-discovery",
+    "class": "supersede",
+    "when": "catalog-present",
+    "priority": 55,
+    "observable": false,
+    "triggers": [
+      {"re": "(как\\s+это\\s+сделано|где\\s+реализован)", "flags": "i"},
+      {"re": "найд[а-я]*\\s+(helper|метод|функци|класс)\\s+для", "flags": "i"},
+      {"re": "какой\\s+метод\\s+делает", "flags": "i"}
+    ],
+    "hint": "Поиск в коде: карточки → brain → Serena → grep (последнее). Карточки ~80% discovery.",
+    "chain": [],
+    "expected_tool": null,
+    "trial": false
+  },
+  {
+    "id": "serena-symbol-work",
+    "class": "supersede",
+    "when": "serena-present",
+    "priority": 75,
+    "observable": false,
+    "expected_tool": "find_referencing_symbols",
+    "triggers": [
+      {"re": "(кто\\s+вызывает|callers?|find\\s+references)\\s+[A-Z][A-Za-z0-9_]*", "flags": ""},
+      {"re": "(переименуй|смени\\s+сигнатуру|удали(?:ть)?\\s+(?:метод|поле)|рефактор[а-я]*)\\s+[A-Za-z_][A-Za-z0-9_.]*[A-Za-z0-9_]", "flags": ""},
+      {"re": "граф\\s+вызовов\\s+[A-Za-z_][A-Za-z0-9_.]*", "flags": ""}
+    ],
+    "hint": "Именованный символ: Serena find_referencing_symbols (+find_implementations для интерфейса) ДО правки.",
+    "chain": [],
+    "trial": false
+  }
+]

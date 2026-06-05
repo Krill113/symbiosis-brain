@@ -156,3 +156,94 @@ def test_dedup_augment(tmp_path, monkeypatch):
 def test_route_hints_shape():
     r = tr.Route(id="x", cls="supersede", triggers=[re.compile("x")], hint="do it")
     assert tr.route_hints([r]) == [{"id": "x", "class": "supersede", "hint": "do it"}]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Data-backed tests (Task 4) — require tool-routing.json to exist
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_seven_compile():
+    """Seed catalog must load exactly 7 compiled routes."""
+    assert len(tr.load_routes(vault=None)) == 7
+
+
+def test_no_angle_placeholder():
+    """No <angle> placeholders in any trigger regex."""
+    from pathlib import Path
+    raw = tr._as_route_list(
+        json.loads(Path(tr._DEFAULT_JSON).read_text(encoding="utf-8"))
+    )
+    for route in raw:
+        for t in route["triggers"]:
+            assert "<" not in t["re"] and ">" not in t["re"], route["id"]
+            re.compile(t["re"])
+
+
+def test_named_symbol_fires():
+    """R2 (serena-symbol-work) fires when prompt contains a named symbol token."""
+    m = tr.match_routes(
+        "переименуй FooBar в BarBaz",
+        tr.load_routes(vault=None),
+        roster={"serena"},
+    )
+    assert any(r.id == "serena-symbol-work" for r in m)
+
+
+def test_bare_this_silent():
+    """R2 (serena-symbol-work) must NOT fire on pronouns — requires a symbol token."""
+    m = tr.match_routes(
+        "переименуй это",
+        tr.load_routes(vault=None),
+        roster={"serena"},
+    )
+    assert not any(r.id == "serena-symbol-work" for r in m)
+
+
+def test_disable_and_add(tmp_path):
+    """Local override: disable an existing route, add a new one."""
+    (tmp_path / "tool-routing.local.json").write_text(
+        json.dumps([
+            {"id": "playwright-escalation", "disabled": True},
+            {
+                "id": "civilbridge-live",
+                "class": "augment",
+                "priority": 90,
+                "triggers": [{"re": "civil3d", "flags": "i"}],
+                "hint": "local",
+            },
+        ]),
+        encoding="utf-8",
+    )
+    ids = {r.id for r in tr.load_routes(vault=tmp_path)}
+    assert "playwright-escalation" not in ids and "civilbridge-live" in ids
+
+
+def test_silent_when_roster_none():
+    """R1 (web-research-dual-engine) stays silent when roster is None (cold MCP)."""
+    m = tr.match_routes(
+        "поищи в сети про uv lockfile",
+        tr.load_routes(vault=None),
+        roster=None,
+    )
+    assert not any(r.id == "web-research-dual-engine" for r in m)
+
+
+def test_fires_when_present():
+    """R1 (web-research-dual-engine) fires when duckduckgo is in the roster."""
+    m = tr.match_routes(
+        "поищи в сети про uv lockfile",
+        tr.load_routes(vault=None),
+        roster={"duckduckgo"},
+    )
+    assert any(r.id == "web-research-dual-engine" for r in m)
+
+
+def test_latest_ruff():
+    """R6 (version-date-from-registry) fires first and R1 is absent for version queries."""
+    m = tr.match_routes(
+        "latest version of ruff",
+        tr.load_routes(vault=None),
+        roster={"duckduckgo"},
+    )
+    assert m and m[0].id == "version-date-from-registry"
+    assert not any(r.id == "web-research-dual-engine" for r in m)

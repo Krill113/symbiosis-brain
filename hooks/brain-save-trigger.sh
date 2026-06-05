@@ -16,7 +16,7 @@ DELTA_GUARD="${SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD:-10}"
 MODE="${1:-stop}"
 INPUT=$(cat)
 
-SESSION_ID=$(echo "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+SESSION_ID=$(echo "$INPUT" | grep -oE '"session_id": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
@@ -96,8 +96,22 @@ fi
 
 if [ "$MODE" = "prompt-check" ]; then
   # ── Inputs ──────────────────────────────────────────────
-  PROMPT=$(echo "$INPUT" | grep -o '"prompt":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
+  PROMPT=$(echo "$INPUT" | grep -oE '"prompt": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
   SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
+
+  # ── Monotonic turn-counter (C5 §6.2) — UNCONDITIONAL, increment-only ──
+  # Written EVERY prompt-check turn, outside SKIP_RECALL / RULES_ENABLED /
+  # search-gist gates. Distinct from brain-rules-turn-counter (which resets on
+  # rules-fire at :225 and is rm'd by SessionStart). This one MUST survive
+  # compact (SessionStart runs on compact but EXCLUDES this file from its
+  # rm-block — see brain-session-start.sh:71-79). Read by C5 event-log and
+  # PreToolUse Tier-1. Plain (non-json) suffix; orphan-GC by mtime only.
+  ROUTE_TURN_FILE="$SB_TMP/brain-route-turn-${SESSION_ID}"
+  ROUTE_TURN=$(cat "$ROUTE_TURN_FILE" 2>/dev/null || echo 0)
+  case "$ROUTE_TURN" in ''|*[!0-9]*) ROUTE_TURN=0 ;; esac
+  ROUTE_TURN=$((ROUTE_TURN + 1))
+  echo "$ROUTE_TURN" > "$ROUTE_TURN_FILE"
+  export SYMBIOSIS_BRAIN_ROUTE_TURN="$ROUTE_TURN"
 
   # Pending compact relay (existing behaviour)
   PENDING_BLOCK=""
@@ -119,10 +133,23 @@ if [ "$MODE" = "prompt-check" ]; then
 Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena (find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).
 Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.}"
 
+  # ── C7 decompose split (§5.3). Two independently-overridable env vars. ──
+  RULES_DISCIPLINE_TEXT="${SYMBIOSIS_BRAIN_RULES_DISCIPLINE_TEXT:-Доступно: brain_search/brain_read/brain_lint (память+гигиена), субагенты (Explore/general-purpose).
+Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.}"
+  RULES_TOOLS_TEXT="${SYMBIOSIS_BRAIN_RULES_TOOLS_TEXT:-Перед grep по коду — проверь \`.claude/docs/catalog/\` (если есть) и brain_search.
+Именованный символ: Serena (find_symbol/find_referencing_symbols) до правки.}"
+
+  ROUTING_MODE="${SYMBIOSIS_BRAIN_ROUTING_MODE:-decompose}"
+  # If the user pinned a custom unified RULES_TEXT, decompose can't faithfully
+  # split it → fall back to additive (verbatim original). §8 / AC#4.
+  if [ -n "${SYMBIOSIS_BRAIN_RULES_TEXT:-}" ]; then ROUTING_MODE="additive"; fi
+
   VAULT="${SYMBIOSIS_BRAIN_VAULT:-}"
 
   # ── A1: memory recall ───────────────────────────────────
   MEMORY_BLOCK=""
+  ROUTE_BLOCK=""
+  SUPERSEDE_FIRED=0
   SKIP_RECALL=0
   # bash ${#var} returns bytes on git-bash/Windows, not chars — use Python for char count.
   # PYTHONIOENCODING=utf-8 needed because Python's default stdin encoding on Windows is cp1251.
@@ -136,9 +163,25 @@ if [ "$MODE" = "prompt-check" ]; then
     SKIP_RECALL=1
   fi
 
-  if [ "$SKIP_RECALL" = "0" ] && [ -n "$VAULT" ]; then
+  # ── Routing-gate (C3/C4 §6.1) — DISTINCT from the recall-gate. ──
+  # Routing must run on terse intent too, so it drops the 15-char floor and the
+  # RECALL_ENABLED toggle: gate is VAULT-set AND not-slash AND not-bare-
+  # affirmation. Memory recall (the heavier search) is suppressed via
+  # --skip-memory whenever SKIP_RECALL=1 (short prompt / recall disabled).
+  ROUTE_GATE=1
+  case "$PROMPT" in
+    /*) ROUTE_GATE=0 ;;
+  esac
+  if echo "$PROMPT" | grep -qiE '^(да|нет|ок|yes|no|ok|continue|продолжай)$'; then
+    ROUTE_GATE=0
+  fi
+
+  if [ "$ROUTE_GATE" = "1" ] && [ -n "$VAULT" ]; then
     DEBUG_LOG="${SYMBIOSIS_BRAIN_DEBUG_LOG:-$SB_TMP/brain-hook-debug.log}"
     GIST_TOOLS="${SYMBIOSIS_BRAIN_TOOLS:-}"
+
+    SKIP_FLAG=""
+    [ "$SKIP_RECALL" = "1" ] && SKIP_FLAG="--skip-memory"
 
     # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.
     # Fixes silent failure on machines where `python -m symbiosis_brain` does
@@ -147,15 +190,19 @@ if [ "$MODE" = "prompt-check" ]; then
     EXIT=0
     if [ -n "$GIST_TOOLS" ] && command -v uv >/dev/null 2>&1; then
       # 30s timeout absorbs cold uv-run start (~25s); warm path is <2s.
-      GIST_JSON=$(timeout 30 uv run --quiet --directory "$GIST_TOOLS" \
+      GIST_JSON=$(printf '%s' "$INPUT" | timeout 30 uv run --quiet --directory "$GIST_TOOLS" \
         python -m symbiosis_brain search-gist \
-        --vault "$VAULT" --query "$PROMPT" --scope "$SCOPE" \
-        --limit "$RECALL_TOP_K" 2>>"$DEBUG_LOG")
+        --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
+        --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
+        --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
+        $SKIP_FLAG 2>>"$DEBUG_LOG")
       EXIT=$?
     else
-      GIST_JSON=$(timeout 12 python -m symbiosis_brain search-gist \
-        --vault "$VAULT" --query "$PROMPT" --scope "$SCOPE" \
-        --limit "$RECALL_TOP_K" 2>>"$DEBUG_LOG")
+      GIST_JSON=$(printf '%s' "$INPUT" | timeout 12 python -m symbiosis_brain search-gist \
+        --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
+        --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
+        --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
+        $SKIP_FLAG 2>>"$DEBUG_LOG")
       EXIT=$?
     fi
 
@@ -168,14 +215,38 @@ if [ "$MODE" = "prompt-check" ]; then
     HITS=$(echo "$GIST_JSON" | python -c "import sys,json
 try:
     d=json.load(sys.stdin)
-    if not d: sys.exit(0)
-    print(f'[memory: {len(d)} hits, scope={\"$SCOPE\"}]')
-    for n in d:
+    hits=d.get('memory_hits',[]) if isinstance(d,dict) else (d or [])
+    for n in hits:
         print(f\"- {n['path']} — {n.get('gist','')}\")
 except Exception:
     pass
 " 2>/dev/null)
     if [ -n "$HITS" ]; then MEMORY_BLOCK="$HITS"; fi
+
+    # ── Routing: extract route_hints[] from the SAME envelope (C3/C4) ──
+    ROUTE_HINTS=$(echo "$GIST_JSON" | python -c "import sys,json
+try:
+    d=json.load(sys.stdin)
+    rh=d.get('route_hints',[]) if isinstance(d,dict) else []
+    for r in rh:
+        h=(r.get('hint') or '').strip()
+        if h: print(h)
+except Exception:
+    pass
+" 2>/dev/null)
+    SUPERSEDE_FIRED=0
+    if echo "$GIST_JSON" | python -c "import sys,json
+try:
+    d=json.load(sys.stdin)
+    rh=d.get('route_hints',[]) if isinstance(d,dict) else []
+    sys.exit(0 if any((r.get('class')=='supersede') for r in rh) else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then SUPERSEDE_FIRED=1; fi
+    if [ -n "$ROUTE_HINTS" ]; then
+      ROUTE_BLOCK="[route]
+$(printf '%s\n' "$ROUTE_HINTS" | sed 's/^/- /')"
+    fi
   fi
 
   # ── A2: rules ───────────────────────────────────────────
@@ -219,9 +290,31 @@ except Exception:
       done
     fi
 
+    CADENCE_HIT=0
     if [ "$ZONE_HIT" = "1" ] || [ "$TURNS" -ge "$RULES_TURN_INTERVAL" ] || [ "$FIRST_TURN_INJECT" = "1" ]; then
-      RULES_BLOCK="[rules — context ${PCT}%]
+      CADENCE_HIT=1
+    fi
+
+    if [ "$ROUTING_MODE" = "additive" ]; then
+      # Verbatim original — byte-identical to legacy behaviour (AC#4).
+      if [ "$CADENCE_HIT" = "1" ]; then
+        RULES_BLOCK="[rules — context ${PCT}%]
 ${RULES_TEXT}"
+      fi
+    else
+      # decompose: DISCIPLINE always; TOOLS on cadence UNLESS a supersede route
+      # already carried that context this turn (§5.3/§8/AC#4,#10).
+      RULES_BLOCK="[rules — context ${PCT}%]
+${RULES_DISCIPLINE_TEXT}"
+      if [ "$CADENCE_HIT" = "1" ] && [ "$SUPERSEDE_FIRED" != "1" ]; then
+        RULES_BLOCK="${RULES_BLOCK}
+${RULES_TOOLS_TEXT}"
+      fi
+    fi
+
+    # Counter bookkeeping: reset on cadence-hit (keeps the period stable even if
+    # TOOLS was suppressed this turn); otherwise persist incremented count.
+    if [ "$CADENCE_HIT" = "1" ]; then
       echo "0" > "$TURN_FILE"
     else
       echo "$TURNS" > "$TURN_FILE"
@@ -236,6 +329,12 @@ ${RULES_TEXT}"
 
 $RULES_BLOCK"
     else COMBINED="$RULES_BLOCK"; fi
+  fi
+  if [ -n "$ROUTE_BLOCK" ]; then
+    if [ -n "$COMBINED" ]; then COMBINED="$COMBINED
+
+$ROUTE_BLOCK"
+    else COMBINED="$ROUTE_BLOCK"; fi
   fi
   if [ -n "$PENDING_BLOCK" ]; then
     if [ -n "$COMBINED" ]; then COMBINED="$COMBINED

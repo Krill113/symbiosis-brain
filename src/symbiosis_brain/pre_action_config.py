@@ -37,6 +37,25 @@ def _debug_log(msg: str) -> None:
         pass
 
 
+def _data_dir() -> Path:
+    """Package data dir shipping with the wheel. Unlike hooks/ and templates/
+    (which live at the REPO ROOT and are copied out by the installer), routing
+    data must be importable at runtime by `search-gist`, so it lives UNDER the
+    package and is included in the wheel (see pyproject force-include)."""
+    return Path(__file__).parent / "data"
+
+
+def routing_default_path() -> Path:
+    """Shipped default routing catalog (C1). Read-only; fail-open if absent."""
+    return _data_dir() / "tool-routing.json"
+
+
+def routing_local_path(vault_path: Path) -> Path:
+    """Per-install routing override (C2). Lives under the vault and is
+    git-ignored (privacy) + excluded from brain_search (sync.py is md-only)."""
+    return Path(vault_path) / "tool-routing.local.json"
+
+
 _DEFAULT_BASH_WHITELIST = [
     r"^git (commit|push|merge|rebase|reset|cherry-pick|revert|tag)",
     r"^(npm|pnpm|yarn|pip|uv) (install|add|remove|uninstall)",
@@ -61,6 +80,18 @@ class PreActionConfig:
     timeout_seconds: int = 30
     recall_dedup_enabled: bool = True
     recall_dedup_ttl_seconds: int = 120
+    # --- Stage-4 tool-routing (C1/C2). All fields are plain JSON-overridable via
+    # the same ~/.claude/symbiosis-brain-pre-action.json file; load_config()'s
+    # generic hasattr+type-check loop validates them with no extra code. ---
+    routing_enabled: bool = True
+    # "decompose" (default, spec §5.3 decision A): RULES_TOOLS on cadence, suppressed
+    # on a supersede-route match. "additive": original RULES_TEXT verbatim + routes.
+    routing_mode: str = "decompose"
+    # Max routes injected per turn (spec §4.3); >cap → top-K by priority DESC.
+    routing_cap: int = 2
+    # augment-route session dedup TTL, seconds (spec §5.2). Long so an augment hint
+    # is shown ~once/session; supersede routes are NOT seen-deduped (RULES_TOOLS logic).
+    routing_seen_ttl_seconds: int = 86400
 
 
 def load_config(path: Path = CONFIG_PATH) -> PreActionConfig:

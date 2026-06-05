@@ -82,3 +82,38 @@ def test_load_with_list_root_returns_defaults(tmp_path: Path):
     cfg = load_config(cfg_path)
     assert cfg.enabled is True
     assert cfg.hit_limit == 3
+
+
+# --- Stage-4 routing knobs ---
+
+def test_routing_config_defaults():
+    cfg = PreActionConfig()
+    assert cfg.routing_enabled is True
+    assert cfg.routing_mode == "decompose"
+    assert cfg.routing_cap == 2
+    assert cfg.routing_seen_ttl_seconds == 86400
+
+
+def test_routing_config_json_override_and_unknown_ignored(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    p = tmp_path / "cfg.json"
+    p.write_text(json.dumps({
+        "routing_mode": "additive",
+        "routing_cap": 3,
+        "routing_enabled": False,
+        "routing_mode_typo": "x",
+        "recall_dedup_ttl_seconds": "nope"
+    }), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.routing_mode == "additive"
+    assert cfg.routing_cap == 3
+    assert cfg.routing_enabled is False
+    assert cfg.recall_dedup_ttl_seconds == 120
+
+
+def test_routing_local_path_under_vault(tmp_path):
+    from symbiosis_brain.pre_action_config import routing_local_path, routing_default_path
+    vault = tmp_path / "v"
+    assert routing_local_path(vault) == vault / "tool-routing.local.json"
+    assert routing_default_path().parent.name == "data"
+    assert routing_default_path().parent.parent.name == "symbiosis_brain"

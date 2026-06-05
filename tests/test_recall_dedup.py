@@ -69,3 +69,9 @@ def test_seenstore_reaps_dead_session_files(tmp_path: Path):
     SeenStore("mysession", ttl_seconds=120, base_dir=tmp_path, now=now)  # triggers reap
     assert not dead.exists()  # reaped
     assert fresh.exists()  # kept
+
+
+def test_prefix_namespaces_file(tmp_path):
+    SeenStore('sess', base_dir=tmp_path, prefix='brain-route-seen-').record(['serena-symbol-work'])
+    assert _seen_path('sess', tmp_path, 'brain-route-seen-').exists()
+    assert not _seen_path('sess', tmp_path).exists()

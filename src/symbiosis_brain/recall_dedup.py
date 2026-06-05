@@ -40,8 +40,8 @@ def _safe_session(session_id: str) -> str:
     return f"{token}-{digest}"
 
 
-def _seen_path(session_id: str, base_dir: Path) -> Path:
-    return Path(base_dir) / f"brain-recall-seen-{_safe_session(session_id)}.json"
+def _seen_path(session_id: str, base_dir: Path, prefix: str = "brain-recall-seen-") -> Path:
+    return Path(base_dir) / f"{prefix}{_safe_session(session_id)}.json"
 
 
 class SeenStore:
@@ -59,8 +59,10 @@ class SeenStore:
         ttl_seconds: int = 120,
         base_dir: Optional[Path] = None,
         now: Optional[float] = None,
+        prefix: str = "brain-recall-seen-",
     ):
-        self._path = _seen_path(session_id, base_dir or _tmp_dir())
+        self._prefix = prefix
+        self._path = _seen_path(session_id, base_dir or _tmp_dir(), prefix)
         self._ttl = ttl_seconds
         self._now = time.time() if now is None else now
         self._data: dict[str, float] = self._load_pruned()
@@ -86,7 +88,7 @@ class SeenStore:
         window). Best-effort, fail-open; never touches our own file."""
         cutoff = self._now - _ORPHAN_GRACE_SECONDS
         try:
-            siblings = list(self._path.parent.glob("brain-recall-seen-*.json"))
+            siblings = list(self._path.parent.glob(f"{self._prefix}*.json"))
         except OSError:
             return
         for f in siblings:

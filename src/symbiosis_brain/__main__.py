@@ -9,6 +9,61 @@ import os
 import sys
 
 
+def _append_route_events(
+    session_id: str,
+    route_hints: list[dict],
+    *,
+    routing_mode: str,
+    rules_emitted: bool,
+    prompt: str,
+) -> None:
+    """Tier-0: append one route_fired JSONL line per fired route. Fail-open.
+
+    Reads monotonic turn from env ``SYMBIOSIS_BRAIN_ROUTE_TURN`` (exported by
+    bash before calling search-gist). This is the env-reading variant used by
+    unit tests; the CLI fold in ``_run_search_gist`` calls
+    ``tool_routing.append_route_fired`` directly — do NOT wire this helper into
+    that fold or events will double-write.
+    """
+    if not route_hints:
+        return
+    import datetime as _dt
+    import json as _json
+
+    from symbiosis_brain.pre_action_config import _tmp_dir
+
+    turn_raw = os.environ.get("SYMBIOSIS_BRAIN_ROUTE_TURN") or "0"
+    try:
+        turn_i = int(turn_raw)
+    except ValueError:
+        turn_i = 0
+    snippet = (prompt or "")[:60]
+    sid = session_id or "default"
+    path = _tmp_dir() / f"brain-route-events-{sid}.jsonl"
+    ts = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            for r in route_hints:
+                line = _json.dumps(
+                    {
+                        "session_id": sid,
+                        "ts": ts,
+                        "monotonic_turn": turn_i,
+                        "event": "route_fired",
+                        "route_id": r.get("id"),
+                        "expected_tool": r.get("expected_tool"),
+                        "observable": r.get("observable", False),
+                        "routing_mode": routing_mode,
+                        "rules_emitted": rules_emitted,
+                        "prompt_snippet": snippet,
+                    },
+                    ensure_ascii=False,
+                )
+                f.write(line + "\n")
+    except OSError:
+        pass  # fail-open
+
+
 def _run_search_gist(argv: list[str]):
     import argparse
     import json

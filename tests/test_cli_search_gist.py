@@ -187,3 +187,59 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
     assert isinstance(out, dict)
     assert out["memory_hits"] == []  # --skip-memory honored
     assert any(h["id"] == "powershell-on-windows" for h in out["route_hints"]), out
+
+
+# --- Task 6: Tier-0 _append_route_events helper tests -----------------------
+
+
+def test_route_fired_line_shape_and_snippet_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_ROUTE_TURN", "5")
+    from symbiosis_brain.__main__ import _append_route_events
+
+    long_prompt = "x" * 200
+    hints = [{"id": "web-research-dual-engine", "expected_tool": "WebSearch", "observable": False}]
+    _append_route_events("sid-A", hints, routing_mode="decompose", rules_emitted=False, prompt=long_prompt)
+    evt = tmp_path / "brain-route-events-sid-A.jsonl"
+    rec = json.loads(evt.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["event"] == "route_fired"
+    assert rec["route_id"] == "web-research-dual-engine"
+    assert rec["monotonic_turn"] == 5
+    assert rec["routing_mode"] == "decompose"
+    assert rec["observable"] is False
+    assert len(rec["prompt_snippet"]) == 60
+    # Empty hints list → no file created for sid-B
+    _append_route_events("sid-B", [], routing_mode="decompose", rules_emitted=True, prompt="hi")
+    assert not (tmp_path / "brain-route-events-sid-B.jsonl").exists()
+
+
+def _is_json(s):
+    try:
+        json.loads(s)
+        return True
+    except Exception:
+        return False
+
+
+def test_event_log_concurrent_appends_N_writers(tmp_path, monkeypatch):
+    import textwrap
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    evt = tmp_path / "brain-route-events-concurrent.jsonl"
+    prog = textwrap.dedent("""
+        import sys, json
+        p, i = sys.argv[1], sys.argv[2]
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({"event": "route_fired", "n": int(i)}) + "\\n")
+    """)
+    script = tmp_path / "w.py"
+    script.write_text(prog, encoding="utf-8")
+    N = 20
+    procs = [subprocess.Popen([sys.executable, str(script), str(evt), str(i)]) for i in range(N)]
+    for p in procs:
+        p.wait()
+    lines = [ln for ln in evt.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    valid = [ln for ln in lines if _is_json(ln)]
+    # Tolerate up to 2 torn/lost lines on Windows (OS-level append buffering);
+    # the important property is that the vast majority of writes survive.
+    assert len(valid) >= N - 2

@@ -122,7 +122,7 @@ def _check_mcp_running() -> bool:
         return False
 
 
-SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init", "brain-welcome")
+SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init", "brain-welcome", "brain-tools")
 
 # Bash is the single source of truth. All shipped hooks are .sh (the Python hook
 # shims were removed to kill dual-maintenance drift). brain-pre-action-trigger.sh

@@ -150,6 +150,29 @@ def test_setup_rollback_restores_settings_on_failure(tmp_path, monkeypatch):
     assert claude_md.read_text(encoding="utf-8") == "# original\n"
 
 
+def test_brain_tools_skill_registered_and_packaged():
+    from symbiosis_brain import install_cli
+    assert "brain-tools" in install_cli.SKILL_NAMES
+    src = install_cli._packaged_skills_dir() / "brain-tools" / "SKILL.md"
+    assert src.exists(), f"missing packaged skill: {src}"
+    text = src.read_text(encoding="utf-8")
+    assert text.startswith("---")
+    assert "name: brain-tools" in text
+
+def test_setup_copies_brain_tools_skill(tmp_path, monkeypatch):
+    from symbiosis_brain import install_cli
+    target = tmp_path / "skills"
+    install_cli._copy_skills(target)
+    assert (target / "brain-tools" / "SKILL.md").exists()
+
+def test_skill_frontmatter_name_matches_dir():
+    import re
+    from symbiosis_brain import install_cli
+    src = install_cli._packaged_skills_dir() / "brain-tools" / "SKILL.md"
+    head = src.read_text(encoding="utf-8").split("---")[1]
+    assert re.search(r"^name:\s*brain-tools\s*$", head, re.M)
+
+
 def test_register_mcp_raises_when_add_returns_nonzero(tmp_path, monkeypatch):
     """When `claude mcp add` returns non-zero, RuntimeError must propagate."""
     def fake_run(args, **kw):

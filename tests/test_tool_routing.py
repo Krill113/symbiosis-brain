@@ -54,6 +54,12 @@ def test_route_fired_event_shape(tmp_path, monkeypatch):
     assert line["expected_tool"] == "WebSearch"
     assert line["routing_mode"] == "additive"
     assert line["rules_emitted"] is True
+    # ts is timezone-aware ISO-8601 (string) — same format as
+    # __main__._append_route_events so the single events log has one ts shape.
+    assert isinstance(line["ts"], str)
+    from datetime import datetime
+    parsed_ts = datetime.fromisoformat(line["ts"])
+    assert parsed_ts.tzinfo is not None
 
 
 # --- cap is deterministic by priority DESC then catalog order ---

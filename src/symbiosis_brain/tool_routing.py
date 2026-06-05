@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -228,7 +228,7 @@ def route_hints(matched):
     return [{"id": r.id, "class": r.cls, "hint": r.hint} for r in matched]
 
 
-def dedup_augment(matched, session_id):
+def dedup_augment(matched, session_id, *, ttl_seconds=10 ** 9):
     aug = [r for r in matched if r.cls == "augment"]
     sup = [r for r in matched if r.cls == "supersede"]
     if not aug or not session_id:
@@ -236,7 +236,7 @@ def dedup_augment(matched, session_id):
     try:
         from symbiosis_brain.recall_dedup import SeenStore
 
-        seen = SeenStore(session_id, ttl_seconds=10 ** 9, prefix=ROUTE_SEEN_PREFIX)
+        seen = SeenStore(session_id, ttl_seconds=ttl_seconds, prefix=ROUTE_SEEN_PREFIX)
         fresh = [r for r in aug if not seen.is_seen(r.id)]
         seen.record(r.id for r in fresh)
     except Exception:
@@ -253,7 +253,9 @@ def append_route_fired(
         return
     path = _tmp_dir() / f"{ROUTE_EVENTS_PREFIX}{session_id}.jsonl"
     snippet = (prompt or "")[:_SNIPPET_MAX]
-    ts = time.time()
+    # Timezone-aware ISO-8601 — matches __main__._append_route_events so the
+    # single brain-route-events log has ONE ts format (human-scannable Tier-0).
+    ts = datetime.now(timezone.utc).isoformat()
     try:
         with path.open("a", encoding="utf-8") as f:
             for r in matched:

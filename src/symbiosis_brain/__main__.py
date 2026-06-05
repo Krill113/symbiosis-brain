@@ -130,22 +130,38 @@ def _run_search_gist(argv: list[str]):
     route_hint_list: list = []
     try:
         from symbiosis_brain import tool_routing as tr
+        from symbiosis_brain.pre_action_config import PreActionConfig, load_config
 
-        routes = tr.load_routes(vault=vault_path if vault_path.exists() else None)
-        matched = tr.match_routes(
-            prompt, routes, scope=args.scope, vault=vault_path,
-            roster=tr._roster_set(args.session_id),
-        )
-        matched = tr.dedup_augment(matched, args.session_id)
-        route_hint_list = tr.route_hints(matched)
-        # Tier-0 telemetry via the engine appender (the canonical writer for the
-        # CLI fold). Task 6 owns the env-reading _append_route_events variant —
-        # we do NOT call it here, so events are not double-written.
-        tr.append_route_fired(
-            args.session_id, matched, monotonic_turn=args.monotonic_turn,
-            routing_mode=args.routing_mode, rules_emitted=args.rules_emitted,
-            prompt=prompt,
-        )
+        # Live config knobs (routing_enabled / routing_cap / routing_seen_ttl_seconds).
+        # Fail-open: any config-load error falls back to the dataclass defaults,
+        # never raises into the routing fold.
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = PreActionConfig()
+
+        if not cfg.routing_enabled:
+            # Routing disabled by config → emit empty hints, skip the engine.
+            route_hint_list = []
+        else:
+            routes = tr.load_routes(vault=vault_path if vault_path.exists() else None)
+            matched = tr.match_routes(
+                prompt, routes, scope=args.scope, vault=vault_path,
+                roster=tr._roster_set(args.session_id), cap=cfg.routing_cap,
+            )
+            matched = tr.dedup_augment(
+                matched, args.session_id,
+                ttl_seconds=cfg.routing_seen_ttl_seconds,
+            )
+            route_hint_list = tr.route_hints(matched)
+            # Tier-0 telemetry via the engine appender (the canonical writer for
+            # the CLI fold). Task 6 owns the env-reading _append_route_events
+            # variant — we do NOT call it here, so events are not double-written.
+            tr.append_route_fired(
+                args.session_id, matched, monotonic_turn=args.monotonic_turn,
+                routing_mode=args.routing_mode, rules_emitted=args.rules_emitted,
+                prompt=prompt,
+            )
     except Exception:
         route_hint_list = []
 

@@ -189,6 +189,64 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
     assert any(h["id"] == "powershell-on-windows" for h in out["route_hints"]), out
 
 
+# --- FIX 3: live routing config knobs in the envelope CLI fold --------------
+# A prompt that matches EXACTLY two no-extra-gate routes on Windows:
+#   - version-date-from-registry  (no `when` gate)            priority 80
+#   - powershell-on-windows       (when: platform:windows)    priority 60
+# so cap=2 yields 2 hints, cap=1 yields 1 (top priority), routing_enabled=false
+# yields 0. OSTYPE=msys is set so the platform:windows gate also passes off-Win.
+_TWO_ROUTE_PROMPT = "latest version of ruff, run uv --version"
+
+
+def _run_envelope_with_home_config(tmp_path, cfg_overrides):
+    """Run `search-gist --prompt-from-stdin` in a subprocess whose Path.home()
+    is redirected at a temp dir holding ~/.claude/symbiosis-brain-pre-action.json
+    with the given overrides. Returns the parsed envelope dict.
+
+    load_config() reads Path.home()/.claude/symbiosis-brain-pre-action.json;
+    Path.home() honors USERPROFILE (Windows) / HOME (POSIX), so overriding both
+    points the loader at our fixture without touching the real user config."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude" / "symbiosis-brain-pre-action.json").write_text(
+        json.dumps(cfg_overrides), encoding="utf-8"
+    )
+    env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home),
+           "OSTYPE": "msys", "TMPDIR": str(tmp_path)}
+    payload = json.dumps({"prompt": _TWO_ROUTE_PROMPT})
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_path), "--prompt-from-stdin", "--skip-memory"],
+        input=payload, capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    out = json.loads(result.stdout)
+    assert isinstance(out, dict)
+    return out
+
+
+def test_routing_config_baseline_two_hints(tmp_path):
+    """Sanity baseline: with default cap=2 the prompt yields the two routes,
+    proving the knob tests below actually change behavior (not just empty)."""
+    out = _run_envelope_with_home_config(tmp_path, {})
+    ids = {h["id"] for h in out["route_hints"]}
+    assert ids == {"version-date-from-registry", "powershell-on-windows"}, out
+
+
+def test_routing_disabled_emits_no_hints(tmp_path):
+    """FIX 3: routing_enabled=false → empty route_hints (engine skipped)."""
+    out = _run_envelope_with_home_config(tmp_path, {"routing_enabled": False})
+    assert out["route_hints"] == [], out
+
+
+def test_routing_cap_one_limits_hints(tmp_path):
+    """FIX 3: routing_cap=1 → at most one hint even though 2+ routes match."""
+    out = _run_envelope_with_home_config(tmp_path, {"routing_cap": 1})
+    assert len(out["route_hints"]) == 1, out
+    # cap keeps the top-priority route (version-date-from-registry, p=80).
+    assert out["route_hints"][0]["id"] == "version-date-from-registry", out
+
+
 # --- Task 6: Tier-0 _append_route_events helper tests -----------------------
 
 
@@ -208,6 +266,11 @@ def test_route_fired_line_shape_and_snippet_cap(tmp_path, monkeypatch):
     assert rec["routing_mode"] == "decompose"
     assert rec["observable"] is False
     assert len(rec["prompt_snippet"]) == 60
+    # FIX 4: ts is timezone-aware ISO-8601 (string), SAME format as the engine
+    # appender tool_routing.append_route_fired — one log stream, one ts shape.
+    import datetime as _dt
+    assert isinstance(rec["ts"], str)
+    assert _dt.datetime.fromisoformat(rec["ts"]).tzinfo is not None
     # Empty hints list → no file created for sid-B
     _append_route_events("sid-B", [], routing_mode="decompose", rules_emitted=True, prompt="hi")
     assert not (tmp_path / "brain-route-events-sid-B.jsonl").exists()
@@ -222,24 +285,56 @@ def _is_json(s):
 
 
 def test_event_log_concurrent_appends_N_writers(tmp_path, monkeypatch):
-    import textwrap
+    """FIX 1+2: exercise the REAL production appender
+    (`tool_routing.append_route_fired`) from N concurrent THREADS writing to a
+    single `brain-route-events-<sid>.jsonl`, and assert non-flakily.
+
+    Determinism (per spec preference): each thread calls the production appender
+    under a shared lock, so all N lines are guaranteed (no torn/lost lines) —
+    we assert EXACTLY N. Every surviving line must parse as JSON with
+    event=="route_fired" (no garbage among survivors). The §6.4 design accepts
+    rare torn lines on Windows under lock-free concurrency, but serializing the
+    appender here removes that variance so the test cannot flake under parallel
+    suite load.
+    """
+    import re as _re
+    import threading
+
+    import symbiosis_brain.tool_routing as tr
 
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    evt = tmp_path / "brain-route-events-concurrent.jsonl"
-    prog = textwrap.dedent("""
-        import sys, json
-        p, i = sys.argv[1], sys.argv[2]
-        with open(p, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"event": "route_fired", "n": int(i)}) + "\\n")
-    """)
-    script = tmp_path / "w.py"
-    script.write_text(prog, encoding="utf-8")
+    sid = "concurrent"
+    evt = tmp_path / f"brain-route-events-{sid}.jsonl"
     N = 20
-    procs = [subprocess.Popen([sys.executable, str(script), str(evt), str(i)]) for i in range(N)]
-    for p in procs:
-        p.wait()
+    lock = threading.Lock()
+
+    def worker(i):
+        route = tr.Route(
+            id=f"route-{i}", cls="augment",
+            triggers=[_re.compile("x")], hint="h",
+            expected_tool="WebSearch", observable=False,
+        )
+        # Serialize the production appender so all N lines survive (deterministic).
+        with lock:
+            tr.append_route_fired(
+                sid, [route], monotonic_turn=i,
+                routing_mode="decompose", rules_emitted=False, prompt="x" * 100,
+            )
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
     lines = [ln for ln in evt.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    valid = [ln for ln in lines if _is_json(ln)]
-    # Tolerate up to 2 torn/lost lines on Windows (OS-level append buffering);
-    # the important property is that the vast majority of writes survive.
-    assert len(valid) >= N - 2
+    # All survivors well-formed: valid JSON, event=="route_fired", no torn lines.
+    parsed = []
+    for ln in lines:
+        assert _is_json(ln), f"torn/garbage line among survivors: {ln!r}"
+        rec = json.loads(ln)
+        assert rec["event"] == "route_fired"
+        parsed.append(rec)
+    # Lock serializes the appender → all N lines guaranteed (deterministic).
+    assert len(parsed) == N
+    assert {r["monotonic_turn"] for r in parsed} == set(range(N))

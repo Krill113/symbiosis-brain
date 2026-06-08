@@ -4,6 +4,7 @@ Pure-Python module — no I/O side effects (caller wires SearchEngine).
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from symbiosis_brain.pre_action_config import PreActionConfig
@@ -104,3 +105,58 @@ def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
         mark = "★ " if h.get("_in_both") else ""
         lines.append(f"- {mark}{path} — {gist}")
     return "\n".join(lines)
+
+
+# Tools whose target is an actual code edit (F4 Serena pre-edit advisory).
+_SERENA_ADVISORY_TOOLS = {"Edit", "Write", "MultiEdit"}
+
+# Code-file extensions that warrant a "map dependencies first" nudge.
+# Default-closed: unknown extension → no advisory.
+_CODE_EXTS = {
+    ".cs", ".vb", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
+    ".java", ".kt", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".c",
+}
+
+
+def serena_advisory(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    *,
+    serena_present: bool,
+    seen: Any = None,
+) -> Optional[str]:
+    """Return a one-line Serena pre-edit advisory, or None.
+
+    Fires only when ALL hold: the tool is a code edit (Edit/Write/MultiEdit),
+    Serena is present, the target is a code file by extension, and this file
+    has not yet been advised this session (per-file-once dedup via `seen`).
+
+    Advisory-only: the caller injects this as additionalContext and NEVER
+    blocks the edit. `seen` is a duck-typed SeenStore (`is_seen`, `record`);
+    all dedup errors fail-open (advise rather than crash).
+    """
+    if tool_name not in _SERENA_ADVISORY_TOOLS:
+        return None
+    if not serena_present:
+        return None
+    file_path = tool_input.get("file_path") or ""
+    if not file_path:
+        return None
+    if os.path.splitext(file_path)[1].lower() not in _CODE_EXTS:
+        return None
+    if seen is not None:
+        try:
+            if seen.is_seen(file_path):
+                return None
+        except Exception:
+            pass  # fail-open: dedup must never suppress on error
+        try:
+            seen.record([file_path])
+        except Exception:
+            pass  # fail-open
+    name = os.path.basename(file_path)
+    return (
+        f"[serena] Перед правкой {name}: сначала зависимости через Serena "
+        f"(find_referencing_symbols / find_implementations по затрагиваемым "
+        f"символам) — увидь картину целиком, не редактируй вслепую."
+    )

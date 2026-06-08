@@ -92,6 +92,10 @@ class PreActionConfig:
     # augment-route session dedup TTL, seconds (spec §5.2). Long so an augment hint
     # is shown ~once/session; supersede routes are NOT seen-deduped (RULES_TOOLS logic).
     routing_seen_ttl_seconds: int = 86400
+    # --- Stage-4b Serena pre-edit advisory (F4). When True, code edits (Edit/Write/
+    # MultiEdit) on a code file with Serena present get a one-line "map dependencies
+    # first" nudge as additionalContext (never blocks). JSON-overridable like above. ---
+    serena_advisory_enabled: bool = True
 
 
 def load_config(path: Path = CONFIG_PATH) -> PreActionConfig:

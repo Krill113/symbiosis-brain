@@ -9,6 +9,22 @@ import os
 import sys
 
 
+def _emit_json(obj) -> None:
+    """Emit a JSON envelope to stdout for hook consumers.
+
+    ASCII-safe by design (``ensure_ascii=True``): the search-gist child only
+    reconfigures *stdout* to UTF-8, not stdin, so on Windows a hook-piped
+    UTF-8 prompt can decode to a lone surrogate (e.g. ``\\udc98``). Emitting
+    with ``ensure_ascii=False`` would then raise ``UnicodeEncodeError`` against
+    strict-UTF-8 stdout, the hook fails open to ``[]`` and BOTH memory and
+    route hints are dropped. ``ensure_ascii=True`` escapes every non-ASCII
+    code point (including lone surrogates) to ``\\uXXXX``, which the bash
+    consumer un-escapes via ``json.loads`` — byte-transparent for it.
+    """
+    import json
+    print(json.dumps(obj, ensure_ascii=True))
+
+
 def _append_route_events(
     session_id: str,
     route_hints: list[dict],
@@ -72,8 +88,17 @@ def _run_search_gist(argv: list[str]):
     # Force UTF-8 stdout — cyrillic + `→` (U+2192) in gists crashes default
     # cp1251 codec on Windows. Hook callers swallow stderr, so the only symptom
     # is silent empty recall. Same UTF-8 guard as install_cli.py.
+    # errors="backslashreplace": defense-in-depth so a stray lone surrogate
+    # (e.g. \udc98 from cp1251/surrogateescape stdin on Windows) can NEVER raise
+    # UnicodeEncodeError on emit and fail the hook open to '[]' (bug #1).
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    # Reconfigure stdin too: the hook pipes UTF-8 prompt bytes, but the child's
+    # default Windows stdin codec is cp1251/surrogateescape, which mojibakes
+    # multibyte UTF-8 into lone surrogates. Decode as UTF-8 to fix the ingress
+    # root cause; errors="replace" keeps it fail-open on truly invalid bytes.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(prog="symbiosis_brain search-gist")
     parser.add_argument("--vault", required=True, help="Vault path")
@@ -122,7 +147,7 @@ def _run_search_gist(argv: list[str]):
             print("[]")
             return 0
         results = _gist_search(vault_path, args.query, args.scope, args.limit)
-        print(json.dumps(results, ensure_ascii=False))
+        _emit_json(results)
         return 0
 
     # Envelope path (Phase B / opt-in). Fold the routing engine in and emit
@@ -169,10 +194,7 @@ def _run_search_gist(argv: list[str]):
     if not args.skip_memory and vault_path.exists() and prompt:
         memory_hits = _gist_search(vault_path, prompt, args.scope, args.limit)
 
-    print(json.dumps(
-        {"memory_hits": memory_hits, "route_hints": route_hint_list},
-        ensure_ascii=False,
-    ))
+    _emit_json({"memory_hits": memory_hits, "route_hints": route_hint_list})
     return 0
 
 
@@ -268,8 +290,12 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     import os
     from pathlib import Path
 
+    # errors="backslashreplace" + utf-8 stdin: same defense-in-depth as
+    # search-gist (bug #1) — never crash the hook on a lone surrogate.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
     # Kill-switch (env var; no config-file roundtrip needed)
     if os.environ.get("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED") == "1":
@@ -350,17 +376,42 @@ def _run_pre_action_recall(argv: list[str]) -> int:
                 seen = None  # fail-open: dedup is best-effort, never block recall
 
         hits = run_recall(query=query, scope=scope, config=cfg, engine=engine, seen=seen)
-        if not hits:
-            return 0
+        recall_block = format_recall_block(query, hits)
 
-        block = format_recall_block(query, hits)
+        # F4: Serena pre-edit advisory (action-time). Fold into the same
+        # additionalContext so a code edit gets the "map dependencies first"
+        # nudge even when recall returned nothing. Advisory-only, fail-open.
+        advisory = ""
+        if cfg.serena_advisory_enabled and tool_name in {"Edit", "Write", "MultiEdit"}:
+            try:
+                from symbiosis_brain.pre_action_recall import serena_advisory
+                from symbiosis_brain.tool_routing import _roster_set
+                roster = _roster_set(session_id)
+                serena_present = bool(roster) and any("serena" in r for r in roster)
+                adv_seen = None
+                if serena_present and session_id:
+                    from symbiosis_brain.recall_dedup import SeenStore
+                    adv_seen = SeenStore(
+                        session_id,
+                        ttl_seconds=10**9,  # never expire within a session (per-file-once advice)
+                        prefix="brain-serena-advised-",
+                    )
+                advisory = serena_advisory(
+                    tool_name, tool_input, serena_present=serena_present, seen=adv_seen
+                ) or ""
+            except Exception:
+                advisory = ""  # fail-open: advisory must never block the edit
+
+        parts = [p for p in (recall_block, advisory) if p]
+        if not parts:
+            return 0
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "additionalContext": block,
+                "additionalContext": "\n\n".join(parts),
             }
         }
-        print(json.dumps(output, ensure_ascii=False))
+        _emit_json(output)
         return 0
     except Exception:
         return 0  # fail-open on any runtime error

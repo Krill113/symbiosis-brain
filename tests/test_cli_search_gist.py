@@ -1,4 +1,5 @@
 """CLI subcommand `python -m symbiosis_brain search-gist` for hook usage."""
+import io
 import json
 import os
 import subprocess
@@ -6,6 +7,54 @@ import sys
 from pathlib import Path
 
 import pytest
+
+
+# --- BUG #1: search-gist UnicodeEncodeError fail-open ------------------------
+# Root cause: search-gist reconfigures only *stdout* to utf-8 (errors stays
+# 'strict'), never stdin. On Windows the child stdin is cp1251/surrogateescape;
+# the hook pipes UTF-8 prompt bytes, so a byte like 0x98 decodes to a lone
+# surrogate \udc98. The envelope emit `print(json.dumps(..., ensure_ascii=
+# False))` then can't encode the lone surrogate to strict-utf-8 stdout →
+# UnicodeEncodeError → exit!=0 → the bash hook fails open to GIST_JSON='[]' →
+# drops BOTH memory and route hits.
+#
+# This is an OS-independent unit test of the EMIT path: it monkeypatches
+# sys.stdout to a STRICT utf-8 text wrapper (mirroring the production
+# stdout.reconfigure(encoding="utf-8") whose errors default to 'strict'), feeds
+# a payload whose one hit's gist contains a lone surrogate plus a SECOND clean
+# hit, and asserts the emit does not raise AND the clean hit survives.
+
+
+def test_emit_json_with_lone_surrogate_does_not_crash_and_keeps_clean_hit(monkeypatch):
+    from symbiosis_brain.__main__ import _emit_json
+
+    # Strict utf-8 stdout, exactly like the production reconfigure (errors='strict').
+    buf = io.BytesIO()
+    fake_stdout = io.TextIOWrapper(buf, encoding="utf-8", errors="strict",
+                                   write_through=True)
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    payload = {
+        "memory_hits": [
+            {"path": "mistakes/bad.md", "title": "Bad", "scope": "global",
+             "gist": "bad" + chr(0xDC98) + "gist"},  # lone surrogate \udc98
+            {"path": "patterns/clean.md", "title": "Clean", "scope": "global",
+             "gist": "clean survivable gist"},
+        ],
+        "route_hints": [],
+    }
+
+    # (i) MUST NOT raise UnicodeEncodeError.
+    _emit_json(payload)
+    fake_stdout.flush()
+
+    captured = buf.getvalue().decode("utf-8")
+    out = json.loads(captured)
+    # (ii) parses back to a dict with memory_hits.
+    assert isinstance(out, dict)
+    assert "memory_hits" in out
+    # (iii) the CLEAN hit still survives (not merely no-crash).
+    assert any(h.get("gist") == "clean survivable gist" for h in out["memory_hits"])
 
 
 def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path):

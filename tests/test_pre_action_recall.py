@@ -139,6 +139,91 @@ def test_format_truncates_query_snippet():
     assert "xxxx" in out  # snippet portion present
 
 
+# ---------- serena_advisory (F4 pre-edit advisory) ----------
+
+from symbiosis_brain.pre_action_recall import serena_advisory
+
+
+class _FakeSeenSerena:
+    def __init__(self):
+        self._s = set()
+    def is_seen(self, path):
+        return path in self._s
+    def record(self, paths):
+        self._s.update(paths)
+
+
+def test_serena_advisory_fires_for_code_edit_when_serena_present():
+    adv = serena_advisory(
+        "Edit", {"file_path": "src/Foo.cs", "new_string": "x"},
+        serena_present=True, seen=None,
+    )
+    assert adv is not None
+    assert "Serena" in adv
+    assert "Foo.cs" in adv
+
+
+def test_serena_advisory_silent_for_non_code_file():
+    assert serena_advisory(
+        "Edit", {"file_path": "notes.md"}, serena_present=True, seen=None,
+    ) is None
+
+
+def test_serena_advisory_silent_when_serena_absent():
+    assert serena_advisory(
+        "Edit", {"file_path": "src/Foo.cs"}, serena_present=False, seen=None,
+    ) is None
+
+
+def test_serena_advisory_silent_for_non_edit_tool():
+    assert serena_advisory(
+        "Bash", {"command": "git status"}, serena_present=True, seen=None,
+    ) is None
+
+
+def test_serena_advisory_dedup_per_file_once_per_session():
+    seen = _FakeSeenSerena()
+    a1 = serena_advisory("Edit", {"file_path": "src/Foo.cs"}, serena_present=True, seen=seen)
+    a2 = serena_advisory("Edit", {"file_path": "src/Foo.cs"}, serena_present=True, seen=seen)
+    assert a1 is not None
+    assert a2 is None  # same file, same session → suppressed
+
+
+def test_serena_advisory_fires_for_multiedit_and_write():
+    assert serena_advisory("Write", {"file_path": "a/B.ts"}, serena_present=True, seen=None) is not None
+    assert serena_advisory("MultiEdit", {"file_path": "a/B.py"}, serena_present=True, seen=None) is not None
+
+
+class _RaisingSeenSerena:
+    """Seen store whose dedup ops both raise — proves serena_advisory fails open."""
+    def is_seen(self, path):
+        raise RuntimeError("seen-file unreadable")
+    def record(self, paths):
+        raise RuntimeError("seen-file unwritable")
+
+
+def test_serena_advisory_fail_open_when_seen_raises():
+    # Dedup is best-effort: if the seen store throws, the advisory MUST still
+    # fire (load-bearing — the hook wraps this and must never crash the edit).
+    adv = serena_advisory(
+        "Edit", {"file_path": "src/Foo.cs"},
+        serena_present=True, seen=_RaisingSeenSerena(),
+    )
+    assert adv is not None
+    assert "Foo.cs" in adv
+
+
+def test_serena_advisory_uppercase_ext_and_backslash():
+    # Uppercase extension is normalized via .lower(); Windows backslash path is
+    # split via os.path.basename → advisory fires with the bare filename.
+    adv = serena_advisory(
+        "Edit", {"file_path": "src\\sub\\Foo.CS"},
+        serena_present=True, seen=None,
+    )
+    assert adv is not None
+    assert "Foo.CS" in adv
+
+
 # ---------- run_recall (integration with SearchEngine via mock) ----------
 
 def test_run_recall_filters_excluded_types():
@@ -432,3 +517,60 @@ def test_run_recall_fail_open_when_seen_raises():
     # un-deduped cap-top-N (locked constraint: a dedup error never empties recall).
     hits = run_recall("q", None, cfg, engine, seen=_RaisingSeen())
     assert [h["path"] for h in hits] == ["p/0", "p/1", "p/2"]
+
+
+# ---------- CLI serena advisory integration (F4, Stage 4b) ----------
+
+
+def _write_roster(tmp_path, session_id, servers):
+    (tmp_path / f"brain-mcp-roster-{session_id}").write_text(
+        "\n".join(servers) + "\n", encoding="utf-8"
+    )
+
+
+def test_cli_emits_serena_advisory_for_code_edit(populated_vault, tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    sid = "sess-serena-1"
+    _write_roster(tmp_path, sid, ["serena: ... - Connected"])
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/Foo.cs", "new_string": "var x = 1;"},
+        "session_id": sid,
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    data = json.loads(out)
+    assert data["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "[serena]" in data["hookSpecificOutput"]["additionalContext"]
+
+
+def test_cli_no_serena_advisory_for_markdown(populated_vault, tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    sid = "sess-serena-2"
+    _write_roster(tmp_path, sid, ["serena: ... - Connected"])
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "docs/readme.md", "new_string": "hi"},
+        "session_id": sid,
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    # No code-file advisory; output is either empty or recall-only (no [serena]).
+    assert "[serena]" not in out
+
+
+def test_cli_no_serena_advisory_when_roster_lacks_serena(populated_vault, tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    sid = "sess-serena-3"
+    _write_roster(tmp_path, sid, ["duckduckgo: ... - Connected"])
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/Foo.cs", "new_string": "x"},
+        "session_id": sid,
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert "[serena]" not in out

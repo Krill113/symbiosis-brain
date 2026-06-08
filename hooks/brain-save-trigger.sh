@@ -212,7 +212,11 @@ if [ "$MODE" = "prompt-check" ]; then
       GIST_JSON="[]"
     fi
 
-    HITS=$(echo "$GIST_JSON" | python -c "import sys,json
+    # PYTHONIOENCODING=utf-8: Python's default stdout codec on Windows is cp1251.
+    # json.dumps upstream ASCII-escapes non-ASCII, so print() of Cyrillic gists
+    # would emit cp1251 bytes (e.g. 0xe4 for 'д') and corrupt the reminder. Force
+    # UTF-8 so the block is byte-correct for any reader. (Same fix as :156.)
+    HITS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
 try:
     d=json.load(sys.stdin)
     hits=d.get('memory_hits',[]) if isinstance(d,dict) else (d or [])
@@ -228,7 +232,10 @@ $HITS"
     fi
 
     # ── Routing: extract route_hints[] from the SAME envelope (C3/C4) ──
-    ROUTE_HINTS=$(echo "$GIST_JSON" | python -c "import sys,json
+    # PYTHONIOENCODING=utf-8: see HITS extractor above. The route hint is the
+    # primary Cyrillic emitter (e.g. 'Serena до правки.'); without this, print()
+    # encodes 'д' as cp1251 0xe4 on Windows and breaks UTF-8 capture/consumers.
+    ROUTE_HINTS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
 try:
     d=json.load(sys.stdin)
     rh=d.get('route_hints',[]) if isinstance(d,dict) else []
@@ -239,7 +246,7 @@ except Exception:
     pass
 " 2>/dev/null)
     SUPERSEDE_FIRED=0
-    if echo "$GIST_JSON" | python -c "import sys,json
+    if echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
 try:
     d=json.load(sys.stdin)
     rh=d.get('route_hints',[]) if isinstance(d,dict) else []

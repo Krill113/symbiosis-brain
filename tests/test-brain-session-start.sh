@@ -122,7 +122,7 @@ declare -A SCOPE_MAP=(
   ["$FAKE_ROOT/My/Alpha-Local"]="alpha-local"
   ["$FAKE_ROOT/My/alpha-faq"]="alpha-faq"
   ["$FAKE_ROOT/My/alphalib"]="alphalib"
-  ["$FAKE_ROOT/My/others/Ai/tools/WidgetCompare"]="api-diff-tool"
+  ["$FAKE_ROOT/My/others/Ai/tools/WidgetCompare"]="widget-compare"
   ["$FAKE_ROOT/My/others/symbiosis-brain/sub"]="sub"
 )
 for cwd in "${!SCOPE_MAP[@]}"; do

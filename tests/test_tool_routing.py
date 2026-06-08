@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 import symbiosis_brain.tool_routing as tr
 
@@ -253,3 +254,84 @@ def test_latest_ruff():
     )
     assert m and m[0].id == "version-date-from-registry"
     assert not any(r.id == "web-research-dual-engine" for r in m)
+
+
+# --- Stage 4b local.json routes (fixture-backed gate/match tests) ---
+_FIXTURE = Path(__file__).parent / "fixtures" / "stage4b-local-routes.json"
+
+
+def _routes_with_fixture(tmp_path):
+    """load_routes merging the shipped default with the stage4b fixture as local.json."""
+    (tmp_path / tr._LOCAL_BASENAME).write_text(
+        _FIXTURE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return tr.load_routes(vault=tmp_path)
+
+
+def test_stage4b_fixture_routes_compile(tmp_path):
+    # Explicit JSON-escape + regex validation: catches a mis-escaped trigger at
+    # the JSON level BEFORE load_routes' fail-open silently drops the route.
+    raw = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    assert isinstance(raw, list) and len(raw) == 3
+    for route in raw:
+        for trig in route["triggers"]:
+            re.compile(trig["re"])  # raises on bad regex / mis-escape
+    routes = _routes_with_fixture(tmp_path)
+    ids = {r.id for r in routes}
+    assert {"serena-code-work", "civil3d-bridge-analysis", "debug-civil3d-plugin"} <= ids
+
+
+def test_serena_symbol_and_code_work_are_disjoint(tmp_path):
+    # Verified against the live engine (2026-06-08): the two serena routes never
+    # both fire on one prompt, so ROUTING_CAP=2 never has to choose between them.
+    routes = _routes_with_fixture(tmp_path)
+    rename = [r.id for r in tr.match_routes("переименуй FooBar везде", routes, roster={"serena"})]
+    assert "serena-symbol-work" in rename and "serena-code-work" not in rename
+    structure = [r.id for r in tr.match_routes(
+        "покажи структуру класса PipeNetworkManager", routes, roster={"serena"})]
+    assert "serena-code-work" in structure and "serena-symbol-work" not in structure
+
+
+def test_serena_code_work_fires_with_serena_silent_without(tmp_path):
+    routes = _routes_with_fixture(tmp_path)
+    prompt = "покажи структуру класса PipeNetworkManager"
+    assert any(r.id == "serena-code-work"
+               for r in tr.match_routes(prompt, routes, roster={"serena"}))
+    # serena absent (cold roster) → silent (fail-closed)
+    assert not any(r.id == "serena-code-work"
+                   for r in tr.match_routes(prompt, routes, roster=None))
+
+
+def test_serena_code_work_does_not_collide_with_debugging(tmp_path):
+    routes = _routes_with_fixture(tmp_path)
+    # A pure-debugging prompt must NOT trigger serena-code-work.
+    m = tr.match_routes("почему падает тест", routes, roster={"serena"})
+    assert not any(r.id == "serena-code-work" for r in m)
+
+
+def test_civil3d_route_requires_scope_and_bridge(tmp_path):
+    routes = _routes_with_fixture(tmp_path)
+    prompt = "снуп handle 1A2B в чертеже"
+    assert any(r.id == "civil3d-bridge-analysis"
+               for r in tr.match_routes(prompt, routes,
+                                        scope="civil3d", roster={"civil3d-bridge"}))
+    # wrong scope → silent
+    assert not any(r.id == "civil3d-bridge-analysis"
+                   for r in tr.match_routes(prompt, routes,
+                                            scope="global", roster={"civil3d-bridge"}))
+    # bridge absent → silent
+    assert not any(r.id == "civil3d-bridge-analysis"
+                   for r in tr.match_routes(prompt, routes,
+                                            scope="civil3d", roster={"serena"}))
+
+
+def test_debug_route_requires_vs_mcp(tmp_path):
+    routes = _routes_with_fixture(tmp_path)
+    prompt = "поставь breakpoint в CreateProfileViewsRun"
+    matched = tr.match_routes(prompt, routes, roster={"vs-mcp"})
+    assert any(r.id == "debug-civil3d-plugin" for r in matched)
+    dbg = next(r for r in matched if r.id == "debug-civil3d-plugin")
+    assert dbg.chain == ["systematic-debugging", "vs-mcp", "civil3d-bridge"]
+    # vs-mcp absent → silent
+    assert not any(r.id == "debug-civil3d-plugin"
+                   for r in tr.match_routes(prompt, routes, roster=None))

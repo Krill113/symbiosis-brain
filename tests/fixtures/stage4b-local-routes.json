@@ -1,0 +1,51 @@
+[
+  {
+    "id": "serena-code-work",
+    "class": "augment",
+    "when": "serena-present",
+    "priority": 72,
+    "observable": false,
+    "expected_tool": "find_referencing_symbols",
+    "triggers": [
+      {"re": "(структур[а-я]*|устройств[а-я]*)\\s+(класса|интерфейса|метода)\\s+[A-Z][A-Za-z0-9_]*", "flags": "i"},
+      {"re": "(где|как)\\s+(использует|применяет)[а-я]*\\s+[A-Z][A-Za-z0-9_]*", "flags": "i"},
+      {"re": "(наслед|реализаци)[а-я]*\\s+[A-Z][A-Za-z0-9_]*", "flags": "i"}
+    ],
+    "hint": "Код-навигация через Serena: структура/наследование/использование символа — семантический граф, не grep.",
+    "chain": [],
+    "trial": false
+  },
+  {
+    "id": "civil3d-bridge-analysis",
+    "class": "augment",
+    "when": "scope:civil3d&civil3d-bridge-present",
+    "priority": 78,
+    "observable": false,
+    "expected_tool": "mcp__civil3d-bridge__snoop_handle",
+    "triggers": [
+      {"re": "(снуп|snoop)\\s+(handle|хендл|selection|выделен)", "flags": "i"},
+      {"re": "(что|посмотр[а-я]*)\\s+(в\\s+)?(чертеж[а-я]*|dwg|сети|pipe[_\\s-]?network)", "flags": "i"},
+      {"re": "(pipe[_\\s-]?network|трубопроводн[а-я]*\\s+сет|part[_\\s-]?data|property[_\\s-]?sets)", "flags": "i"}
+    ],
+    "hint": "Состояние чертежа — civil3d-bridge (snoop_handle / pipe_network / property_sets), не догадки по коду.",
+    "chain": [],
+    "trial": true
+  },
+  {
+    "id": "debug-civil3d-plugin",
+    "class": "augment",
+    "when": "vs-mcp-present",
+    "priority": 74,
+    "observable": false,
+    "expected_tool": null,
+    "triggers": [
+      {"re": "(поставь|ставь|set)\\s+(breakpoint|брейк|bp|точку\\s+останова)", "flags": "i"},
+      {"re": "(отлад|debug|дебаж)[а-я]*\\s+(плагин|код|метод|рантайм)", "flags": "i"},
+      {"re": "(шагни|step\\s+(into|over)|что\\s+в\\s+locals|посмотр[а-я]*\\s+locals)", "flags": "i"},
+      {"re": "почему\\s+.*\\bв\\s+рантайме", "flags": "i"}
+    ],
+    "hint": "Live-отладка: веди сам через vs-mcp (чисти старые BP, BP где условие верно), сверяй код ↔ чертёж (civil3d-bridge); методология systematic-debugging.",
+    "chain": ["systematic-debugging", "vs-mcp", "civil3d-bridge"],
+    "trial": true
+  }
+]

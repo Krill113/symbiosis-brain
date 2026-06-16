@@ -131,7 +131,9 @@ for cwd in "${!SCOPE_MAP[@]}"; do
   assert_contains "regression: $(basename $cwd) → $expected" "$OUT" "\\[scope: $expected\\]"
 done
 
-# === Scope override via CLAUDE.md marker ===
+# === Scope override via CLAUDE.md marker (Layer 2 in-hook) ===
+# The hook reads the marker so SYMBIOSIS_BRAIN_SCOPE is correct for the
+# recall/rules/save hooks. Marker scope wins over the basename heuristic.
 setup_vault
 PROJ="$FAKE_ROOT/My/alphanets"
 mkdir -p "$PROJ"
@@ -140,10 +142,38 @@ cat > "$PROJ/CLAUDE.md" <<'EOF'
 <!-- symbiosis-brain v1: scope=alpha-seti, umbrella=alpha -->
 EOF
 OUT=$(run_hook "$PROJ")
-# Hook itself does NOT read marker — it stays naive (basename normalize).
-# Marker override is applied by brain-init skill at Layer 2.
-# So hook output remains "alphanets" here — this is INTENTIONAL.
-assert_contains "marker-override is skill-level, not hook-level" "$OUT" '\[scope: alphanets\]'
+assert_contains "marker-override: basename alphanets → marker alpha-seti" "$OUT" '\[scope: alpha-seti\]'
+
+# Regression: camelCase folder name that does NOT kebab-match the vault scope
+# (the LWhisperer → l-whisperer bug; vault scope is "lwhisper"). Marker must win.
+setup_vault
+PROJ_CC="$FAKE_ROOT/My/others/LWhisperer"
+mkdir -p "$PROJ_CC"
+cat > "$PROJ_CC/CLAUDE.md" <<'EOF'
+# LWhisper
+<!-- symbiosis-brain v1: scope=lwhisper -->
+EOF
+OUT=$(run_hook "$PROJ_CC")
+assert_contains "marker-override: LWhisperer (basename l-whisperer) → lwhisper" "$OUT" '\[scope: lwhisper\]'
+
+# Marker parse is whitespace-tolerant and last-marker-wins (mirrors parse_marker).
+setup_vault
+PROJ_MULTI="$FAKE_ROOT/My/multi"
+mkdir -p "$PROJ_MULTI"
+cat > "$PROJ_MULTI/CLAUDE.md" <<'EOF'
+<!-- symbiosis-brain v1: scope=old-scope -->
+text
+<!--symbiosis-brain  v2 :  umbrella=x ,  scope=migrated-scope , status=draft-->
+EOF
+OUT=$(run_hook "$PROJ_MULTI")
+assert_contains "marker-override: last marker wins + ws-tolerant → migrated-scope" "$OUT" '\[scope: migrated-scope\]'
+
+# No marker → basename heuristic still applies (no regression for marker-less projects).
+setup_vault
+PROJ_NM="$FAKE_ROOT/My/PlainFolder"
+mkdir -p "$PROJ_NM"
+OUT=$(run_hook "$PROJ_NM")
+assert_contains "no-marker: basename heuristic preserved" "$OUT" '\[scope: plain-folder\]'
 
 # === SYMBIOSIS_BRAIN_SCOPE env contract for A-plan ===
 setup_vault

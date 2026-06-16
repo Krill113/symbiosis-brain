@@ -1,7 +1,9 @@
 #!/bin/bash
 # Symbiosis Brain — SessionStart hook (post-C1 architecture).
-# Layer 1: dumb basename → kebab-case scope. Skill brain-init handles
-# marker-based override at Layer 2.
+# Scope resolution: basename → kebab-case (Layer 1), then CLAUDE.md marker
+# override (Layer 2) so SYMBIOSIS_BRAIN_SCOPE is correct for the recall/rules/
+# save hooks that read it. Skill brain-init still re-resolves for richer fields
+# (umbrella/source/version); this hook only needs the canonical scope.
 
 # Allow `source <hook> --source-only-normalize` to expose normalize_scope
 # to tests без выполнения тела хука.
@@ -34,6 +36,19 @@ VAULT="${SYMBIOSIS_BRAIN_VAULT:-$HOME/symbiosis-brain-vault}"
 TOOLS="${SYMBIOSIS_BRAIN_TOOLS}"
 SCOPE=$(normalize_scope "$(basename "$PWD")")
 [ -z "$SCOPE" ] && SCOPE="global"
+
+# L2: marker override. The basename heuristic above is wrong whenever the
+# folder name doesn't kebab-match the vault scope (e.g. LWhisperer → l-whisperer
+# but vault scope is "lwhisper"). The skill brain-init resolves this into the
+# model's context, but the recall/rules/save hooks read SYMBIOSIS_BRAIN_SCOPE,
+# so the marker must win HERE too. Pure-bash (no uv) to stay within the 5s
+# timeout. Mirrors scope_resolver.parse_marker: last marker wins, scope= required.
+if [ -f "$PWD/CLAUDE.md" ]; then
+  MARKER_SCOPE=$(grep -oE '<!--[[:space:]]*symbiosis-brain[[:space:]]+v[0-9]+[[:space:]]*:.*-->' "$PWD/CLAUDE.md" 2>/dev/null \
+    | tail -1 \
+    | sed -nE 's/.*[[:space:],:]scope[[:space:]]*=[[:space:]]*([A-Za-z0-9_-]+).*/\1/p')
+  [ -n "$MARKER_SCOPE" ] && SCOPE="$MARKER_SCOPE"
+fi
 
 # Set env vars for other hooks, brain-init skill, and bash commands in this session
 if [ -n "$CLAUDE_ENV_FILE" ]; then

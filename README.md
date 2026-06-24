@@ -96,6 +96,20 @@ Same vault, days apart, different process. No prompt engineering, no copy-pastin
 
 A tiny MCP server backed by a folder of markdown notes. SQLite indexes them with FTS5 + vector search (sqlite-vec + fastembed); wiki-links form a graph; six bash hooks wire the recall/save loop into Claude Code's own session lifecycle.
 
+```mermaid
+flowchart TD
+    subgraph session[Each Claude Code session]
+        direction LR
+        SS[SessionStart<br/>scope + context loaded] --> UP[UserPromptSubmit<br/>recall + route hints]
+        UP --> PT[PreToolUse<br/>recall before Edit/Write]
+        PT --> WK[Work happens]
+        WK --> ST[Stop / PreCompact<br/>save before /compact]
+        ST --> SE[SessionEnd<br/>vault git sync]
+    end
+    WK <-->|MCP tools| V[(Markdown vault<br/>hybrid search + wiki-graph)]
+    SE -.->|next session| SS
+```
+
 **MCP tools (13):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`.
 
 **Skills (7):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill).
@@ -170,6 +184,9 @@ Pull requests welcome. A few rules:
 
 ## Release process (maintainer notes)
 
+<details>
+<summary>Maintainer release steps</summary>
+
 Releases are auto-published to PyPI on `v*` git tags via GitHub Actions (Trusted Publisher OIDC, no API tokens).
 
 1. `hatch version <patch|minor|major>` — bumps `src/symbiosis_brain/__init__.py`
@@ -178,6 +195,8 @@ Releases are auto-published to PyPI on `v*` git tags via GitHub Actions (Trusted
 4. `git tag vX.Y.Z && git push --follow-tags`
 5. Watch [Actions](https://github.com/Krill113/symbiosis-brain/actions) — `build`, `publish`, `verify` jobs must all pass
 6. Verify on [pypi.org/project/symbiosis-brain](https://pypi.org/project/symbiosis-brain/)
+
+</details>
 
 ## License
 

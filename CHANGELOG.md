@@ -7,13 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Hooks are now **bash-only** — a single source of truth matching the live `~/.claude` install. The installer wires all six hook events (`SessionStart` startup+compact, `Stop`, `PreCompact`, `UserPromptSubmit`, `PreToolUse` recall, `SessionEnd` sync) to the `.sh` hooks, and seeds the behavioural `SYMBIOSIS_BRAIN_*` env block (non-clobbering — existing user values are preserved).
+## [0.4.0] — 2026-06-24
 
 ### Added
+- **Stage-4 tool routing** — a data-driven routing engine (load/merge, when-gate, priority cap, dedup, Tier-0/Tier-1 event appenders) with a seed catalog of tool hints. On each prompt the `UserPromptSubmit` hook composes a `[route]` advisory; routing folds into the `search-gist` envelope under an opt-in flag.
+- `brain-tools` skill — onboards per-install MCP/tool routes (stored in `$VAULT/tool-routing.local.json`, git-ignored and never indexed) without editing package code; registered by the installer.
+- Stage-4b routes for Serena / Civil3D / VS-MCP (fixture + gate tests), plus a Serena pre-edit advisory that surfaces dependency awareness before `Edit`/`Write`.
+- Pre-action recall hardening — dedup + relevance metadata on the `PreToolUse` hook, a space-tolerant Tier-1 parse, and a shared seen-store so recall and routing reuse the same dedup.
+- Write-time DX — code-region skip validator, heading-append, live-lint orphan resolution, and a write counter.
+- `brain-save` retrospective now scans for routing gaps; it writes a `brain-last-save-pct` marker so the Stop-hook delta-guard works across turns.
 - Vendored `hooks/brain-sync.sh` (SessionEnd vault `git add/commit/push`, soft-fail) into the repo — previously it was deploy-only and untracked.
 - `brain-pre-action-trigger.sh` is now shipped by the installer; `brain_append` + `brain_patch` added to the default permission set.
 - `tests/test-stop-hook.sh` — bash coverage for save-trigger stop/precompact zones, env thresholds, delta-guard and SAVE_LATER (previously covered only by the removed python-shim tests).
+- Expanded README — tool routing, the full hook / tool / skill reference, a `SYMBIOSIS_BRAIN_*` configuration table, contributing guidelines, and license.
+
+### Changed
+- Hooks are now **bash-only** — a single source of truth matching the live `~/.claude` install. The installer wires all six hook events (`SessionStart` startup+compact, `Stop`, `PreCompact`, `UserPromptSubmit`, `PreToolUse` recall, `SessionEnd` sync) to the `.sh` hooks, and seeds the behavioural `SYMBIOSIS_BRAIN_*` env block (non-clobbering — existing user values are preserved).
+- `SessionStart` resolves the active scope from the `CLAUDE.md` marker (Layer 2).
+- Packaging — ship `tool-routing.json` in the wheel; unify the hook temp-path on `${TMPDIR:-${TEMP:-/tmp}}`; handoff rotation resolves the project card by frontmatter scope, not filename.
+
+### Fixed
+- UTF-8 emission in the `brain-save` python extractors and `search-gist` on Windows (cp1251 byte `0xe4` / lone-surrogate fail-open that could drop both memory and routing on an affected prompt).
 
 ### Removed
 - Lagging Python hook shims `hooks/brain-session-start.py` and `hooks/brain-save-trigger.py` — the bash hooks are canonical; dual maintenance was the source of hook drift.

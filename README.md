@@ -69,11 +69,14 @@ Same result — installs the latest `main` branch directly from the repo. Useful
 ## Why a markdown brain?
 
 - 📂 **Your knowledge, your files.** Plain `.md` in a folder you pick. Human-readable, git-trackable, opens in Obsidian as a graph.
-- 🔍 **Hybrid search, all local.** Local embeddings + local index, no API key — memory calls don't add an API bill on top of Claude.
+- 🔍 **Hybrid search, all local.** FTS5 + vector (sqlite-vec + fastembed), no API key — memory calls don't add an API bill on top of Claude.
 - 🔗 **Wiki-links connect your projects.** `brain_context` walks the graph N hops — decisions in one repo surface as context in another.
 - ⏰ **Bi-temporal.** Every fact has a `valid_from` / `valid_to` date. Stale knowledge gets a warning, not silent rot.
-- 🪶 **Quiet by design.** No Clippy, no nag. Hooks fire only when they earn the interruption (e.g., context at 70% → "save before /compact swallows this").
-- 🧩 **Skills shipped, not just storage.** `brain-init`, `brain-recall`, `brain-save`, `brain-project-init` make Claude *use* the memory — not pray that it does.
+- 🗂️ **Scoped per project.** Notes are tagged to a project scope; global notes always ride along. Switch repos and Claude picks up the right context automatically — via a one-line marker in `CLAUDE.md`.
+- 🪶 **Quiet by design.** No Clippy, no nag. Hooks fire only when they earn the interruption (e.g., context at 35% → "save before /compact swallows this").
+- 🧩 **Skills shipped, not just storage.** `brain-init`, `brain-recall`, `brain-save`, `brain-tools` make Claude *use* the memory — not pray that it does.
+- 🪝 **Hooks make it automatic.** Six session-lifecycle events are wired by the installer — recall fires before you ask, saves happen before context is lost.
+- 🧭 **Tool routing.** Every prompt, a lightweight engine matches intent against a catalog of tool hints and injects `[route]` advice — so Claude reaches for the right tool (Serena for symbols, Playwright for JS-heavy pages, PowerShell on Windows) without manual prompting. `/brain-tools` onboards your own MCP servers.
 - 🤝 **Layered, never invasive.** Adds capability without disabling any of Claude Code's defaults. Uninstall is one command.
 
 ## What it feels like
@@ -91,16 +94,44 @@ Same vault, days apart, different process. No prompt engineering, no copy-pastin
 
 ## How it works (60 seconds)
 
-A tiny MCP server backed by a folder of markdown notes. SQLite indexes them with FTS5 + vector search; wiki-links form a graph; companion skills wire the recall/save loop into Claude Code's own session lifecycle (`SessionStart`, `Stop`, `PreCompact` hooks).
+A tiny MCP server backed by a folder of markdown notes. SQLite indexes them with FTS5 + vector search (sqlite-vec + fastembed); wiki-links form a graph; six bash hooks wire the recall/save loop into Claude Code's own session lifecycle.
+
+**MCP tools (13):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`.
+
+**Skills (7):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill).
+
+**Hooks (6 events, all bash):**
+- `SessionStart` — scope resolution, server prewarm, MCP roster cache
+- `UserPromptSubmit` — hybrid recall + tool-route hints, injected as `[memory: N hits]` / `[route]`
+- `PreToolUse` — pre-action recall before Edit / Write / Task / MultiEdit
+- `Stop` — context-threshold save reminder (default zones 25 / 35 / 45%)
+- `PreCompact` — last-chance save before `/compact`
+- `SessionEnd` — vault git sync
 
 You write nothing manually. The vault grows as you work.
 
 ## Why this, not…
 
 - **Plain `CLAUDE.md` / `MEMORY.md`** — they grow into a 10K-line blob with no search and no decay. Symbiosis Brain decomposes into searchable, scoped, time-stamped notes.
-- **basic-memory** — closest in spirit (markdown + Obsidian). We add hybrid search (FTS5 + vector), skills/hooks that drive use, bi-temporal `valid_to`, per-project + global scope.
+- **basic-memory** — closest in spirit (markdown + Obsidian). We add hybrid search (FTS5 + vector), skills/hooks that drive use, bi-temporal `valid_to`, per-project + global scope, and tool routing.
 - **mem0 / Letta** — different category (cloud SaaS / agent SDK). We're local-first storage your existing Claude Code uses.
-- **mcp-memory-service** — they ship REST/dashboard. We ship human-readable markdown + skills.
+- **mcp-memory-service** — they ship REST/dashboard. We ship human-readable markdown + skills + hooks.
+
+## Configuration
+
+The installer seeds a behavioural env block in `~/.claude/settings.json` (non-clobbering — your existing values are preserved).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SYMBIOSIS_BRAIN_VAULT` | `~/symbiosis-brain-vault` | Path to your vault folder |
+| `SYMBIOSIS_BRAIN_TOOLS` | *(install path)* | Path to the installed package (for `uv run` in hooks) |
+| `SYMBIOSIS_BRAIN_SCOPE` | *(auto from cwd)* | Active project scope; overridden by the `CLAUDE.md` marker |
+| `SYMBIOSIS_BRAIN_SAVE_THRESHOLDS` | `25,35,45` | Context % levels that trigger save reminders |
+| `SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD` | `10` | Minimum % change since last save before re-triggering |
+| `SYMBIOSIS_BRAIN_RECALL_ENABLED` | `true` | Toggle UserPromptSubmit memory recall |
+| `SYMBIOSIS_BRAIN_RECALL_TOP_K` | `5` | Max hits returned per recall |
+| `SYMBIOSIS_BRAIN_ROUTING_MODE` | `decompose` | Tool-routing output mode (splits discipline vs tool hints) |
+| `SYMBIOSIS_BRAIN_RULES_ENABLED` | `true` | Toggle the periodic tool-roster reminder |
 
 ## Maintenance
 
@@ -121,15 +152,25 @@ uv tool upgrade symbiosis-brain              # update
 
 **Does it work with other AI agents?** Today: tuned for Claude Code. The MCP layer is portable; skill-driven UX is Claude-Code-specific but the storage works anywhere MCP works.
 
+**What about tool routing?** Run `/brain-tools` after install to onboard your MCP servers. The default catalog covers web search, registry version lookups, Serena (symbol work), Playwright (JS-heavy pages), PowerShell (Windows shell), systematic-debugging, and code-catalog discovery. Unknown tools get one short question; you decide their trigger. Per-install routing lives in `$VAULT/tool-routing.local.json` (git-ignored, never indexed).
+
 **What about the name?** *Symbiosis* — a mutually beneficial partnership. The tool lives next to Claude; Claude becomes more useful; your knowledge survives the next `/compact`. Build your symbiosis.
 
 **How do I delete everything?** `symbiosis-brain uninstall` restores your `settings.json` from backup. The vault folder is preserved — delete it manually if you want a clean slate.
 
+## Contributing
+
+Pull requests welcome. A few rules:
+
+- **Test fixtures must be synthetic.** Never commit a real vault snapshot, real notes, or real handoffs as a fixture — fabricate minimal structural data instead.
+- **No personal data in tracked files.** No local absolute paths (`C:\Users\...`), usernames, emails, or private project names — use `sys.executable`, env vars, relative paths, and generic placeholders.
+- The private vault lives **outside this repo** (sibling directory, git-ignored) — never `git add` vault content.
+- Dev install: `uv tool install --editable .` then `symbiosis-brain setup claude-code`.
+- Tests: `uv run pytest` (plus the bash hook tests under `tests/`).
+
 ## Release process (maintainer notes)
 
 Releases are auto-published to PyPI on `v*` git tags via GitHub Actions (Trusted Publisher OIDC, no API tokens).
-
-Workflow:
 
 1. `hatch version <patch|minor|major>` — bumps `src/symbiosis_brain/__init__.py`
 2. Move `[Unreleased]` items in `CHANGELOG.md` into a new `[X.Y.Z] — YYYY-MM-DD` section
@@ -137,3 +178,7 @@ Workflow:
 4. `git tag vX.Y.Z && git push --follow-tags`
 5. Watch [Actions](https://github.com/Krill113/symbiosis-brain/actions) — `build`, `publish`, `verify` jobs must all pass
 6. Verify on [pypi.org/project/symbiosis-brain](https://pypi.org/project/symbiosis-brain/)
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE).

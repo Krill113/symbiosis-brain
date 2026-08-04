@@ -11,13 +11,15 @@ keywords = ["mcp", "memory", "claude", "semantic-search", "knowledge-base"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    # Upper bound: mcp 2.0.0 dropped the decorator API this server is built on
+    # (`@app.list_tools()` / `@app.call_tool()` on mcp.server.Server). Until the
+    # 2.x port lands, a fresh resolve must stay on 1.x.
+    "mcp>=1.0.0,<2.0.0",
     "python-frontmatter>=1.1.0",
     "fastembed>=0.4.0",
     "sqlite-vec>=0.1.6",
@@ -48,6 +50,9 @@ packages = ["src/symbiosis_brain"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/symbiosis_brain/data/tool-routing.json" = "symbiosis_brain/data/tool-routing.json"
+"hooks" = "symbiosis_brain/hooks"
+"skills" = "symbiosis_brain/skills"
+"templates" = "symbiosis_brain/templates"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/symbiosis_brain", "hooks", "skills", "templates", "tests", "README.md", "LICENSE"]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 from collections.abc import Iterable
 from datetime import datetime
@@ -93,6 +94,12 @@ def _templates_dir() -> Path:
 def scaffold_vault(vault_path: Path) -> None:
     """Create vault structure idempotently. Existing files preserved."""
     vault_path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        # POSIX: личные заметки не должны быть group/world-readable независимо от
+        # umask — chmod явно, это хардит и УЖЕ СУЩЕСТВОВАВШИЙ каталог, а не только
+        # свежий mkdir. На Windows не трогаем: там ACL, а не POSIX-биты, и chmod()
+        # создал бы ложное ощущение ограниченного доступа.
+        vault_path.chmod(0o700)
     for folder in VAULT_FOLDERS:
         (vault_path / folder).mkdir(exist_ok=True)
 

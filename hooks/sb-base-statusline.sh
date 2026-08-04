@@ -39,6 +39,10 @@ fi
 
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
+# Unix seconds, resolved once per render. $EPOCHSECONDS is a bash 5 builtin and costs
+# nothing; older bash — notably macOS's stock /bin/bash 3.2 — pays for a single `date`.
+if [ -n "${EPOCHSECONDS:-}" ]; then SB_NOW=$EPOCHSECONDS; else SB_NOW=$(date +%s); fi
+
 # Export context % per-session for brain-save-trigger.sh (avoid cross-session bleed)
 if [ -n "$ctx" ] && [ -n "$session_id" ]; then
   printf '%s\n' "$ctx" > "$SB_TMP/brain-context-pct-${session_id}"
@@ -60,7 +64,7 @@ fi
 # Opt-in: set SYMBIOSIS_BRAIN_RATE_LIMITS_FILE to the target path.
 if [ -n "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE" ] && [ -n "$rate5h" ]; then
   printf '{"five_hour_pct":%s,"resets_at":%s,"seven_day_pct":%s,"ts":%s}\n' \
-    "${rate5h:-0}" "${reset5h:-0}" "${rate7d:-0}" "$EPOCHSECONDS" \
+    "${rate5h:-0}" "${reset5h:-0}" "${rate7d:-0}" "$SB_NOW" \
     > "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE"
 fi
 
@@ -85,7 +89,7 @@ sb_eta() {
   local resets_at=$1 diff hours mins
   REPLY=
   [ -z "$resets_at" ] && return
-  diff=$(( resets_at - EPOCHSECONDS ))
+  diff=$(( resets_at - SB_NOW ))
   if (( diff <= 0 )); then REPLY="0:00"; return; fi
   hours=$(( diff / 3600 ))
   mins=$(( (diff % 3600) / 60 ))

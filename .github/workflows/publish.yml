@@ -36,10 +36,10 @@ jobs:
         run: uv build
 
       - name: Smoke-test wheel import
-        run: uv run --isolated --no-project --with dist/*.whl -- python -c "import symbiosis_brain; print(symbiosis_brain.__version__)"
+        run: uv run --isolated --no-project --with dist/*.whl -- python -c "import symbiosis_brain.server; print(symbiosis_brain.__version__)"
 
       - name: Smoke-test sdist import
-        run: uv run --isolated --no-project --with dist/*.tar.gz -- python -c "import symbiosis_brain; print(symbiosis_brain.__version__)"
+        run: uv run --isolated --no-project --with dist/*.tar.gz -- python -c "import symbiosis_brain.server; print(symbiosis_brain.__version__)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -82,7 +82,7 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           for i in 1 2 3 4 5 6; do
-            if uv run --isolated --no-project --refresh-package symbiosis-brain --with "symbiosis-brain==${TAG_VERSION}" -- python -c "import symbiosis_brain; print(symbiosis_brain.__version__)"; then
+            if uv run --isolated --no-project --refresh-package symbiosis-brain --with "symbiosis-brain==${TAG_VERSION}" -- python -c "import symbiosis_brain.server; print(symbiosis_brain.__version__)"; then
               echo "Install + import succeeded on attempt $i"
               exit 0
             fi

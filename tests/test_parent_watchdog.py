@@ -61,7 +61,7 @@ def test_win32_happy_path_fires_callback_when_parent_signals():
     callback_called = threading.Event()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -87,7 +87,7 @@ def test_win32_thread_is_daemon_with_correct_name():
     kernel32_mock, fire_signal = _make_win32_kernel32_mock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -107,7 +107,7 @@ def test_win32_openprocess_called_with_synchronize_and_ppid():
     kernel32_mock, fire_signal = _make_win32_kernel32_mock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=99999):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -128,7 +128,7 @@ def test_win32_openprocess_returns_null_degrades_gracefully():
     callback = MagicMock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -148,7 +148,7 @@ def test_win32_parent_already_dead_fires_callback_synchronously():
     callback = MagicMock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -167,7 +167,7 @@ def test_ppid_zero_fires_callback_immediately():
     callback = MagicMock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=0):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -188,7 +188,7 @@ def test_callback_exception_does_not_crash_thread(caplog):
         raise RuntimeError("intentional test failure")
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -211,7 +211,7 @@ def test_callback_fires_exactly_once_even_if_thread_loops(caplog):
         fire_count[0] += 1
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -230,7 +230,7 @@ def test_handle_close_on_stop():
     kernel32_mock, fire_signal = _make_win32_kernel32_mock()
 
     with patch.object(sys, "platform", "win32"), \
-         patch("ctypes.WinDLL", return_value=kernel32_mock), \
+         patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 

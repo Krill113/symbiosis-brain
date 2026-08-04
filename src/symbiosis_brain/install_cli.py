@@ -173,13 +173,16 @@ def _register_mcp(vault_path: Path) -> None:
         raise RuntimeError(f"`claude mcp add` failed: {add.stderr}")
 
 
-def _copy_skills(target_dir: Path) -> None:
+def _copy_skills(target_dir: Path) -> list[str]:
+    """Copy shipped skills into target_dir. Returns names missing from the package."""
     target_dir.mkdir(parents=True, exist_ok=True)
     src_root = _packaged_skills_dir()
+    missing: list[str] = []
     for name in SKILL_NAMES:
         src = src_root / name / "SKILL.md"
         if not src.exists():
             print(f"WARN: skill {name} not found in package, skipping")
+            missing.append(name)
             continue
         dst_dir = target_dir / name
         dst_dir.mkdir(exist_ok=True)
@@ -189,15 +192,19 @@ def _copy_skills(target_dir: Path) -> None:
         if dst.exists():
             install_lib.backup_file(dst)
         shutil.copyfile(src, dst)
+    return missing
 
 
-def _copy_hooks(target_dir: Path) -> None:
+def _copy_hooks(target_dir: Path) -> list[str]:
+    """Copy shipped hooks into target_dir. Returns names missing from the package."""
     target_dir.mkdir(parents=True, exist_ok=True)
     src_root = _packaged_hooks_dir()
+    missing: list[str] = []
     for name in HOOK_FILES_SH:
         src = src_root / name
         if not src.exists():
             print(f"WARN: hook {name} missing in package, skipping")
+            missing.append(name)
             continue
         dst = target_dir / name
         if dst.exists() and dst.read_text(encoding="utf-8", errors="replace") == src.read_text(encoding="utf-8", errors="replace"):
@@ -209,10 +216,20 @@ def _copy_hooks(target_dir: Path) -> None:
             dst.chmod(dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         except OSError:
             pass  # Windows etc. — chmod is no-op
+    return missing
 
 
 def _ask_vault_path(default: Path) -> Path:
-    answer = input(PROMPT_TEXT.format(default=default)).strip()
+    try:
+        answer = input(PROMPT_TEXT.format(default=default)).strip()
+    except EOFError:
+        print(
+            "\nНет интерактивного stdin (headless/CI) — не могу спросить путь к vault.\n"
+            "Укажи его явно: `symbiosis-brain setup claude-code --vault <путь>`\n"
+            "(или `--repair`, если он уже настроен).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     return Path(answer).expanduser() if answer else default
 
 
@@ -271,8 +288,8 @@ def cmd_setup(args):
             if f.exists():
                 hooks_pre_existing.add(f)
 
-        _copy_skills(skill_dir)
-        _copy_hooks(hook_dir)
+        missing_skills = _copy_skills(skill_dir)
+        missing_hooks = _copy_hooks(hook_dir)
 
         # After copy, anything new (not pre-existing) is ours to rollback
         for name in SKILL_NAMES:
@@ -283,6 +300,22 @@ def cmd_setup(args):
             f = hook_dir / name
             if f.exists() and f not in hooks_pre_existing:
                 created_files.append(f)
+
+        if missing_skills or missing_hooks:
+            # Пакет не довёз часть файлов (например баг сборки wheel). Бросаем
+            # ДО регистрации MCP — сработает существующий except-блок ниже:
+            # восстановит settings.json/CLAUDE.md из бэкапа, удалит уже
+            # скопированные наши файлы и завершится sys.exit(1) вместо «Готово».
+            parts = []
+            if missing_skills:
+                parts.append(f"skills: {', '.join(missing_skills)}")
+            if missing_hooks:
+                parts.append(f"hooks: {', '.join(missing_hooks)}")
+            raise RuntimeError(
+                "пакет не содержит часть файлов setup (" + "; ".join(parts) + "). "
+                "Похоже на баг сборки — переустанови пакет и повтори "
+                "`symbiosis-brain setup claude-code --repair`."
+            )
 
         _register_mcp(vault)
         mcp_registered = True

@@ -1,50 +1,95 @@
 #!/bin/bash
-# Claude Code status line with progress bars and rate limits
+# Claude Code status line with progress bars and rate limits.
+#
+# Fork-free by design: every value is extracted with bash builtins (regex match,
+# parameter expansion, printf -v) instead of grep/sed/cut/seq/date pipelines.
+# Claude Code re-runs the status line on every event with a 300ms debounce and
+# cancels the in-flight script when a new event arrives; on Windows/MSYS a child
+# caught mid-fork by that cancel is stranded as a suspended orphan forever. Each
+# avoided fork removes ~85ms of latency and one leak window.
+#
+# Input: session JSON on stdin, or pre-read into $SB_STATUSLINE_INPUT when sourced.
 
-data=$(cat)
+if [ -n "${SB_STATUSLINE_INPUT+set}" ]; then
+  data=$SB_STATUSLINE_INPUT
+else
+  IFS= read -r -d '' data
+fi
 
-get_str() { echo "$data" | grep -o "\"$1\":\"[^\"]*\"" | head -1 | sed 's/.*":\s*"//;s/"$//'; }
-get_num() { echo "$data" | grep -o "\"$1\":[0-9.]*" | head -1 | sed 's/.*://'; }
+# Extraction helpers — set REPLY instead of writing to stdout, so callers never
+# need a command substitution (which would fork).
+sb_str() {
+  if [[ $data =~ \"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then REPLY=${BASH_REMATCH[1]}; else REPLY=; fi
+}
+sb_int() {  # integer part only — matches the old `cut -d. -f1`
+  if [[ $data =~ \"$1\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then REPLY=${BASH_REMATCH[1]}; else REPLY=; fi
+}
 
-cwd=$(get_str cwd | sed 's|.*[/\\]||')
-model=$(get_str display_name | sed 's/Claude //')
-effort=$(grep -o '"effortLevel":"[^"]*"' ~/.claude/settings.json 2>/dev/null | sed 's/.*:"//;s/"//')
-ctx=$(get_num used_percentage | head -1 | cut -d. -f1)
-session_id=$(get_str session_id)
+sb_str cwd;             cwd=${REPLY##*[/\\]}
+sb_str display_name;    model=${REPLY#Claude }
+sb_int used_percentage; ctx=$REPLY
+sb_str session_id;      session_id=$REPLY
+
+effort=
+sb_settings=~/.claude/settings.json
+if [ -r "$sb_settings" ]; then
+  settings=$(<"$sb_settings")
+  [[ $settings =~ \"effortLevel\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && effort=${BASH_REMATCH[1]}
+fi
+
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
 # Export context % per-session for brain-save-trigger.sh (avoid cross-session bleed)
-[ -n "$ctx" ] && [ -n "$session_id" ] && echo "$ctx" > "$SB_TMP/brain-context-pct-${session_id}"
+if [ -n "$ctx" ] && [ -n "$session_id" ]; then
+  printf '%s\n' "$ctx" > "$SB_TMP/brain-context-pct-${session_id}"
+fi
 
 # Rate limit data
-rate5h=$(echo "$data" | grep -o '"five_hour":{[^}]*}' | grep -o '"used_percentage":[0-9.]*' | sed 's/.*://' | cut -d. -f1)
-reset5h=$(echo "$data" | grep -o '"five_hour":{[^}]*}' | grep -o '"resets_at":[0-9]*' | sed 's/.*://')
-rate7d=$(echo "$data" | grep -o '"seven_day":{[^}]*}' | grep -o '"used_percentage":[0-9.]*' | sed 's/.*://' | cut -d. -f1)
+rate5h= reset5h= rate7d=
+if [[ $data =~ \"five_hour\"[[:space:]]*:[[:space:]]*\{([^}]*)\} ]]; then
+  sb_fh=${BASH_REMATCH[1]}
+  [[ $sb_fh =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && rate5h=${BASH_REMATCH[1]}
+  [[ $sb_fh =~ \"resets_at\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && reset5h=${BASH_REMATCH[1]}
+fi
+if [[ $data =~ \"seven_day\"[[:space:]]*:[[:space:]]*\{([^}]*)\} ]]; then
+  sb_sd=${BASH_REMATCH[1]}
+  [[ $sb_sd =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && rate7d=${BASH_REMATCH[1]}
+fi
 
-# Progress bar: ████░░░░░░ (10 chars)
-bar() {
-  local pct=${1:-0} width=10
-  local filled=$((pct * width / 100))
-  [ $filled -gt $width ] && filled=$width
-  local empty=$((width - filled))
-  local color="\033[32m"  # green
-  [ "$pct" -ge 50 ] && color="\033[33m"  # yellow
-  [ "$pct" -ge 80 ] && color="\033[31m"  # red
-  printf "${color}%s\033[90m%s\033[0m" \
-    "$(printf '█%.0s' $(seq 1 $filled 2>/dev/null))" \
-    "$(printf '░%.0s' $(seq 1 $empty 2>/dev/null))"
+# Optional JSON snapshot of rate limits for limit-watcher agents, refreshed each tick.
+# Opt-in: set SYMBIOSIS_BRAIN_RATE_LIMITS_FILE to the target path.
+if [ -n "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE" ] && [ -n "$rate5h" ]; then
+  printf '{"five_hour_pct":%s,"resets_at":%s,"seven_day_pct":%s,"ts":%s}\n' \
+    "${rate5h:-0}" "${reset5h:-0}" "${rate7d:-0}" "$EPOCHSECONDS" \
+    > "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE"
+fi
+
+# Progress bar: ████░░░░░░ (10 chars) -> REPLY
+sb_bar() {
+  local pct=${1:-0} width=10 filled empty color f e
+  [[ $pct =~ ^[0-9]+$ ]] || pct=0
+  filled=$(( pct * width / 100 ))
+  (( filled > width )) && filled=$width
+  (( filled < 0 )) && filled=0
+  empty=$(( width - filled ))
+  color=$'\033[32m'                      # green
+  (( pct >= 50 )) && color=$'\033[33m'   # yellow
+  (( pct >= 80 )) && color=$'\033[31m'   # red
+  printf -v f '%*s' "$filled" ''; f=${f// /█}
+  printf -v e '%*s' "$empty" '';  e=${e// /░}
+  REPLY="${color}${f}"$'\033[90m'"${e}"$'\033[0m'
 }
 
-# Time remaining until reset (e.g. "2:34" or "0:12")
-time_remaining() {
-  local resets_at=$1
+# Time remaining until reset (e.g. "2:34" or "0:12") -> REPLY
+sb_eta() {
+  local resets_at=$1 diff hours mins
+  REPLY=
   [ -z "$resets_at" ] && return
-  local now=$(date +%s)
-  local diff=$((resets_at - now))
-  [ $diff -le 0 ] && { echo "0:00"; return; }
-  local hours=$((diff / 3600))
-  local mins=$(( (diff % 3600) / 60 ))
-  printf "%d:%02d" $hours $mins
+  diff=$(( resets_at - EPOCHSECONDS ))
+  if (( diff <= 0 )); then REPLY="0:00"; return; fi
+  hours=$(( diff / 3600 ))
+  mins=$(( (diff % 3600) / 60 ))
+  printf -v REPLY '%d:%02d' "$hours" "$mins"
 }
 
 parts=""
@@ -54,19 +99,22 @@ if [ -n "$model" ]; then
   parts="$parts | $model"
 fi
 if [ -n "$ctx" ]; then
-  parts="$parts | ctx:$(bar $ctx) ${ctx}%"
+  sb_bar "$ctx"
+  parts="$parts | ctx:$REPLY ${ctx}%"
 fi
 # 5h reset timer (digits)
 if [ -n "$reset5h" ]; then
-  remaining=$(time_remaining $reset5h)
-  parts="$parts | \033[36m⏱\033[0m ${remaining}"
+  sb_eta "$reset5h"
+  parts="$parts | "$'\033[36m'"⏱"$'\033[0m'" $REPLY"
 fi
 # Rate limit bars
 if [ -n "$rate5h" ]; then
-  parts="$parts | 5h:$(bar $rate5h) ${rate5h}%"
+  sb_bar "$rate5h"
+  parts="$parts | 5h:$REPLY ${rate5h}%"
 fi
 if [ -n "$rate7d" ]; then
-  parts="$parts | 7d:$(bar $rate7d) ${rate7d}%"
+  sb_bar "$rate7d"
+  parts="$parts | 7d:$REPLY ${rate7d}%"
 fi
 
-echo -e "$parts"
+printf '%s\n' "$parts"

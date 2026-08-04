@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-04
+
+### Fixed
+- **Status line no longer leaks suspended `bash.exe` orphans on Windows.** Claude Code re-runs the status line on every event with a 300 ms debounce and cancels the in-flight script when a new event arrives. The chain took ~3.0 s per render — every value went through a `grep`/`sed`/`cut`/`seq`/`date` pipeline, and each fork+exec costs ~86 ms under MSYS — so the cancel landed on nearly every render, and a child caught mid-`fork()` is created suspended and never resumed. All three scripts (`sb-statusline.sh`, `sb-base-statusline.sh`, `sb-line.sh`) are now fork-free: bash regex instead of `grep`/`sed`, `printf -v` plus parameter expansion instead of `seq`, `$EPOCHSECONDS` instead of `date`, `read <` instead of `cat`. The wrapper `source`s its own scripts instead of piping into a fresh bash. **3033 ms → 124 ms per render**, output verified byte-identical across five input sets.
+- The model's effort level never appeared in the status line — the pattern required `"effortLevel":"` with no space, while `settings.json` is formatted with one.
+- Progress bars drew an extra glyph at 0 % and 100 %: `printf '█%.0s' $(seq 1 0)` emits its format once even when given zero arguments.
+
+### Added
+- `SYMBIOSIS_BRAIN_RATE_LIMITS_FILE` — opt-in path for a per-tick JSON snapshot of the session's rate limits, for limit-watcher agents. Unset by default; nothing is written unless you set it.
+
 ## [0.4.0] — 2026-06-24
 
 ### Added

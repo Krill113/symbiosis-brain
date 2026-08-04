@@ -49,16 +49,17 @@ jobs:
       - name: Install dependencies (incl. dev extra)
         run: uv sync --python 3.13 --extra dev
 
-      # On windows-latest a bare `bash` resolves to the WSL stub in System32,
-      # which has no distribution installed: tests that shell out to the hooks
-      # get UTF-16 "no installed distributions" text instead of running them.
-      # Git Bash is what a real Windows user has, so put it first for this job.
-      - name: Prefer Git Bash over the WSL stub (Windows)
-        if: runner.os == 'Windows'
-        run: echo "C:\Program Files\Git\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
+      # Run under `shell: bash` on every OS. On windows-latest that is Git Bash,
+      # which matters: a bare `bash` from pwsh resolves to the WSL stub in
+      # System32, and with no distribution installed the tests that shell out to
+      # the hooks receive UTF-16 "no installed distributions" text instead of
+      # running them. Git Bash is also what a real Windows user has, so this
+      # matches the supported setup rather than papering over it.
       - name: Run pytest
-        run: uv run pytest
+        shell: bash
+        run: |
+          echo "bash in use: $(command -v bash)"
+          uv run pytest
 
       # Bash hook fixtures under tests/test-*.sh are POSIX shell (they assume
       # /tmp, chmod +x, etc.) and are not meant to run on Windows — skip there

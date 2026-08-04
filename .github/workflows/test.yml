@@ -1,0 +1,205 @@
+# CI: unit tests + bash hook tests + install-smoke.
+#
+# Deliberately does NOT touch publish.yml (tag-triggered PyPI release) — this
+# is a separate, always-on workflow for push/PR feedback.
+#
+# Matrix is ubuntu-latest + windows-latest only. macOS is intentionally left
+# out: it is not part of the owner's supported platform set (Windows is the
+# daily driver, Linux is "may need to run there, must fix"; macOS was
+# explicitly deprioritized). Don't add a macos-latest leg without re-checking
+# that decision first — it's not an oversight.
+#
+# This workflow lands together with the fixes it was written to catch:
+# ctypes.WinDLL patched with create=True (POSIX collection), and the wheel
+# force-including hooks/skills/templates (a plain import smoke test, see
+# publish.yml, cannot catch a missing templates/vault-readme.md). It is meant
+# to be green from the first run — if install-smoke goes red, the packaging
+# regressed; don't loosen the checks below.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies (incl. dev extra)
+        run: uv sync --python 3.13 --extra dev
+
+      - name: Run pytest
+        run: uv run pytest
+
+      # Bash hook fixtures under tests/test-*.sh are POSIX shell (they assume
+      # /tmp, chmod +x, etc.) and are not meant to run on Windows — skip there
+      # rather than porting them.
+      - name: Bash hook tests
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BT_HOME="$RUNNER_TEMP/sb-bashtests-home"
+          BT_VAULT="$RUNNER_TEMP/sb-bashtests-vault"
+          rm -rf "$BT_HOME" "$BT_VAULT"
+          mkdir -p "$BT_HOME"
+          export HOME="$BT_HOME"
+          export SYMBIOSIS_BRAIN_VAULT="$BT_VAULT"
+
+          # Deploy hooks/skills/settings into the isolated $HOME so the
+          # test-brain-session-start.sh fixture (which reads
+          # $HOME/.claude/hooks/brain-session-start.sh) has something to run
+          # against. This runs via `uv run` against the *source tree*
+          # (editable project env), so it does NOT exercise the wheel
+          # packaging bug — that is what install-smoke below is for.
+          uv run symbiosis-brain setup claude-code --vault "$BT_VAULT"
+
+          fail=0
+          for t in tests/test-brain-session-start.sh \
+                   tests/test-pre-action-trigger.sh \
+                   tests/test-prompt-check-hook.sh \
+                   tests/test-sb-statusline.sh \
+                   tests/test-stop-hook.sh \
+                   tests/test_packaging.sh; do
+            echo "::group::$t"
+            # `uv run` so a bare `python` inside these scripts (test_packaging.sh)
+            # resolves to the synced project venv instead of whatever (if
+            # anything) is bare on PATH.
+            if uv run bash "$t"; then
+              echo "PASS: $t"
+            else
+              echo "FAIL: $t"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          rm -rf "$BT_HOME" "$BT_VAULT"
+          exit "$fail"
+
+      # The real regression test for packaging: build the wheel, install it
+      # into a venv OUTSIDE the repo checkout, and drive the CLI exactly like
+      # a fresh user would (setup → doctor → serve). An editable/dev install
+      # (as used by pytest/bash-tests above, and by the owner's live Windows
+      # setup) resolves hooks/skills/templates relative to the repo tree and
+      # would never notice the wheel is missing them — this step is the only
+      # one that can.
+      - name: Install-smoke (wheel -> isolated venv -> setup/doctor/serve)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf dist
+          uv build --wheel
+          WHL="$(ls dist/*.whl | head -n1)"
+          echo "Built: $WHL"
+
+          SMOKE_ROOT="$RUNNER_TEMP/sb-smoke"
+          rm -rf "$SMOKE_ROOT"
+          mkdir -p "$SMOKE_ROOT"
+
+          VENV="$SMOKE_ROOT/venv"
+          uv venv --python 3.13 "$VENV"
+
+          # uv venv already created the interpreter by this point, so this
+          # split (bin/ vs Scripts/, no .exe vs .exe) is safe to key off of —
+          # unlike keying off the console-script, which doesn't exist yet.
+          if [ -f "$VENV/bin/python" ]; then
+            VBIN="$VENV/bin"
+            EXE=""
+          else
+            VBIN="$VENV/Scripts"
+            EXE=".exe"
+          fi
+
+          uv pip install --python "$VBIN/python$EXE" "$WHL"
+
+          SB="$VBIN/symbiosis-brain$EXE"
+
+          SMOKE_HOME="$SMOKE_ROOT/home"
+          SMOKE_VAULT="$SMOKE_ROOT/vault"
+          mkdir -p "$SMOKE_HOME"
+
+          # setup/doctor write under ~/.claude and resolve the vault via
+          # `claude mcp list` / $SYMBIOSIS_BRAIN_VAULT / a default under
+          # $HOME — all three must point into this job's temp dir so nothing
+          # here can ever touch a real ~/.claude (this runner's default, or —
+          # were this ever run on a self-hosted/owner machine — the owner's
+          # live editable install).
+          export HOME="$SMOKE_HOME"
+          export USERPROFILE="$SMOKE_HOME"
+          export SYMBIOSIS_BRAIN_VAULT="$SMOKE_VAULT"
+
+          echo "::group::symbiosis-brain setup claude-code"
+          "$SB" setup claude-code --vault "$SMOKE_VAULT"
+          echo "::endgroup::"
+
+          echo "::group::symbiosis-brain doctor"
+          "$SB" doctor
+          echo "::endgroup::"
+
+          echo "::group::symbiosis-brain serve (stdin EOF -> expect clean exit)"
+          # stdio_server() sees EOF the moment stdin is /dev/null, which
+          # should complete server_task and drive the graceful-shutdown path
+          # in _run_server (server.py) within its own 2s internal timeout.
+          # We still bound the wait ourselves so a real hang fails the step
+          # instead of hanging the job.
+          "$SB" serve --vault "$SMOKE_VAULT" < /dev/null > "$SMOKE_ROOT/serve.log" 2>&1 &
+          SERVE_PID=$!
+
+          exited=0
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+              exited=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$exited" -eq 0 ]; then
+            echo "::error::serve did not exit within 60s of stdin EOF"
+            kill "$SERVE_PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$SERVE_PID" 2>/dev/null || true
+            cat "$SMOKE_ROOT/serve.log" || true
+            exit 1
+          fi
+
+          # `wait` returns the child's exit status as its own — under `set -e`
+          # a non-zero one would abort the script right here, before we get
+          # to print a useful message. `|| SERVE_EXIT=$?` exempts it (same
+          # exemption `set -e` already gives `if`/`||` conditions) so we can
+          # report a bad exit code ourselves below instead of just tracing out.
+          SERVE_EXIT=0
+          wait "$SERVE_PID" || SERVE_EXIT=$?
+          cat "$SMOKE_ROOT/serve.log" || true
+          if [ "$SERVE_EXIT" -ne 0 ]; then
+            echo "::error::serve exited with code $SERVE_EXIT after stdin EOF (expected 0)"
+            exit 1
+          fi
+          echo "serve exited 0 after stdin EOF"
+          echo "::endgroup::"
+
+          rm -rf "$SMOKE_ROOT"

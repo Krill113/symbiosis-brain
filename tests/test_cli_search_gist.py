@@ -229,7 +229,7 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_path), "--prompt-from-stdin", "--skip-memory"],
         input=payload, capture_output=True, text=True, timeout=30,
-        env={**os.environ, "OSTYPE": "msys"},
+        env={**os.environ, "OSTYPE": "win32"},
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
@@ -261,7 +261,7 @@ def _run_envelope_with_home_config(tmp_path, cfg_overrides):
         json.dumps(cfg_overrides), encoding="utf-8"
     )
     env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home),
-           "OSTYPE": "msys", "TMPDIR": str(tmp_path)}
+           "OSTYPE": "win32", "TMPDIR": str(tmp_path)}
     payload = json.dumps({"prompt": _TWO_ROUTE_PROMPT})
     result = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "search-gist",

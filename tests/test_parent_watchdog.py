@@ -127,8 +127,11 @@ def test_win32_openprocess_returns_null_degrades_gracefully():
     kernel32_mock.OpenProcess = MagicMock(return_value=0)  # NULL handle
     callback = MagicMock()
 
+    # ctypes.get_last_error, like WinDLL, only exists on Windows — the NULL-handle
+    # path reads it, so it needs create=True to be patchable when collecting on POSIX.
     with patch.object(sys, "platform", "win32"), \
          patch("ctypes.WinDLL", return_value=kernel32_mock, create=True), \
+         patch("ctypes.get_last_error", return_value=5, create=True), \
          patch("os.getppid", return_value=12345):
         from symbiosis_brain.parent_watchdog import start_parent_watchdog
 

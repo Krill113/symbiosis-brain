@@ -58,7 +58,14 @@ jobs:
       - name: Run pytest
         shell: bash
         run: |
-          echo "bash in use: $(command -v bash)"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # The step shell is already Git Bash, but pytest shells out to the
+            # hooks via subprocess(['bash', ...]), and CreateProcess searches the
+            # Win32 PATH — which knows nothing of MSYS /usr/bin and finds the WSL
+            # stub in System32 first. Export the Win32 dir so children inherit it.
+            export PATH="/c/Program Files/Git/bin:$PATH"
+          fi
+          echo "child bash resolves to: $(where.exe bash 2>/dev/null | head -1 || command -v bash)"
           uv run pytest
 
       # Bash hook fixtures under tests/test-*.sh are POSIX shell (they assume

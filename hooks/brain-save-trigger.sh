@@ -13,6 +13,20 @@
 IFS=',' read -ra THRESHOLDS <<< "${SYMBIOSIS_BRAIN_SAVE_THRESHOLDS:-25,35,45}"
 DELTA_GUARD="${SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD:-10}"
 
+# Interpreter for the stdlib-only (json/sys) one-liners below. They never import
+# symbiosis_brain, so they need no uv and no project venv - only a Python 3 on PATH.
+# `python` first keeps Windows byte-identical (it is on PATH there); `python3` covers
+# Linux, where PEP 394 guarantees only the versioned name - the root cause of
+# HITS/ROUTE_HINTS/SUPERSEDE_FIRED silently coming back empty on Ubuntu. The last
+# branch preserves today's fail-open behaviour when neither name resolves.
+if command -v python >/dev/null 2>&1; then
+  PY_BIN=python
+elif command -v python3 >/dev/null 2>&1; then
+  PY_BIN=python3
+else
+  PY_BIN=python
+fi
+
 MODE="${1:-stop}"
 INPUT=$(cat)
 
@@ -153,7 +167,7 @@ if [ "$MODE" = "prompt-check" ]; then
   SKIP_RECALL=0
   # bash ${#var} returns bytes on git-bash/Windows, not chars — use Python for char count.
   # PYTHONIOENCODING=utf-8 needed because Python's default stdin encoding on Windows is cp1251.
-  PROMPT_LEN=$(printf '%s' "$PROMPT" | PYTHONIOENCODING=utf-8 python -c 'import sys; print(len(sys.stdin.read()))' 2>/dev/null || echo "${#PROMPT}")
+  PROMPT_LEN=$(printf '%s' "$PROMPT" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c 'import sys; print(len(sys.stdin.read()))' 2>/dev/null || echo "${#PROMPT}")
   if [ "$RECALL_ENABLED" != "true" ]; then SKIP_RECALL=1; fi
   if [ "$PROMPT_LEN" -lt "$RECALL_SKIP_SHORT_CHARS" ]; then SKIP_RECALL=1; fi
   case "$PROMPT" in
@@ -198,7 +212,7 @@ if [ "$MODE" = "prompt-check" ]; then
         $SKIP_FLAG 2>>"$DEBUG_LOG")
       EXIT=$?
     else
-      GIST_JSON=$(printf '%s' "$INPUT" | timeout 12 python -m symbiosis_brain search-gist \
+      GIST_JSON=$(printf '%s' "$INPUT" | timeout 12 "$PY_BIN" -m symbiosis_brain search-gist \
         --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
         --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
         --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
@@ -216,7 +230,7 @@ if [ "$MODE" = "prompt-check" ]; then
     # json.dumps upstream ASCII-escapes non-ASCII, so print() of Cyrillic gists
     # would emit cp1251 bytes (e.g. 0xe4 for 'д') and corrupt the reminder. Force
     # UTF-8 so the block is byte-correct for any reader. (Same fix as :156.)
-    HITS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
+    HITS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
 try:
     d=json.load(sys.stdin)
     hits=d.get('memory_hits',[]) if isinstance(d,dict) else (d or [])
@@ -235,7 +249,7 @@ $HITS"
     # PYTHONIOENCODING=utf-8: see HITS extractor above. The route hint is the
     # primary Cyrillic emitter (e.g. 'Serena до правки.'); without this, print()
     # encodes 'д' as cp1251 0xe4 on Windows and breaks UTF-8 capture/consumers.
-    ROUTE_HINTS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
+    ROUTE_HINTS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
 try:
     d=json.load(sys.stdin)
     rh=d.get('route_hints',[]) if isinstance(d,dict) else []
@@ -246,7 +260,7 @@ except Exception:
     pass
 " 2>/dev/null)
     SUPERSEDE_FIRED=0
-    if echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 python -c "import sys,json
+    if echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
 try:
     d=json.load(sys.stdin)
     rh=d.get('route_hints',[]) if isinstance(d,dict) else []

@@ -140,12 +140,13 @@ HOOK_FILES_SH = (
 
 
 def _packaged_skills_dir() -> Path:
-    """Path to skills/ shipped with the package (development layout)."""
-    return Path(__file__).parent.parent.parent / "skills"
+    """Path to skills/ shipped with the package (wheel force-include or dev checkout)."""
+    return install_lib.packaged_dir(__file__, "skills")
 
 
 def _packaged_hooks_dir() -> Path:
-    return Path(__file__).parent.parent.parent / "hooks"
+    """Path to hooks/ shipped with the package (wheel force-include or dev checkout)."""
+    return install_lib.packaged_dir(__file__, "hooks")
 
 
 def _register_mcp(vault_path: Path) -> None:

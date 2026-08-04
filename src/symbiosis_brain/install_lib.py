@@ -66,11 +66,28 @@ VAULT_FOLDERS = ("projects", "wiki", "decisions", "patterns",
                  "mistakes", "feedback", "research", "reference")
 
 
+def packaged_dir(pkg_file: str, name: str) -> Path:
+    """Resolve a resource dir (hooks/skills/templates) shipped two ways:
+
+    - wheel / non-editable install: force-included as a subdir of the installed
+      package (`<site-packages>/symbiosis_brain/<name>`) — see
+      `[tool.hatch.build.targets.wheel.force-include]` in pyproject.toml.
+    - editable/dev checkout (`uv tool install -e .`): lives at the repo root,
+      alongside `src/` (`<repo-root>/<name>`) — unchanged from before.
+
+    `pkg_file` is the caller's `__file__` (a module living directly under
+    `src/symbiosis_brain/`).
+    """
+    pkg_dir = Path(pkg_file).parent
+    wheel_layout = pkg_dir / name
+    if wheel_layout.exists():
+        return wheel_layout
+    return pkg_dir.parent.parent / name
+
+
 def _templates_dir() -> Path:
     """Return path to templates/ shipped with the package."""
-    # Templates ship alongside the source; for an installed package we may need
-    # importlib.resources, but for our hatchling layout the relative path works.
-    return Path(__file__).parent.parent.parent / "templates"
+    return packaged_dir(__file__, "templates")
 
 
 def scaffold_vault(vault_path: Path) -> None:

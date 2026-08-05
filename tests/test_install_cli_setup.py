@@ -19,8 +19,8 @@ def test_setup_with_explicit_vault_creates_structure_and_settings(tmp_path, monk
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
     # Skip subprocess steps (MCP + copies) for this slice
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
-    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: None)
-    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: None)
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
 
     args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
     install_cli.cmd_setup(args)
@@ -39,8 +39,8 @@ def test_setup_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
-    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: None)
-    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: None)
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
 
     args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
     install_cli.cmd_setup(args)
@@ -49,6 +49,36 @@ def test_setup_idempotent(tmp_path, monkeypatch):
     # No duplicate marker block
     text = claude_md.read_text(encoding="utf-8")
     assert text.count("<!-- symbiosis-brain v1: global -->") == 1
+
+
+def test_setup_aborts_and_rolls_back_when_package_files_are_missing(tmp_path, monkeypatch):
+    """A package that did not ship its skills/hooks must abort BEFORE the MCP server
+    is registered, so the rollback restores settings.json and CLAUDE.md instead of a
+    final "done" being printed over a half-installed state."""
+    vault = tmp_path / "vault"
+    settings = tmp_path / "settings.json"
+    claude_md = tmp_path / "CLAUDE.md"
+    settings.write_text('{"env": {"KEEP": "me"}}', encoding="utf-8")
+    claude_md.write_text("# Global Rules\n", encoding="utf-8")
+
+    monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
+    monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
+    monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: ["brain-init"])
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
+
+    registered: list[int] = []
+    monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: registered.append(1))
+
+    args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
+    with pytest.raises(SystemExit) as exc:
+        install_cli.cmd_setup(args)
+
+    assert exc.value.code == 1
+    assert registered == [], "MCP must not be registered when the package is incomplete"
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"env": {"KEEP": "me"}}
+    assert "<!-- symbiosis-brain v1: global -->" not in claude_md.read_text(encoding="utf-8")
 
 
 def test_register_mcp_calls_claude_mcp_add_when_absent(tmp_path, monkeypatch):
@@ -136,8 +166,8 @@ def test_setup_rollback_restores_settings_on_failure(tmp_path, monkeypatch):
     def explode(*a, **kw):
         raise RuntimeError("simulated MCP failure")
     monkeypatch.setattr(install_cli, "_register_mcp", explode)
-    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: None)
-    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: None)
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
 
     args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
     try:

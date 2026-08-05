@@ -99,7 +99,13 @@ def scaffold_vault(vault_path: Path) -> None:
         # umask — chmod явно, это хардит и УЖЕ СУЩЕСТВОВАВШИЙ каталог, а не только
         # свежий mkdir. На Windows не трогаем: там ACL, а не POSIX-биты, и chmod()
         # создал бы ложное ощущение ограниченного доступа.
-        vault_path.chmod(0o700)
+        try:
+            vault_path.chmod(0o700)
+        except OSError as e:
+            # Монтирования без POSIX-метаданных (CIFS, drvfs, часть FUSE/NFS) или
+            # чужой владелец каталога — тогда права не наш вопрос, а установка
+            # не должна из-за этого падать. Симметрично chmod хуков в install_cli.
+            print(f"WARN: не удалось выставить 0700 на {vault_path}: {e}")
     for folder in VAULT_FOLDERS:
         (vault_path / folder).mkdir(exist_ok=True)
 

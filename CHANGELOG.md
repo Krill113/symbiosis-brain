@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-08-05
+
 ### Added
 - `SB_PERMISSIONS` now covers all thirteen MCP tools. `brain_rename`, `brain_delete` and `brain_rotate_handoffs` were shipping without an entry, so the first call to any of them hit a permission prompt right after setup reported success. A test pins the list against the server's `list_tools()` — nothing did before, and `doctor` was never a safety net here: it only asserts the list holds at least seven entries, which the incomplete list satisfied.
   - **Worth knowing before you upgrade:** `brain_delete` removes the note file outright — no trash, no backup. Its default `mode="safe"` refuses while other notes still link to the target, and a vault kept under git can always restore, but from now on a fresh setup auto-approves that call.

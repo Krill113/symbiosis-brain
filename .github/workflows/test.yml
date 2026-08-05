@@ -49,6 +49,20 @@ jobs:
       - name: Install dependencies (incl. dev extra)
         run: uv sync --python 3.13 --extra dev
 
+      # Parse every shipped hook on both OSes. This is the one check that still
+      # covers the hooks on windows-latest: the pytest cases that execute them are
+      # skipped there (see the Run pytest step), so without this a syntax error in
+      # a hook could reach a Windows user through a green CI. `shell: bash` is Git
+      # Bash on Windows, and `bash -n` only parses — nothing is executed.
+      - name: Parse hooks (bash -n)
+        shell: bash
+        run: |
+          set -e
+          for f in hooks/*.sh; do
+            bash -n "$f"
+            echo "ok  $f"
+          done
+
       # Run under `shell: bash` on every OS. On windows-latest that is Git Bash,
       # which matters: a bare `bash` from pwsh resolves to the WSL stub in
       # System32, and with no distribution installed the tests that shell out to

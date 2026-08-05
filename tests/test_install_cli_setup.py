@@ -15,7 +15,7 @@ def test_setup_with_explicit_vault_creates_structure_and_settings(tmp_path, monk
     claude_md = tmp_path / "CLAUDE.md"
     monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
     # Skip subprocess steps (MCP + copies) for this slice
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
@@ -36,7 +36,7 @@ def test_setup_idempotent(tmp_path, monkeypatch):
     claude_md = tmp_path / "CLAUDE.md"
     monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
     monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
@@ -51,10 +51,21 @@ def test_setup_idempotent(tmp_path, monkeypatch):
     assert text.count("<!-- symbiosis-brain v1: global -->") == 1
 
 
-def test_setup_aborts_and_rolls_back_when_package_files_are_missing(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "missing_skills, missing_hooks",
+    [(["brain-init"], []), ([], ["sb-statusline.sh"])],
+    ids=["missing-skill", "missing-hook"],
+)
+def test_setup_aborts_and_rolls_back_when_package_files_are_missing(
+    tmp_path, monkeypatch, missing_skills, missing_hooks
+):
     """A package that did not ship its skills/hooks must abort BEFORE the MCP server
     is registered, so the rollback restores settings.json and CLAUDE.md instead of a
-    final "done" being printed over a half-installed state."""
+    final "done" being printed over a half-installed state.
+
+    Both halves of the guard are exercised: with only the skills case, mutating
+    `missing_skills or missing_hooks` down to `missing_skills` kept the whole suite
+    green, so the hooks half was pinned by nothing."""
     vault = tmp_path / "vault"
     settings = tmp_path / "settings.json"
     claude_md = tmp_path / "CLAUDE.md"
@@ -63,10 +74,10 @@ def test_setup_aborts_and_rolls_back_when_package_files_are_missing(tmp_path, mo
 
     monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
-    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: ["brain-init"])
-    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: list(missing_skills))
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: list(missing_hooks))
 
     registered: list[int] = []
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: registered.append(1))
@@ -79,6 +90,22 @@ def test_setup_aborts_and_rolls_back_when_package_files_are_missing(tmp_path, mo
     assert registered == [], "MCP must not be registered when the package is incomplete"
     assert json.loads(settings.read_text(encoding="utf-8")) == {"env": {"KEEP": "me"}}
     assert "<!-- symbiosis-brain v1: global -->" not in claude_md.read_text(encoding="utf-8")
+
+
+def test_sb_permissions_cover_every_mcp_tool():
+    """Three tools shipped without a permission entry because nothing tied this list
+    to the server's tool set, and `doctor` is no safety net here: it only asserts
+    len(sb_perms) >= 7, which passed with the incomplete list just as well."""
+    import asyncio
+
+    from symbiosis_brain import server
+
+    served = {t.name for t in asyncio.run(server.list_tools())}
+    granted = {p.rsplit("__", 1)[1] for p in install_cli.SB_PERMISSIONS}
+    assert served == granted, (
+        f"tools without a permission: {sorted(served - granted)}; "
+        f"permissions for no tool: {sorted(granted - served)}"
+    )
 
 
 def test_register_mcp_calls_claude_mcp_add_when_absent(tmp_path, monkeypatch):
@@ -160,7 +187,7 @@ def test_setup_rollback_restores_settings_on_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: "~/.claude/hooks")
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
 
     def explode(*a, **kw):

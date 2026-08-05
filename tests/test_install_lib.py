@@ -3,6 +3,35 @@ from pathlib import Path
 from symbiosis_brain import install_lib
 
 
+def test_scaffold_vault_survives_a_chmod_that_fails(tmp_path, monkeypatch, capsys):
+    """Mounts without POSIX metadata (CIFS, drvfs, some FUSE/NFS) make chmod raise,
+    and scaffold_vault is the first statement in cmd_setup's try — unguarded, it took
+    the whole install down before anything was touched. The branch runs on POSIX only,
+    so on Windows this is the only place it is exercised at all.
+
+    The POSIX branch is faked by replacing install_lib's own `os` reference, not by
+    setting os.name globally: pathlib reads os.name too, and flipping it to "posix"
+    on Windows makes Path() raise UnsupportedOperation before the code under test
+    ever runs. install_lib touches `os` in exactly one place, so the shim is total."""
+    vault = tmp_path / "vault"
+
+    class _PosixOs:
+        name = "posix"
+
+    monkeypatch.setattr(install_lib, "os", _PosixOs)
+
+    def refuse(self, mode):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+
+    install_lib.scaffold_vault(vault)
+
+    assert (vault / "README.md").exists()
+    assert (vault / "reference" / "scope-taxonomy.md").exists()
+    assert "WARN" in capsys.readouterr().out
+
+
 def test_backup_creates_timestamped_copy(tmp_path):
     target = tmp_path / "settings.json"
     target.write_text('{"foo": 1}', encoding="utf-8")

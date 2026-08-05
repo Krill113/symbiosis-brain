@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-08-05
+
+### Fixed
+- **The wheel now carries `hooks/`, `skills/` and `templates/`.** They were listed for the sdist only, so the documented quickstart — `uv tool install symbiosis-brain` then `symbiosis-brain setup claude-code` — died on `templates/vault-readme.md` for anyone not installing from a git checkout, on every OS. All three resource dirs now resolve through one helper that handles the wheel layout and a dev checkout alike.
+- **`mcp` is capped below 2.0.** The 2.x line removed the decorator API (`@app.list_tools()` / `@app.call_tool()`) this server is built on, and a fresh resolve was already picking it up. The port to 2.x is tracked separately.
+- **Setup no longer claims success when the package is incomplete.** A missing skill or hook now raises before the MCP server is registered, so the existing rollback runs instead of printing a final "done" over a half-installed state.
+- **Headless setup explains itself** instead of raising a bare `EOFError` when there is no interactive stdin to ask for the vault path.
+- **The status line clock is resolved once per render**, with a fallback for bash 3.2 — macOS's stock shell, where `$EPOCHSECONDS` does not exist and the rate-limit snapshot came out as invalid JSON.
+- **The JSON extractors in `brain-save-trigger.sh` fall back to `python3`.** Distributions that follow PEP 394 ship no unversioned `python`, and the failures were swallowed by `2>/dev/null` — memory hits and route hints came back empty on every prompt with nothing to show for it.
+
+### Security
+- The vault directory is created with mode `0700` on POSIX. Under a typical umask it was `0755`, leaving personal notes readable by every local user. Windows is untouched — there it is ACLs, not mode bits.
+
+### Changed
+- CI: a new `test.yml` runs pytest, the bash hook suites and an install-smoke — build the wheel, install it into a venv outside the checkout, then run setup, doctor and serve — on ubuntu-latest and windows-latest. A plain import smoke cannot catch a missing `templates/vault-readme.md`; this does.
+- The release smoke now imports `symbiosis_brain.server` instead of the version-only `__init__`, so it actually exercises the dependency graph.
+- Dropped the `Operating System :: OS Independent` classifier until CI has earned it back.
+
 ## [0.4.1] — 2026-08-04
 
 ### Fixed

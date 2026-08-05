@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `SB_PERMISSIONS` now covers all thirteen MCP tools. `brain_rename`, `brain_delete` and `brain_rotate_handoffs` were shipping without an entry, so the first call to any of them hit a permission prompt right after setup reported success. A test pins the list against the server's `list_tools()` — nothing did before, and `doctor` was never a safety net here: it only asserts the list holds at least seven entries, which the incomplete list satisfied.
+  - **Worth knowing before you upgrade:** `brain_delete` removes the note file outright — no trash, no backup. Its default `mode="safe"` refuses while other notes still link to the target, and a vault kept under git can always restore, but from now on a fresh setup auto-approves that call.
+
+### Fixed
+- Setup no longer dies when the vault's mode cannot be changed. Mounts without POSIX metadata (CIFS, drvfs, some FUSE/NFS) make `chmod` raise, and `scaffold_vault` is the first statement inside setup's try block — unguarded, it took the whole install down before anything had been touched.
+
+### Changed
+- CI parses every shipped hook with `bash -n` on both runners. The cases that actually execute the hooks are skipped on the Windows runner (a bare `bash` there is the WSL stub), so without this a syntax error could reach a Windows user through a green build.
+- The setup tests no longer point at the real `~/.claude/hooks`: the mock returned a tilde path that setup expanded into the developer's own home directory.
+
 ## [0.4.2] — 2026-08-05
 
 ### Fixed

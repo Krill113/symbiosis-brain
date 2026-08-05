@@ -41,6 +41,9 @@ SB_PERMISSIONS = [
     "mcp__symbiosis-brain__brain_append",
     "mcp__symbiosis-brain__brain_patch",
     "mcp__symbiosis-brain__brain_lint",
+    "mcp__symbiosis-brain__brain_rename",
+    "mcp__symbiosis-brain__brain_delete",
+    "mcp__symbiosis-brain__brain_rotate_handoffs",
 ]
 
 PROMPT_TEXT = """

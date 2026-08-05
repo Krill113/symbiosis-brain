@@ -243,7 +243,9 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
 #   - version-date-from-registry  (no `when` gate)            priority 80
 #   - powershell-on-windows       (when: platform:windows)    priority 60
 # so cap=2 yields 2 hints, cap=1 yields 1 (top priority), routing_enabled=false
-# yields 0. OSTYPE=msys is set so the platform:windows gate also passes off-Win.
+# yields 0. OSTYPE=win32 is set so the platform:windows gate ("win" in OSTYPE)
+# also passes off-Windows — do not "restore" msys here, "win" is not a substring
+# of it and the gate would silently stop matching outside Windows.
 _TWO_ROUTE_PROMPT = "latest version of ruff, run uv --version"
 
 

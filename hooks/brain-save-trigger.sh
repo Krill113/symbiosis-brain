@@ -229,7 +229,7 @@ if [ "$MODE" = "prompt-check" ]; then
     # PYTHONIOENCODING=utf-8: Python's default stdout codec on Windows is cp1251.
     # json.dumps upstream ASCII-escapes non-ASCII, so print() of Cyrillic gists
     # would emit cp1251 bytes (e.g. 0xe4 for 'д') and corrupt the reminder. Force
-    # UTF-8 so the block is byte-correct for any reader. (Same fix as :156.)
+    # UTF-8 so the block is byte-correct for any reader. (Same fix as PROMPT_LEN above.)
     HITS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
 try:
     d=json.load(sys.stdin)

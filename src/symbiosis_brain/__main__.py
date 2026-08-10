@@ -208,8 +208,12 @@ def _gist_search(vault_path, query, scope, limit) -> list:
 
     db_path = vault_path / ".index" / "brain.db"
     storage = Storage(db_path)
-    VaultSync(vault_path, storage).sync_all()
+    _sync_result = VaultSync(vault_path, storage).sync_all()
     search = SearchEngine(storage)
+    for _p in _sync_result.removed:
+        search.delete_vec(_p)
+    # Additions stay unembedded here (hook budget); the next serve start
+    # repairs them at O(drift) via repair_index().
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
     results = search.search(query=query, scope=scope, limit=limit, mode="gist")
@@ -358,8 +362,12 @@ def _run_pre_action_recall(argv: list[str]) -> int:
             return 0
         db_path = vault_path / ".index" / "brain.db"
         storage = Storage(db_path)
-        VaultSync(vault_path, storage).sync_all()
+        _sync_result = VaultSync(vault_path, storage).sync_all()
         engine = SearchEngine(storage)
+        for _p in _sync_result.removed:
+            engine.delete_vec(_p)
+        # Additions stay unembedded here (hook budget); the next serve start
+        # repairs them at O(drift) via repair_index().
         # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
         # In production the vector index is prewarmed at SessionStart and
         # persists across sessions. Tests pre-populate the index in fixture.

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VaultSync
+from symbiosis_brain.search import SearchEngine
 from symbiosis_brain.refactor import (
     brain_rename,
     brain_delete,
@@ -148,3 +149,39 @@ def test_brain_delete_safe_proceeds_when_no_inbound_refs(tmp_path):
     brain_delete("wiki/lonely.md", mode="safe", storage=storage, sync=sync, vault_path=vault)
 
     assert not (vault / "wiki" / "lonely.md").exists()
+
+
+def _vault_with_refs_and_search(tmp_path, monkeypatch):
+    """_vault_with_refs + a SearchEngine with the ONNX model stubbed out."""
+    monkeypatch.setattr(
+        "symbiosis_brain.search._embed", lambda texts: [[0.1] * 384 for _ in texts]
+    )
+    vault, storage, sync = _vault_with_refs(tmp_path)
+    search = SearchEngine(storage)
+    for p in ("wiki/a.md", "wiki/b.md"):
+        note = storage.get_note(p)
+        search.index_note(p, f"{note['title']}\n{note['content']}")
+    return vault, storage, sync, search
+
+
+def _vec_paths(storage):
+    return {r[0] for r in storage._conn.execute("SELECT path FROM notes_vec").fetchall()}
+
+
+def test_rename_moves_vector_row(tmp_path, monkeypatch):
+    vault, storage, sync, search = _vault_with_refs_and_search(tmp_path, monkeypatch)
+    brain_rename("wiki/b.md", "wiki/b-renamed.md",
+                 storage=storage, sync=sync, vault_path=vault, search=search)
+    vec = _vec_paths(storage)
+    assert "wiki/b-renamed.md" in vec
+    assert "wiki/b.md" not in vec          # no orphan at the old path
+    assert len(vec) == storage._conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+
+
+def test_delete_removes_vector_row(tmp_path, monkeypatch):
+    vault, storage, sync, search = _vault_with_refs_and_search(tmp_path, monkeypatch)
+    brain_delete("wiki/b.md", mode="cascade",
+                 storage=storage, sync=sync, vault_path=vault, search=search)
+    vec = _vec_paths(storage)
+    assert "wiki/b.md" not in vec
+    assert len(vec) == storage._conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.markdown_parser import extract_wikilinks, _mask_code_regions
+from symbiosis_brain.search import SearchEngine
 from symbiosis_brain.write_lock import note_write_lock
 
 if TYPE_CHECKING:
@@ -93,6 +94,18 @@ def _replace_with_stub(body: str, old_canonical: str) -> str:
     return re.sub(r"\[\[([^\]]+)\]\]", repl, body)
 
 
+def _reindex_one(search, storage, path: str) -> None:
+    """Refresh the vector row for one just-synced note.
+
+    No-op when `search` is None (callers that have no vector index, e.g. the
+    pure-refactor unit tests) or when the note vanished under us."""
+    if search is None:
+        return
+    note = storage.get_note(path)
+    if note is not None:
+        search.index_note(path, f"{note['title']}\n{note['content']}")
+
+
 def brain_rename(
     old_path: str,
     new_path: str,
@@ -100,6 +113,7 @@ def brain_rename(
     storage: Storage,
     sync: VaultSync,
     vault_path: Path,
+    search: SearchEngine | None = None,
 ) -> dict:
     """Rename a note and rewrite all inbound references.
 
@@ -128,13 +142,17 @@ def brain_rename(
             if new_text != text:
                 atomic_write_text(src_file, new_text)
                 sync.sync_one(src)
+                _reindex_one(search, storage, src)
 
     new_file.parent.mkdir(parents=True, exist_ok=True)
     with note_write_lock(vault_path, new_path):
         old_file.rename(new_file)
         storage.delete_note(old_path)
         storage.delete_relations_by_source(old_path)
+        if search is not None:
+            search.delete_vec(old_path)
         sync.sync_one(new_path)
+        _reindex_one(search, storage, new_path)
 
     return {"refs_rewritten": len(sources), "sources": sources}
 
@@ -146,6 +164,7 @@ def brain_delete(
     storage: Storage,
     sync: VaultSync,
     vault_path: Path,
+    search: SearchEngine | None = None,
 ) -> dict:
     """Delete a note. `safe` mode refuses if inbound refs exist; `cascade` mode
     replaces inbound refs with strikethrough stubs.
@@ -182,11 +201,14 @@ def brain_delete(
                 if new_text != text:
                     atomic_write_text(src_file, new_text)
                     sync.sync_one(src)
+                    _reindex_one(search, storage, src)
                     modified.append(src)
 
     with note_write_lock(vault_path, path):
         file_path.unlink()
         storage.delete_note(path)
         storage.delete_relations_by_source(path)
+        if search is not None:
+            search.delete_vec(path)
 
     return {"sources_modified": modified, "file_deleted": True}

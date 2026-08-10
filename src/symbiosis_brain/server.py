@@ -727,6 +727,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 storage=_storage,
                 sync=_sync,
                 vault_path=_vault_path,
+                search=_search,
             )
         except (FileNotFoundError, FileExistsError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -747,6 +748,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 storage=_storage,
                 sync=_sync,
                 vault_path=_vault_path,
+                search=_search,
             )
         except DeleteBlockedError as e:
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -772,12 +774,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except (ValueError, ConflictError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]
 
-        # After real rotation: re-sync affected files into brain DB
+        # After real rotation: re-sync affected files into brain DB and keep
+        # notes_vec in step — sync_one alone leaves the new archive note
+        # without a vector row (permanent count drift; the storm trigger).
         if not dry_run:
-            for rel in report.archive_files_created:
+            for rel in list(report.archive_files_created) + list(report.bytes_freed_per_card):
                 _sync.sync_one(rel)
-            for rel in report.bytes_freed_per_card:
-                _sync.sync_one(rel)
+                note = _storage.get_note(rel)
+                if note is not None:
+                    _search.index_note(rel, f"{note['title']}\n{note['content']}")
 
         payload = {
             "cards_processed": report.cards_processed,

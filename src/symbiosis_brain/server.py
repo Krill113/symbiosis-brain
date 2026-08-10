@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import time
 from datetime import datetime
@@ -28,19 +29,35 @@ import frontmatter
 logger = logging.getLogger("symbiosis-brain")
 
 
+class _SharedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that survives rollover failing because another
+    serve process still has serve.log open. On Windows, renaming an
+    open file raises OSError, and the stdlib handler would let that
+    escape from a logging call and drop records; instead keep appending
+    to the current file until this process' own rollover succeeds."""
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+
+
 def _setup_logging(vault_path: Path) -> None:
     """File log for serve — stderr is discarded by MCP hosts after handshake,
     so without this every logger.info/warning from _init is lost. Idempotent:
     repeated calls (tests) replace the handler instead of stacking it."""
-    import logging.handlers
     for h in list(logger.handlers):
         if isinstance(h, logging.handlers.RotatingFileHandler):
             logger.removeHandler(h)
             h.close()
     level = os.environ.get("SYMBIOSIS_BRAIN_LOG_LEVEL", "INFO").upper()
+    if level not in logging.getLevelNamesMapping():
+        level = "INFO"
     log_dir = vault_path / ".index"
     log_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
+    handler = _SharedRotatingFileHandler(
         log_dir / "serve.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s pid=%(process)d %(message)s"))
@@ -684,6 +701,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "brain_sync":
         sync_result = _sync.sync_all()
         if arguments.get("full"):
+            logger.info("brain_sync full=true: full re-embed requested")
             with _reindex_lock(_storage.db_path):
                 _search.index_all()
             repair = {"embedded": len(_storage.list_notes()), "orphans_deleted": 0}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sqlite3
 import tempfile
@@ -13,6 +14,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
+
+logger = logging.getLogger("symbiosis-brain.search")
 
 _MODEL_NAME = "BAAI/bge-small-en-v1.5"
 _EMBED_BATCH_SIZE = 16
@@ -159,12 +162,19 @@ def _reindex_lock(db_path):
                 try:
                     if lockfile.stat().st_mtime == mtime:
                         lockfile.unlink()
+                        logger.warning(
+                            "reindex lock: broke stale lock (age > %ds)",
+                            _REINDEX_LOCK_STALE_S)
                 except FileNotFoundError:
                     pass
                 continue
             if time.time() >= deadline:
                 break
             time.sleep(0.5)
+    if not acquired:
+        logger.warning(
+            "reindex lock: gave up waiting after %ds — proceeding unguarded (pid=%d)",
+            _REINDEX_LOCK_WAIT_S, os.getpid())
     try:
         yield
     finally:
@@ -275,9 +285,11 @@ class SearchEngine:
         rows whose note is gone. Unlike index_all(), never touches rows that
         are already correct — a drift of K rows costs K _embed_one calls, not
         a full-corpus rebuild (measured 2026-08-10: drift=1 via index_all
-        cost 503 CPU-s / 11.2 GB). For very large K this is slower per note
-        than the batched index_all (per-call generator overhead) — the
-        accepted trade for a bounded ONNX arena. Residual race: if a note is
+        cost 503 CPU-s / 11.2 GB). The gate for doing nothing is "no missing
+        and no orphan rows" (computed inside the lock), not is_index_dirty()'s
+        bare count comparison — count alone misses balanced drift, e.g. an
+        equal number of missing and orphaned rows from a historical rename,
+        which would otherwise never get repaired. Residual race: if a note is
         deleted by another process between our `missing` snapshot and the
         embed, we may re-insert its vec row as an orphan; the next repair
         deletes it.
@@ -285,8 +297,6 @@ class SearchEngine:
         if not self._vec_enabled:
             return {"embedded": 0, "orphans_deleted": 0}
         with _reindex_lock(self.storage.db_path):
-            if not self.is_index_dirty():
-                return {"embedded": 0, "orphans_deleted": 0}
             missing = [r[0] for r in self.storage._conn.execute(
                 "SELECT n.path FROM notes n LEFT JOIN notes_vec v ON v.path = n.path"
                 " WHERE v.path IS NULL"
@@ -295,6 +305,11 @@ class SearchEngine:
                 "SELECT v.path FROM notes_vec v LEFT JOIN notes n ON n.path = v.path"
                 " WHERE n.path IS NULL"
             ).fetchall()]
+            if not missing and not orphans:
+                # Another process likely repaired while we queued for the
+                # lock — re-checking the actual join lists (not just counts)
+                # here is what makes this a correct double-checked-lock gate.
+                return {"embedded": 0, "orphans_deleted": 0}
             for path in orphans:
                 self.delete_vec(path)
             embedded = 0

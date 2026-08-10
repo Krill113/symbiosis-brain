@@ -98,20 +98,15 @@ def test_embed_passes_capped_batch_size(monkeypatch):
 
 def test_repair_rechecks_after_lock(engine, monkeypatch):
     """If another process repaired the index while we waited on the lock,
-    repair_index must do nothing (double-checked locking)."""
+    repair_index must do nothing (double-checked locking). Simulated here
+    by deleting the note row itself before repair runs, so both the
+    missing- and orphan- join lists come back empty by the time repair
+    computes them inside the lock — the same end state a concurrent
+    holder's repair would have left behind."""
     storage, search = engine
     storage._conn.execute("DELETE FROM notes_vec WHERE path='wiki/n1.md'")
+    storage._conn.execute("DELETE FROM notes WHERE path='wiki/n1.md'")
     storage._conn.commit()
-
-    real_dirty = search.is_index_dirty
-    def dirty_then_heal():
-        # simulate the concurrent holder finishing its repair while we waited:
-        # equalize the counts (drop the note whose vec row we deleted) so the
-        # post-acquire re-check sees a clean index
-        storage._conn.execute("DELETE FROM notes WHERE path='wiki/n1.md'")
-        storage._conn.commit()
-        return real_dirty()
-    monkeypatch.setattr(search, "is_index_dirty", dirty_then_heal)
 
     def exploding_embed(texts):
         raise AssertionError("must not embed — index healed while waiting")
@@ -119,6 +114,39 @@ def test_repair_rechecks_after_lock(engine, monkeypatch):
 
     result = search.repair_index()
     assert result == {"embedded": 0, "orphans_deleted": 0}
+
+
+def test_repair_handles_balanced_drift(engine, monkeypatch):
+    """Equal counts of missing and orphaned rows (e.g. from a historical
+    rename) must still be repaired — is_index_dirty()'s bare count
+    comparison would see notes==notes_vec and wrongly call this in sync.
+    RED on the old count-gate (`if not self.is_index_dirty(): return`)."""
+    storage, search = engine
+    # missing=1: note n1 has no vec row.
+    storage._conn.execute("DELETE FROM notes_vec WHERE path='wiki/n1.md'")
+    # orphans=1: a DIFFERENT note (n2) is gone but its vec row remains.
+    storage._conn.execute("DELETE FROM notes WHERE path='wiki/n2.md'")
+    storage._conn.commit()
+
+    n, v = _counts(storage)
+    assert n == v  # counts balanced — is_index_dirty() would report clean
+
+    calls = []
+    def counting_embed(texts):
+        calls.append(list(texts))
+        return [FAKE_VEC for _ in texts]
+    monkeypatch.setattr("symbiosis_brain.search._embed", counting_embed)
+
+    result = search.repair_index()
+
+    assert result == {"embedded": 1, "orphans_deleted": 1}
+    assert sum(len(c) for c in calls) == 1
+    assert storage._conn.execute(
+        "SELECT path FROM notes_vec WHERE path='wiki/n1.md'"
+    ).fetchone() is not None
+    assert storage._conn.execute(
+        "SELECT path FROM notes_vec WHERE path='wiki/n2.md'"
+    ).fetchone() is None
 
 
 def test_reindex_lock_released_on_error(engine, monkeypatch):
@@ -265,6 +293,23 @@ def test_setup_logging_writes_to_vault_index(tmp_vault, monkeypatch):
         content = (tmp_vault / ".index" / "serve.log").read_text(encoding="utf-8")
         assert "logging smoke test line" in content
         assert str(os.getpid()) in content
+    finally:
+        for h in list(server_mod.logger.handlers):
+            server_mod.logger.removeHandler(h)
+            h.close()
+
+
+def test_setup_logging_falls_back_on_bad_level(tmp_vault, monkeypatch):
+    """An invalid SYMBIOSIS_BRAIN_LOG_LEVEL must not raise (it used to kill
+    serve before the MCP handshake could even happen) — fall back to INFO."""
+    import logging
+    from symbiosis_brain import server as server_mod
+
+    (tmp_vault / ".index").mkdir(exist_ok=True)
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_LOG_LEVEL", "NOT_A_REAL_LEVEL")
+    try:
+        server_mod._setup_logging(tmp_vault)
+        assert server_mod.logger.level == logging.INFO
     finally:
         for h in list(server_mod.logger.handlers):
             server_mod.logger.removeHandler(h)

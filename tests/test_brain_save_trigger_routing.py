@@ -1,7 +1,77 @@
 import os, subprocess, json, tempfile, shutil, pathlib
+import pytest  # NEW — file previously imported only os/subprocess/json/tempfile/shutil/pathlib
 
 HOOK = pathlib.Path(__file__).resolve().parents[1] / 'hooks' / 'brain-save-trigger.sh'
 START = pathlib.Path(__file__).resolve().parents[1] / 'hooks' / 'brain-session-start.sh'
+
+
+def _bash_works(path):
+    """One-shot health probe: the bash must see POSIX coreutils (M2)."""
+    try:
+        return subprocess.run(
+            [path, "-c", "command -v sed >/dev/null"],
+            capture_output=True, timeout=15,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _find_bash(
+    which=shutil.which,
+    exists=os.path.exists,
+    environ=os.environ,
+    windows=(os.name == "nt"),
+    works=None,
+):
+    """Absolute path to a usable bash, or None. Never a bare name."""
+    if not windows:
+        return which("bash")
+    if works is None:
+        works = _bash_works
+    roots = []
+    git = which("git")
+    if git:
+        roots.append(os.path.dirname(os.path.dirname(os.path.abspath(git))))
+    for var, sub in (
+        ("ProgramFiles", ("Git",)),
+        ("ProgramFiles(x86)", ("Git",)),
+        ("LocalAppData", ("Programs", "Git")),
+    ):
+        root = environ.get(var)
+        if root:
+            roots.append(os.path.join(root, *sub))
+    candidates = [os.path.join(r, "bin", "bash.exe") for r in roots] \
+               + [os.path.join(r, "usr", "bin", "bash.exe") for r in roots]
+    for cand in candidates:
+        if exists(cand) and works(cand):
+            return cand
+    found = which("bash.exe") or which("bash")
+    if found:
+        found = os.path.abspath(found)  # bare-name/cwd results become absolute (M5)
+        windir = environ.get("SystemRoot") or environ.get("windir") or "C:\\Windows"
+        windir_prefix = os.path.join(os.path.normcase(os.path.abspath(windir)), "")
+        if not os.path.normcase(found).startswith(windir_prefix) and works(found):
+            return found
+    return None
+
+
+_BASH = _find_bash()
+
+
+def _bash():
+    """Absolute bash path for spawning; fails on CI, skips locally, when absent."""
+    if _BASH is None:
+        if os.environ.get("CI") or os.environ.get("SB_REQUIRE_BASH"):
+            pytest.fail(
+                "bash unresolved on a CI runner - Windows coverage would silently vanish"
+            )  # M3
+        pytest.skip(
+            "bash not found: probed git-derived and standard Git-for-Windows "
+            "locations (bin before usr/bin, health-checked) and PATH minus "
+            "%SystemRoot%. Install Git for Windows."
+        )
+    return _BASH
+
 
 def _run(prompt, env_extra=None, sb_tmp=None, session='s1'):
     env = dict(os.environ)
@@ -10,7 +80,7 @@ def _run(prompt, env_extra=None, sb_tmp=None, session='s1'):
     env.pop('SYMBIOSIS_BRAIN_VAULT', None)
     if env_extra: env.update(env_extra)
     payload = json.dumps({'session_id': session, 'prompt': prompt})
-    subprocess.run(['bash', str(HOOK), 'prompt-check'], input=payload, text=True, encoding='utf-8', env=env, capture_output=True)
+    subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=payload, text=True, encoding='utf-8', env=env, capture_output=True)
 
 def test_counter_increments_across_gates():
     sb = tempfile.mkdtemp()
@@ -31,12 +101,12 @@ def test_route_turn_excluded_from_sessionstart_rm():
         env = dict(os.environ); env['TMPDIR'] = sb; env['TEMP'] = sb
         env['SYMBIOSIS_BRAIN_RULES_ENABLED'] = 'false'; env.pop('SYMBIOSIS_BRAIN_VAULT', None)
         p = json.dumps({'session_id': 'sX', 'prompt': 'a normal length prompt'})
-        subprocess.run(['bash', str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
+        subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
         ctr = pathlib.Path(sb) / 'brain-route-turn-sX'
         assert ctr.read_text().strip() == '1'
-        subprocess.run(['bash', str(START)], input=json.dumps({'session_id': 'sX'}), text=True, encoding='utf-8', env=env, capture_output=True)
+        subprocess.run([_bash(), str(START)], input=json.dumps({'session_id': 'sX'}), text=True, encoding='utf-8', env=env, capture_output=True)
         assert ctr.exists(), 'route-turn counter must survive SessionStart/compact'
-        subprocess.run(['bash', str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
+        subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
         assert ctr.read_text().strip() == '2'
     finally:
         shutil.rmtree(sb, ignore_errors=True)
@@ -54,7 +124,7 @@ def test_additive_byte_identical():
         env['SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL'] = '1'
         env.pop('SYMBIOSIS_BRAIN_VAULT', None)
         env.pop('SYMBIOSIS_BRAIN_RULES_TEXT', None)
-        r = subprocess.run(['bash', str(HOOK), 'prompt-check'],
+        r = subprocess.run([_bash(), str(HOOK), 'prompt-check'],
             input=json.dumps({'session_id': 'add', 'prompt': 'a normal length prompt here'}),
             text=True, encoding='utf-8', env=env, capture_output=True)
         assert ORIGINAL in r.stdout, r.stdout
@@ -67,7 +137,7 @@ def test_silent_turn_no_system_reminder():
         env = dict(os.environ); env['TMPDIR'] = sb; env['TEMP'] = sb
         env['SYMBIOSIS_BRAIN_RULES_ENABLED'] = 'false'
         env.pop('SYMBIOSIS_BRAIN_VAULT', None)
-        r = subprocess.run(['bash', str(HOOK), 'prompt-check'],
+        r = subprocess.run([_bash(), str(HOOK), 'prompt-check'],
             input=json.dumps({'session_id': 'q', 'prompt': 'just a normal prompt'}),
             text=True, encoding='utf-8', env=env, capture_output=True)
         assert '<system-reminder>' not in r.stdout
@@ -91,7 +161,7 @@ def _run_route(prompt, sb, route_class):
     env['SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL'] = '1'
     envelope = {'memory_hits': [], 'route_hints': [{'id': 'serena-symbol-work', 'class': route_class, 'hint': 'Serena до правки.'}]}
     env['PATH'] = _stub_search_gist(sb, envelope) + os.pathsep + env['PATH']
-    r = subprocess.run(['bash', str(HOOK), 'prompt-check'],
+    r = subprocess.run([_bash(), str(HOOK), 'prompt-check'],
         input=json.dumps({'session_id': 'sup', 'prompt': prompt}), text=True, encoding='utf-8', env=env, capture_output=True)
     return r.stdout
 
@@ -134,6 +204,135 @@ def test_routing_gate_not_recall_gate():
 def test_hook_syntax_valid():
     import subprocess, pathlib
     root = pathlib.Path(__file__).resolve().parents[1]
-    r = subprocess.run(['bash', '-n', str(root / 'hooks' / 'brain-save-trigger.sh')], capture_output=True, text=True)
-    r2 = subprocess.run(['bash', '-n', str(root / 'hooks' / 'brain-session-start.sh')], capture_output=True, text=True)
+    r = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-save-trigger.sh')], capture_output=True, text=True)
+    r2 = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-session-start.sh')], capture_output=True, text=True)
     assert r.returncode == 0 and r2.returncode == 0, (r.stderr, r2.stderr)
+
+
+# --- _find_bash / _bash resolver unit tests ---
+
+def test_find_bash_posix_uses_which():
+    result = _find_bash(windows=False, which=lambda name: '/usr/bin/bash')
+    assert result == '/usr/bin/bash'
+
+
+def test_find_bash_derives_from_git_location(tmp_path):
+    root = tmp_path / 'GitRoot'
+    (root / 'cmd').mkdir(parents=True)
+    git_exe = root / 'cmd' / 'git.exe'
+    git_exe.write_text('')
+    (root / 'bin').mkdir(parents=True)
+    bash_exe = root / 'bin' / 'bash.exe'
+    bash_exe.write_text('')
+    result = _find_bash(
+        which=lambda name: str(git_exe) if name == 'git' else None,
+        exists=os.path.exists, environ={}, windows=True, works=lambda p: True,
+    )
+    assert result == str(bash_exe)
+
+
+def test_find_bash_rejects_system32_stub(tmp_path):
+    windir = tmp_path / 'Windows'
+    stub = windir / 'System32' / 'bash.exe'
+    result = _find_bash(
+        which=lambda name: str(stub) if name == 'bash.exe' else None,
+        exists=os.path.exists,
+        environ={'SystemRoot': str(windir)},
+        windows=True, works=lambda p: True,
+    )
+    assert result is None
+
+
+def test_find_bash_falls_back_to_program_files(tmp_path):
+    pf = tmp_path / 'ProgramFiles'
+    (pf / 'Git' / 'bin').mkdir(parents=True)
+    bash_exe = pf / 'Git' / 'bin' / 'bash.exe'
+    bash_exe.write_text('')
+    result = _find_bash(
+        which=lambda name: None,
+        exists=os.path.exists,
+        environ={'ProgramFiles': str(pf)},
+        windows=True, works=lambda p: True,
+    )
+    assert result == str(bash_exe)
+
+
+def test_find_bash_prefers_bin_over_usr_bin(tmp_path):
+    # same root: bin wins over usr\bin
+    root = tmp_path / 'SameRoot'
+    (root / 'cmd').mkdir(parents=True)
+    git_exe = root / 'cmd' / 'git.exe'
+    git_exe.write_text('')
+    (root / 'bin').mkdir(parents=True)
+    bin_bash = root / 'bin' / 'bash.exe'
+    bin_bash.write_text('')
+    (root / 'usr' / 'bin').mkdir(parents=True)
+    usr_bin_bash = root / 'usr' / 'bin' / 'bash.exe'
+    usr_bin_bash.write_text('')
+    result = _find_bash(
+        which=lambda name: str(git_exe) if name == 'git' else None,
+        exists=os.path.exists, environ={}, windows=True, works=lambda p: True,
+    )
+    assert result == str(bin_bash)
+
+    # two roots: root A only has usr\bin (unhealthy), root B only has bin (healthy)
+    # -> a healthy bin of root B still wins over root A's usr\bin
+    root_a = tmp_path / 'RootA'
+    (root_a / 'cmd').mkdir(parents=True)
+    git_a = root_a / 'cmd' / 'git.exe'
+    git_a.write_text('')
+    (root_a / 'usr' / 'bin').mkdir(parents=True)
+    a_usr_bin = root_a / 'usr' / 'bin' / 'bash.exe'
+    a_usr_bin.write_text('')
+    root_b = tmp_path / 'RootB'
+    (root_b / 'Git' / 'bin').mkdir(parents=True)
+    b_bin = root_b / 'Git' / 'bin' / 'bash.exe'
+    b_bin.write_text('')
+
+    def works(p):
+        return p != str(a_usr_bin)
+
+    result2 = _find_bash(
+        which=lambda name: str(git_a) if name == 'git' else None,
+        exists=os.path.exists,
+        environ={'ProgramFiles': str(root_b)},
+        windows=True, works=works,
+    )
+    assert result2 == str(b_bin)
+
+
+def test_find_bash_allows_windows_sibling_dirs(tmp_path):
+    windir = tmp_path / 'Windows'
+    sibling = tmp_path / 'WindowsApps' / 'bash.exe'
+    result = _find_bash(
+        which=lambda name: str(sibling) if name == 'bash.exe' else None,
+        exists=os.path.exists,
+        environ={'SystemRoot': str(windir)},
+        windows=True, works=lambda p: True,
+    )
+    assert result == str(sibling)
+
+
+def test_bash_skips_when_unresolved(monkeypatch):
+    monkeypatch.delenv('CI', raising=False)
+    monkeypatch.delenv('SB_REQUIRE_BASH', raising=False)
+    global _BASH
+    saved = _BASH
+    _BASH = None
+    try:
+        with pytest.raises(pytest.skip.Exception):
+            _bash()
+    finally:
+        _BASH = saved
+
+
+def test_bash_fails_on_ci_when_unresolved(monkeypatch):
+    monkeypatch.setenv('CI', '1')
+    global _BASH
+    saved = _BASH
+    _BASH = None
+    try:
+        with pytest.raises(pytest.fail.Exception):
+            _bash()
+    finally:
+        _BASH = saved

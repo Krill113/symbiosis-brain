@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +24,17 @@ _embedder = None
 
 LOCK_DIR = Path(tempfile.gettempdir())
 _FASTEMBED_LOCK_TIMEOUT_S = 120
+
+_REINDEX_LOCK_WAIT_S = 180
+"""How long we queue for the reindex lock before proceeding unguarded.
+Giving up costs duplicated work — exactly the pre-fix behaviour — never a
+hang."""
+
+_REINDEX_LOCK_STALE_S = 1800
+"""When an unattended lock file is broken as abandoned. Orphaned locks are
+the NORMAL case, not the exception: _run_server force-exits via os._exit(0)
+(server.py:870) whenever the parent Claude window dies, so a holder that is
+mid-index_all never runs its finally."""
 
 _SCOPE_BOOST = 1.5
 """Multiplier applied to RRF scores of notes whose scope matches the query scope.
@@ -112,6 +125,51 @@ def _get_embedder():
     return _embedder
 
 
+@contextmanager
+def _reindex_lock(db_path):
+    """Cross-process single-flight for reindex work on one vault DB.
+
+    Same O_CREAT|O_EXCL idiom as _get_embedder's model lock. Not reentrant —
+    never call while already holding it. On wait-timeout we proceed unguarded
+    (worst case: duplicated work, never a hang). Callers MUST re-check their
+    trigger condition after acquiring — the previous holder usually just did
+    the work we queued up for. No PID-liveness probing: os.kill(pid, 0) on
+    Windows calls TerminateProcess.
+    """
+    tag = hashlib.sha256(str(db_path).encode()).hexdigest()[:12]
+    lockfile = LOCK_DIR / f"sb-reindex-{tag}.lock"
+    deadline = time.time() + _REINDEX_LOCK_WAIT_S
+    acquired = False
+    while not acquired:
+        try:
+            fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w") as f:
+                f.write(f"{os.getpid()}\n{int(time.time())}\n")
+            acquired = True
+        except FileExistsError:
+            try:
+                age = time.time() - lockfile.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > _REINDEX_LOCK_STALE_S:
+                try:
+                    lockfile.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.time() >= deadline:
+                break
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        if acquired:
+            try:
+                lockfile.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def _embed(texts: list[str]) -> list[list[float]]:
     embedder = _get_embedder()
     return [e.tolist() for e in embedder.embed(texts, batch_size=_EMBED_BATCH_SIZE)]
@@ -177,6 +235,8 @@ class SearchEngine:
             raise
 
     def index_all(self):
+        """Full rebuild of notes_vec from notes. Callers must hold
+        _reindex_lock(storage.db_path)."""
         if not self._vec_enabled:
             return
         notes = self.storage.list_notes()
@@ -219,24 +279,27 @@ class SearchEngine:
         """
         if not self._vec_enabled:
             return {"embedded": 0, "orphans_deleted": 0}
-        missing = [r[0] for r in self.storage._conn.execute(
-            "SELECT n.path FROM notes n LEFT JOIN notes_vec v ON v.path = n.path"
-            " WHERE v.path IS NULL"
-        ).fetchall()]
-        orphans = [r[0] for r in self.storage._conn.execute(
-            "SELECT v.path FROM notes_vec v LEFT JOIN notes n ON n.path = v.path"
-            " WHERE n.path IS NULL"
-        ).fetchall()]
-        for path in orphans:
-            self.delete_vec(path)
-        embedded = 0
-        for path in missing:
-            note = self.storage.get_note(path)
-            if note is None:
-                continue
-            self.index_note(path, f"{note['title']}\n{note['content']}")
-            embedded += 1
-        return {"embedded": embedded, "orphans_deleted": len(orphans)}
+        with _reindex_lock(self.storage.db_path):
+            if not self.is_index_dirty():
+                return {"embedded": 0, "orphans_deleted": 0}
+            missing = [r[0] for r in self.storage._conn.execute(
+                "SELECT n.path FROM notes n LEFT JOIN notes_vec v ON v.path = n.path"
+                " WHERE v.path IS NULL"
+            ).fetchall()]
+            orphans = [r[0] for r in self.storage._conn.execute(
+                "SELECT v.path FROM notes_vec v LEFT JOIN notes n ON n.path = v.path"
+                " WHERE n.path IS NULL"
+            ).fetchall()]
+            for path in orphans:
+                self.delete_vec(path)
+            embedded = 0
+            for path in missing:
+                note = self.storage.get_note(path)
+                if note is None:
+                    continue
+                self.index_note(path, f"{note['title']}\n{note['content']}")
+                embedded += 1
+            return {"embedded": embedded, "orphans_deleted": len(orphans)}
 
     def delete_vec(self, path: str) -> None:
         """Remove the vector embedding for a single note path."""

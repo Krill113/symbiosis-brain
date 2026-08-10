@@ -10,7 +10,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from symbiosis_brain.graph import GraphTraverser
-from symbiosis_brain.search import SearchEngine
+from symbiosis_brain.search import SearchEngine, _reindex_lock
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VAULT_DIRS, VaultSync
 from symbiosis_brain.temporal import TemporalManager
@@ -56,30 +56,36 @@ def _init(vault_path: Path):
     current_model = _search._model_name
     stored_model = _storage.get_schema_version("embedding_model")
 
-    # Bootstrap: stored_model unset → infer from current state.
-    # On legacy DBs upgraded into this code path, notes_vec was already
-    # populated by the old `index_all()`-on-every-startup behaviour. If the
-    # index is consistent with notes (no count drift), it's valid under the
-    # current model — just register the model name, don't re-embed.
-    # This avoids the 60s parallel-init collision otherwise triggered the
-    # first time a freshly-upgraded vault meets multiple cold-starting
-    # processes (write-lock contention exceeds busy_timeout).
-    if stored_model is None:
-        if _search.is_index_dirty():
-            logger.info("Bootstrap: notes_vec drift detected, building full index")
-            _search.index_all()
-        _storage.set_schema_version("embedding_model", current_model)
-        logger.info("Embedding model registered: %s", current_model)
-        return
-
-    # Real model change (rare, only on explicit upgrade to a different model).
-    if stored_model != current_model:
-        logger.warning("Embedding model changed (%s -> %s); rebuilding vector index",
-                       stored_model, current_model)
-        _search.index_all()
-        _storage.set_schema_version("embedding_model", current_model)
-        logger.info("Embeddings indexed (full re-build, model change)")
-        return
+    if stored_model is None or stored_model != current_model:
+        # Full-rebuild territory: serialize across processes AND re-read the
+        # decision input inside the lock — whoever held it before us has very
+        # likely just done this exact rebuild.
+        with _reindex_lock(_storage.db_path):
+            stored_model = _storage.get_schema_version("embedding_model")
+            if stored_model is None:
+                # Bootstrap: stored_model unset → infer from current state.
+                # On legacy DBs upgraded into this code path, notes_vec was already
+                # populated by the old `index_all()`-on-every-startup behaviour. If the
+                # index is consistent with notes (no count drift), it's valid under the
+                # current model — just register the model name, don't re-embed.
+                # This avoids the 60s parallel-init collision otherwise triggered the
+                # first time a freshly-upgraded vault meets multiple cold-starting
+                # processes (write-lock contention exceeds busy_timeout).
+                if _search.is_index_dirty():
+                    logger.info("Bootstrap: notes_vec drift detected, building full index")
+                    _search.index_all()
+                _storage.set_schema_version("embedding_model", current_model)
+                logger.info("Embedding model registered: %s", current_model)
+                return
+            if stored_model != current_model:
+                logger.warning("Embedding model changed (%s -> %s); rebuilding vector index",
+                               stored_model, current_model)
+                _search.index_all()
+                _storage.set_schema_version("embedding_model", current_model)
+                logger.info("Embeddings indexed (full re-build, model change)")
+                return
+        # Another process completed the bootstrap/migration while we waited —
+        # fall through to the targeted path below.
 
     # Targeted incremental indexing — only the actual diff. Note: this MUST
     # run before the count-drift safety net below, otherwise the safety net

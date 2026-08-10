@@ -9,6 +9,7 @@ _BUSY_TIMEOUT_MS = 30_000
 
 class Storage:
     def __init__(self, db_path: Path):
+        self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False,
                                      isolation_level=None)

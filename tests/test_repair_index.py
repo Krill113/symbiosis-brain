@@ -75,3 +75,22 @@ def test_repair_noop_when_in_sync(engine, monkeypatch):
     result = search.repair_index()
 
     assert result == {"embedded": 0, "orphans_deleted": 0}
+
+
+def test_embed_passes_capped_batch_size(monkeypatch):
+    from symbiosis_brain import search as search_mod
+
+    captured = {}
+
+    class StubEmbedder:
+        def embed(self, texts, **kwargs):
+            captured.update(kwargs)
+            import numpy as np
+            for _ in texts:
+                yield np.array(FAKE_VEC, dtype=np.float32)
+
+    monkeypatch.setattr(search_mod, "_get_embedder", lambda: StubEmbedder())
+    search_mod._embed(["one", "two"])
+
+    assert captured.get("batch_size") == search_mod._EMBED_BATCH_SIZE
+    assert search_mod._EMBED_BATCH_SIZE <= 32

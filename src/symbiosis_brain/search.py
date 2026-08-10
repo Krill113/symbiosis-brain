@@ -13,6 +13,11 @@ if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
 _MODEL_NAME = "BAAI/bge-small-en-v1.5"
+_EMBED_BATCH_SIZE = 16
+"""fastembed's silent default is batch_size=256. With 512-token padded
+documents that peaks the onnxruntime CPU arena at ~11 GB on a ~1300-note
+corpus; the arena is never returned to the OS. batch_size=16 measured
+identical throughput (518 vs 544 CPU-s) at ~1.1 GB peak (2026-08-10)."""
 _embedder = None
 
 LOCK_DIR = Path(tempfile.gettempdir())
@@ -109,7 +114,7 @@ def _get_embedder():
 
 def _embed(texts: list[str]) -> list[list[float]]:
     embedder = _get_embedder()
-    return [e.tolist() for e in embedder.embed(texts)]
+    return [e.tolist() for e in embedder.embed(texts, batch_size=_EMBED_BATCH_SIZE)]
 
 
 def _embed_one(text: str) -> list[float]:

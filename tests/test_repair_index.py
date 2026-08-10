@@ -249,3 +249,23 @@ def test_reindex_lock_breaks_stale_lock_and_acquires(tmp_path):
         assert not lockfile.exists()
     finally:
         lockfile.unlink(missing_ok=True)
+
+
+def test_setup_logging_writes_to_vault_index(tmp_vault, monkeypatch):
+    import logging
+    import os
+    from symbiosis_brain import server as server_mod
+
+    (tmp_vault / ".index").mkdir(exist_ok=True)
+    server_mod._setup_logging(tmp_vault)
+    try:
+        server_mod.logger.info("logging smoke test line")
+        for h in server_mod.logger.handlers:
+            h.flush()
+        content = (tmp_vault / ".index" / "serve.log").read_text(encoding="utf-8")
+        assert "logging smoke test line" in content
+        assert str(os.getpid()) in content
+    finally:
+        for h in list(server_mod.logger.handlers):
+            server_mod.logger.removeHandler(h)
+            h.close()

@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +26,27 @@ from symbiosis_brain.parent_watchdog import start_parent_watchdog
 import frontmatter
 
 logger = logging.getLogger("symbiosis-brain")
+
+
+def _setup_logging(vault_path: Path) -> None:
+    """File log for serve — stderr is discarded by MCP hosts after handshake,
+    so without this every logger.info/warning from _init is lost. Idempotent:
+    repeated calls (tests) replace the handler instead of stacking it."""
+    import logging.handlers
+    for h in list(logger.handlers):
+        if isinstance(h, logging.handlers.RotatingFileHandler):
+            logger.removeHandler(h)
+            h.close()
+    level = os.environ.get("SYMBIOSIS_BRAIN_LOG_LEVEL", "INFO").upper()
+    log_dir = vault_path / ".index"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        log_dir / "serve.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s pid=%(process)d %(message)s"))
+    logger.setLevel(level)
+    logger.addHandler(handler)
+
 
 app = Server("symbiosis-brain")
 
@@ -819,6 +842,7 @@ def main():
 
 
 async def _run_server(vault_path: Path):
+    _setup_logging(vault_path)
     global _ready
     _ready = asyncio.Event()
 
@@ -831,8 +855,9 @@ async def _run_server(vault_path: Path):
 
     async def _background_init():
         try:
+            t0 = time.monotonic()
             await asyncio.to_thread(_init, vault_path)
-            logger.info("Symbiosis Brain init complete, tools ready")
+            logger.info("init complete in %.1fs", time.monotonic() - t0)
         except Exception:
             logger.exception("Symbiosis Brain background init failed")
         finally:

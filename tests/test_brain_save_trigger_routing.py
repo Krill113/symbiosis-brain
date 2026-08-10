@@ -275,12 +275,18 @@ def test_find_bash_prefers_bin_over_usr_bin(tmp_path):
     )
     assert result == str(bin_bash)
 
-    # two roots: root A only has usr\bin (unhealthy), root B only has bin (healthy)
-    # -> a healthy bin of root B still wins over root A's usr\bin
+    # two roots: root A has BOTH bin and usr\bin (both unhealthy), root B only
+    # has bin (healthy) -> the health check must actually reject A's bin
+    # (the earliest candidate, which exists) before falling through all the
+    # way to B's bin; a health check that never runs would wrongly return
+    # A's bin here.
     root_a = tmp_path / 'RootA'
     (root_a / 'cmd').mkdir(parents=True)
     git_a = root_a / 'cmd' / 'git.exe'
     git_a.write_text('')
+    (root_a / 'bin').mkdir(parents=True)
+    a_bin = root_a / 'bin' / 'bash.exe'
+    a_bin.write_text('')
     (root_a / 'usr' / 'bin').mkdir(parents=True)
     a_usr_bin = root_a / 'usr' / 'bin' / 'bash.exe'
     a_usr_bin.write_text('')
@@ -290,7 +296,7 @@ def test_find_bash_prefers_bin_over_usr_bin(tmp_path):
     b_bin.write_text('')
 
     def works(p):
-        return p != str(a_usr_bin)
+        return p not in (str(a_bin), str(a_usr_bin))
 
     result2 = _find_bash(
         which=lambda name: str(git_a) if name == 'git' else None,
@@ -311,6 +317,16 @@ def test_find_bash_allows_windows_sibling_dirs(tmp_path):
         windows=True, works=lambda p: True,
     )
     assert result == str(sibling)
+
+    # an unhealthy which()-fallback candidate must not be returned (guards
+    # dropping the works(found) check from the which() fallback branch)
+    result2 = _find_bash(
+        which=lambda name: str(sibling) if name == 'bash.exe' else None,
+        exists=os.path.exists,
+        environ={'SystemRoot': str(windir)},
+        windows=True, works=lambda p: False,
+    )
+    assert result2 is None
 
 
 def test_bash_skips_when_unresolved(monkeypatch):

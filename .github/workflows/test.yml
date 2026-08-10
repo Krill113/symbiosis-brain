@@ -51,10 +51,14 @@ jobs:
 
       # Parse every shipped hook on both OSes as a fast syntax gate before
       # pytest runs. Routing tests (test_brain_save_trigger_routing.py) now
-      # execute the hooks for real on windows-latest too (see the Run pytest
-      # step below), via an absolute, health-checked bash path, so this step
-      # is no longer the only thing catching a broken hook on Windows — it
-      # just catches it faster. `shell: bash` is Git Bash on Windows, and
+      # execute two of the eight shipped hooks for real on windows-latest
+      # too (see the Run pytest step below), via an absolute, health-checked
+      # bash path — brain-save-trigger.sh and brain-session-start.sh, so
+      # this step is no longer the only Windows check for those two. It is
+      # still the only Windows check for the other six hooks (nothing else
+      # on Windows executes brain-pre-action-trigger.sh, brain-sync.sh,
+      # sb-base-statusline.sh, sb-line.sh, sb-statusline.sh, statusline.sh)
+      # — do not delete it. `shell: bash` is Git Bash on Windows, and
       # `bash -n` only parses — nothing is executed.
       - name: Parse hooks (bash -n)
         shell: bash

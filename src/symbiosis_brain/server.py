@@ -283,7 +283,14 @@ async def list_tools() -> list[Tool]:
             "type": "object", "properties": {},
         }),
         Tool(name="brain_sync", description="Re-sync vault files to database (after manual edits)", inputSchema={
-            "type": "object", "properties": {},
+            "type": "object",
+            "properties": {
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Rebuild EVERY embedding from scratch (minutes, high CPU). Only for a corrupted or stale vector index — normal syncs index just the diff.",
+                },
+            },
         }),
         Tool(name="brain_lint", description="Audit vault: orphans, weak links, broken references, scope warnings, type drift", inputSchema={
             "type": "object", "properties": {},
@@ -676,12 +683,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "brain_sync":
         sync_result = _sync.sync_all()
-        _search.index_all()
+        if arguments.get("full"):
+            with _reindex_lock(_storage.db_path):
+                _search.index_all()
+            repair = {"embedded": len(_storage.list_notes()), "orphans_deleted": 0}
+        else:
+            for path in sync_result.removed:
+                _search.delete_vec(path)
+            for path in sync_result.added + sync_result.updated:
+                note = _storage.get_note(path)
+                if note is None:
+                    continue
+                _search.index_note(path, f"{note['title']}\n{note['content']}")
+            repair = _search.repair_index()
         summary = {
             "added": len(sync_result.added),
             "updated": len(sync_result.updated),
             "removed": len(sync_result.removed),
             "skipped": sync_result.skipped,
+            "repaired": repair,
         }
         return [TextContent(type="text", text=f"Sync complete: {json.dumps(summary)}")]
 

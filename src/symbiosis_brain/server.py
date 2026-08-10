@@ -93,12 +93,16 @@ def _init(vault_path: Path):
             continue
         _search.index_note(path, f"{note['title']}\n{note['content']}")
 
-    # Final safety net: if drift remains after targeted updates, something's
-    # structurally wrong (manual deletion, partial-write recovery) — rebuild.
+    # Final safety net: if drift remains after targeted updates, repair only
+    # the delta. NEVER index_all() here — a 1-row drift used to trigger a
+    # full-corpus re-embed (~500 CPU-s / 11 GB, see plan 2026-08-10). Drift
+    # here is routine, not exceptional: the __main__ hook paths sync_all()
+    # without vec maintenance by design.
     if _search.is_index_dirty():
-        logger.warning("notes_vec inconsistent after targeted updates; rebuilding")
-        _search.index_all()
-        logger.info("Embeddings indexed (full re-build, count drift safety net)")
+        logger.warning("notes_vec inconsistent after targeted updates; repairing")
+        repair = _search.repair_index()
+        logger.info("Vector index repaired: embedded=%d orphans_deleted=%d",
+                    repair["embedded"], repair["orphans_deleted"])
         return
 
     logger.info("Embeddings indexed (targeted: +%d ~%d -%d)",

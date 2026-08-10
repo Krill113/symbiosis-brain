@@ -159,8 +159,8 @@ def test_init_full_reindex_on_model_drift(tmp_vault, db_path):
         server._storage.close()
 
 
-def test_init_full_reindex_on_count_drift(tmp_vault, db_path):
-    """If notes_vec count differs from notes count, full re-index runs."""
+def test_init_repairs_index_on_count_drift(tmp_vault, db_path):
+    """If notes_vec count differs from notes count, targeted repair runs."""
     _seed_vault(tmp_vault, n=3)
     from symbiosis_brain import server
 
@@ -178,20 +178,28 @@ def test_init_full_reindex_on_count_drift(tmp_vault, db_path):
                  "_linter", "_vault_path"):
         setattr(server, attr, None)
 
-    call_count = {"index_all": 0}
+    call_count = {"index_all": 0, "repair_index": 0}
     from symbiosis_brain.search import SearchEngine as _SE
     orig_index_all = _SE.index_all
+    orig_repair_index = _SE.repair_index
 
     def counting_index_all(self, *a, **kw):
         call_count["index_all"] += 1
         return orig_index_all(self, *a, **kw)
 
+    def counting_repair_index(self, *a, **kw):
+        call_count["repair_index"] += 1
+        return orig_repair_index(self, *a, **kw)
+
     _SE.index_all = counting_index_all
+    _SE.repair_index = counting_repair_index
     try:
         server._init(tmp_vault)
-        assert call_count["index_all"] == 1, "count drift should trigger full re-index"
+        assert call_count["index_all"] == 0, "count drift should not trigger full re-index"
+        assert call_count["repair_index"] == 1, "count drift should trigger targeted repair"
     finally:
         _SE.index_all = orig_index_all
+        _SE.repair_index = orig_repair_index
         server._storage.close()
 
 

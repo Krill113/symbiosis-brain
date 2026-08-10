@@ -198,6 +198,41 @@ class SearchEngine:
                 pass
             raise
 
+    def repair_index(self) -> dict:
+        """Reconcile notes_vec with notes incrementally.
+
+        Embeds only notes that lack a vector row and deletes orphan vector
+        rows whose note is gone. Unlike index_all(), never touches rows that
+        are already correct — a drift of K rows costs K _embed_one calls, not
+        a full-corpus rebuild (measured 2026-08-10: drift=1 via index_all
+        cost 503 CPU-s / 11.2 GB). For very large K this is slower per note
+        than the batched index_all (per-call generator overhead) — the
+        accepted trade for a bounded ONNX arena. Residual race: if a note is
+        deleted by another process between our `missing` snapshot and the
+        embed, we may re-insert its vec row as an orphan; the next repair
+        deletes it.
+        """
+        if not self._vec_enabled:
+            return {"embedded": 0, "orphans_deleted": 0}
+        missing = [r[0] for r in self.storage._conn.execute(
+            "SELECT n.path FROM notes n LEFT JOIN notes_vec v ON v.path = n.path"
+            " WHERE v.path IS NULL"
+        ).fetchall()]
+        orphans = [r[0] for r in self.storage._conn.execute(
+            "SELECT v.path FROM notes_vec v LEFT JOIN notes n ON n.path = v.path"
+            " WHERE n.path IS NULL"
+        ).fetchall()]
+        for path in orphans:
+            self.delete_vec(path)
+        embedded = 0
+        for path in missing:
+            note = self.storage.get_note(path)
+            if note is None:
+                continue
+            self.index_note(path, f"{note['title']}\n{note['content']}")
+            embedded += 1
+        return {"embedded": embedded, "orphans_deleted": len(orphans)}
+
     def delete_vec(self, path: str) -> None:
         """Remove the vector embedding for a single note path."""
         if not self._vec_enabled:

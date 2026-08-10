@@ -49,11 +49,13 @@ jobs:
       - name: Install dependencies (incl. dev extra)
         run: uv sync --python 3.13 --extra dev
 
-      # Parse every shipped hook on both OSes. This is the one check that still
-      # covers the hooks on windows-latest: the pytest cases that execute them are
-      # skipped there (see the Run pytest step), so without this a syntax error in
-      # a hook could reach a Windows user through a green CI. `shell: bash` is Git
-      # Bash on Windows, and `bash -n` only parses — nothing is executed.
+      # Parse every shipped hook on both OSes as a fast syntax gate before
+      # pytest runs. Routing tests (test_brain_save_trigger_routing.py) now
+      # execute the hooks for real on windows-latest too (see the Run pytest
+      # step below), via an absolute, health-checked bash path, so this step
+      # is no longer the only thing catching a broken hook on Windows — it
+      # just catches it faster. `shell: bash` is Git Bash on Windows, and
+      # `bash -n` only parses — nothing is executed.
       - name: Parse hooks (bash -n)
         shell: bash
         run: |
@@ -63,29 +65,21 @@ jobs:
             echo "ok  $f"
           done
 
-      # Run under `shell: bash` on every OS. On windows-latest that is Git Bash,
-      # which matters: a bare `bash` from pwsh resolves to the WSL stub in
-      # System32, and with no distribution installed the tests that shell out to
-      # the hooks receive UTF-16 "no installed distributions" text instead of
-      # running them. Git Bash is also what a real Windows user has, so this
-      # matches the supported setup rather than papering over it.
+      # `shell: bash` is Git Bash on every OS, matching what a real Windows
+      # user has installed (a bare `bash` from pwsh would instead hit the
+      # WSL stub in System32).
       - name: Run pytest
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # test_brain_save_trigger_routing.py shells out to the hooks via
-            # subprocess(['bash', ...]). On windows-latest a bare `bash` is the
-            # WSL stub in System32 with no distribution installed, so the hook
-            # never runs and the cases fail on UTF-16 "no installed
-            # distributions" output. Prepending Git's bin to PATH is not enough:
-            # `where.exe bash` then reports Git Bash, yet CreateProcess from
-            # Python still lands on the stub. These cases are covered on the
-            # Linux leg and on a real Windows box (where `bash` IS Git Bash);
-            # the rest of the suite still runs here.
-            uv run pytest --ignore=tests/test_brain_save_trigger_routing.py
-          else
-            uv run pytest
-          fi
+          # test_brain_save_trigger_routing.py resolves bash to an absolute,
+          # health-checked Git-for-Windows path (_find_bash in that file)
+          # instead of relying on PATH, so the windows-latest WSL-stub
+          # problem and PATH ordering no longer matter and the --ignore is
+          # gone. The resolver's own unit tests live in this same file, so
+          # any future re-exclusion of it would silently drop that coverage
+          # too. See docs/superpowers/plans/2026-08-10-bash-tests-path-fix.md.
+          uv run python -c "from tests.test_brain_save_trigger_routing import _BASH; print('resolved bash:', _BASH)"
+          uv run pytest -rs
 
       # Bash hook fixtures under tests/test-*.sh are POSIX shell (they assume
       # /tmp, chmod +x, etc.) and are not meant to run on Windows — skip there

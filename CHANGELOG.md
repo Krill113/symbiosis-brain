@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`test_brain_save_trigger_routing.py` now runs on windows-latest** instead of being `--ignore`d there. It shelled out to bash via a bare `subprocess.run(["bash", ...])`; on windows-latest that resolves to the WSL stub in `System32` (no distribution installed) instead of Git Bash, so the tests would have failed on UTF-16 "no installed distributions" output. The helper now resolves an absolute, health-checked Git-for-Windows path first and fails loudly on CI if none is found, instead of silently going unresolved.
+
 ## [0.4.3] — 2026-08-05
 
 ### Added
@@ -17,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Setup no longer dies when the vault's mode cannot be changed. Mounts without POSIX metadata (CIFS, drvfs, some FUSE/NFS) make `chmod` raise, and `scaffold_vault` is the first statement inside setup's try block — unguarded, it took the whole install down before anything had been touched.
 
 ### Changed
-- CI parses every shipped hook with `bash -n` on both runners. The cases that actually execute the hooks are skipped on the Windows runner (a bare `bash` there is the WSL stub), so without this a syntax error could reach a Windows user through a green build.
+- CI parses every shipped hook with `bash -n` on both runners. At the time, the cases that actually execute the hooks were skipped on the Windows runner (a bare `bash` there is the WSL stub), so without this a syntax error could reach a Windows user through a green build. (Windows coverage for those cases was restored in an unreleased fix — see [Unreleased] → Fixed.)
 - The setup tests no longer point at the real `~/.claude/hooks`: the mock returned a tilde path that setup expanded into the developer's own home directory.
 
 ## [0.4.2] — 2026-08-05

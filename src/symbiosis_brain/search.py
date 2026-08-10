@@ -148,12 +148,17 @@ def _reindex_lock(db_path):
             acquired = True
         except FileExistsError:
             try:
-                age = time.time() - lockfile.stat().st_mtime
+                mtime = lockfile.stat().st_mtime
             except FileNotFoundError:
                 continue
-            if age > _REINDEX_LOCK_STALE_S:
+            if time.time() - mtime > _REINDEX_LOCK_STALE_S:
+                # Re-stat immediately before unlinking: if the mtime moved
+                # since we judged staleness, another process already broke
+                # and re-acquired this lock — it is now live, not abandoned.
+                # Skip the unlink and re-evaluate from scratch.
                 try:
-                    lockfile.unlink()
+                    if lockfile.stat().st_mtime == mtime:
+                        lockfile.unlink()
                 except FileNotFoundError:
                     pass
                 continue

@@ -1,4 +1,4 @@
-# CI: unit tests + bash hook tests + install-smoke.
+# CI: unit tests + bash hook tests + install-smoke + secret scan (gitleaks).
 #
 # Deliberately does NOT touch publish.yml (tag-triggered PyPI release) — this
 # is a separate, always-on workflow for push/PR feedback.
@@ -236,3 +236,27 @@ jobs:
           echo "::endgroup::"
 
           rm -rf "$SMOKE_ROOT"
+
+  # Secret scan over the full git history on every push/PR. This repo already
+  # had one leak incident (2026-06-03: a private vault snapshot with local
+  # paths reached the public history and had to be scrubbed with filter-repo),
+  # and the preventive scan planned back then was never wired up — this job is
+  # it. Default gitleaks rules only: they catch credentials/keys/tokens.
+  # Repo-specific private patterns (local paths, usernames) deliberately do
+  # NOT live in a public config — publishing the patterns would leak the very
+  # strings they guard; those are covered by the owner's local scans instead.
+  leaks:
+    name: Leaks (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Scan history for leaked secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

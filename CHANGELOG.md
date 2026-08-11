@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-11
+
 ### Fixed
-- **`test_brain_save_trigger_routing.py` now runs on windows-latest** instead of being `--ignore`d there. It shelled out to bash via a bare `subprocess.run(["bash", ...])`; on windows-latest that resolves to the WSL stub in `System32` (no distribution installed) instead of Git Bash, so the tests would have failed on UTF-16 "no installed distributions" output. The helper now resolves an absolute, health-checked Git-for-Windows path first and fails loudly on CI if none is found, instead of silently going unresolved.
+- **`serve` no longer re-embeds the whole vault when the index has drifted.** A count-drift safety net called `index_all()` whenever the note count and the vector count disagreed by even one, and fastembed's silent default `batch_size=256` let the ONNX arena grow without bound while it did. Measured on a 1300-note vault: two servers at **11 GB private commit and ~750 s of CPU each** on startup, against 506 MB / 6 s for the same package a day earlier. Drift is now repaired incrementally — only the affected notes are re-embedded — and the batch size is capped. The same vault now starts in **0.2–2.5 s at ~296 MB**.
+- **Concurrent cold starts no longer multiply that work.** Nothing serialized reindexing between processes, so two editor windows opening at once each cleared `notes_vec` under the other and re-did the whole job. A single-flight lock file now lets one process do the work while the others wait, with a stale-lock break that re-stats before unlinking so a live holder is never displaced.
+- **Renames, deletes, handoff rotation and hook-driven writes keep the vector index in sync.** Those paths updated the note store without touching `notes_vec`, which is what produced the drift the safety net then over-corrected for.
+- **`brain_sync` indexes the diff.** It re-embedded every note on every call; a full re-embed now happens only under `full=true`, which doubles as the escape hatch if an index is ever genuinely beyond repair.
+- **The subagent tool's rename from `Task` to `Agent` no longer silently disables hooks.** The PreToolUse matcher, the pre-action recall query builder and the routing tool set matched the old name only, so on newer Claude Code clients memory hits and route hints stopped firing for subagent calls. Both names are accepted now.
+
+### Added
+- **A rotating log for `serve` at `<vault>/.index/serve.log`.** Diagnosing the startup blow-up above meant reconstructing 750 seconds of work from Task Manager, because the server wrote no log anywhere. Index repair, lock acquisition and shutdown are now recorded with note counts and timings. A bad `SB_LOG_LEVEL` degrades to the default instead of killing the server, and several processes sharing one log file tolerate each other's rollover.
+
+### Changed
+- **`test_brain_save_trigger_routing.py` now runs on windows-latest** instead of being `--ignore`d there — the first Windows CI coverage these hook tests have ever had. They shelled out to bash via a bare `subprocess.run(["bash", ...])`, which on windows-latest resolves to the WSL stub in `System32` rather than Git Bash. The suite now resolves an absolute, health-checked Git-for-Windows path (the `bin\` wrapper, which provisions a POSIX PATH — the raw `usr\bin\bash.exe` does not) and, on CI, fails loudly rather than skipping if none is found.
+- **CI scans the full git history for leaked secrets on every push and pull request** (gitleaks, default rules).
 
 ## [0.4.3] — 2026-08-05
 

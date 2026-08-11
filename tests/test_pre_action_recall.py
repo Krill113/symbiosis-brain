@@ -30,6 +30,12 @@ def test_query_from_task_uses_prompt():
     assert q == "find the bug in foo"
 
 
+def test_query_from_agent_uses_prompt():
+    # Claude Code renamed the subagent tool Task -> Agent (2026); both stay supported.
+    q = build_query("Agent", {"prompt": "research the plugin system"}, max_chars=500)
+    assert q == "research the plugin system"
+
+
 def test_query_from_edit_combines_path_and_new_string():
     q = build_query(
         "Edit",

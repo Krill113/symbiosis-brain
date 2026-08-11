@@ -71,7 +71,7 @@ _DEFAULT_BASH_WHITELIST = [
 class PreActionConfig:
     enabled: bool = True
     matchers: list[str] = field(default_factory=lambda: [
-        "Task", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"
+        "Task", "Agent", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"
     ])
     bash_whitelist: list[str] = field(default_factory=lambda: list(_DEFAULT_BASH_WHITELIST))
     excluded_note_types: list[str] = field(default_factory=lambda: ["user"])

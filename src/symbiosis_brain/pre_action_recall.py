@@ -16,7 +16,7 @@ def build_query(tool_name: str, tool_input: dict[str, Any], max_chars: int) -> O
     Returns None for unsupported tools (so caller can skip cleanly).
     Returns "" if the supported tool has an empty/missing primary field.
     """
-    if tool_name == "Task":
+    if tool_name in ("Task", "Agent"):
         prompt = tool_input.get("prompt") or ""
         return prompt[:max_chars]
     if tool_name == "Edit":

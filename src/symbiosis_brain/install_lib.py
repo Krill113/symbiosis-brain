@@ -179,7 +179,7 @@ def _hooks_block(hook_dir: str) -> dict:
                         "command": f"bash {hook_dir}/brain-save-trigger.sh prompt-check"}]},
         ],
         "PreToolUse": [
-            {"matcher": "Task|Edit|Write|MultiEdit|NotebookEdit|Bash",
+            {"matcher": "Task|Agent|Edit|Write|MultiEdit|NotebookEdit|Bash",
              "hooks": [{"type": "command",
                         "command": 'bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/brain-pre-action-trigger.sh"'}]},
         ],

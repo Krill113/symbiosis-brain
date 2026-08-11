@@ -30,7 +30,7 @@ ROUTE_SEEN_PREFIX = "brain-route-seen-"
 ROUTE_EVENTS_PREFIX = "brain-route-events-"
 ROUTING_CAP = 2
 _SNIPPET_MAX = 60
-_OBSERVABLE_TOOLS = {"Task", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
+_OBSERVABLE_TOOLS = {"Task", "Agent", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
 
 
 @dataclass

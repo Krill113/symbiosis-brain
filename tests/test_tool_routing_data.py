@@ -14,7 +14,7 @@ SEEN_IDS = {
     "catalog-discovery",
     "serena-symbol-work",
 }
-MATCHER_SET = {"Task", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
+MATCHER_SET = {"Task", "Agent", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
 
 
 def test_default_tool_routing_loads_and_compiles():

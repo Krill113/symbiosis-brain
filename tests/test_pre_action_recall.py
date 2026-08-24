@@ -77,6 +77,11 @@ def test_query_from_bash_uses_command():
     assert q == "git commit -m fix"
 
 
+def test_query_from_powershell_uses_command():
+    q = build_query("PowerShell", {"command": "Stop-Process -Name EXCEL"}, max_chars=500)
+    assert q == "Stop-Process -Name EXCEL"
+
+
 def test_query_from_notebookedit_uses_new_source():
     q = build_query("NotebookEdit", {"new_source": "import pandas"}, max_chars=500)
     assert q == "import pandas"

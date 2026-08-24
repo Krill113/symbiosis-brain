@@ -38,7 +38,7 @@ def build_query(tool_name: str, tool_input: dict[str, Any], max_chars: int) -> O
     if tool_name == "NotebookEdit":
         src = tool_input.get("new_source") or ""
         return src[:max_chars]
-    if tool_name == "Bash":
+    if tool_name in ("Bash", "PowerShell"):
         cmd = tool_input.get("command") or ""
         return cmd[:max_chars]
     return None

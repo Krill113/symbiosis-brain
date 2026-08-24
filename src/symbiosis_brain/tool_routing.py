@@ -45,6 +45,12 @@ class Route:
     observable: bool = False
     chain: list[str] = field(default_factory=list)
     trial: bool = False
+    # Stage-1 action-recall (C1/C2 schema extension): raw {"bash":[{"re":...}],
+    # "powershell":[...]} for class:"action" routes. Stored UNCOMPILED — these
+    # are POSIX ERE (grep -E), not Python `re` (see action_rules.py docstring
+    # for why: [[:space:]] silently misparses under Python's re module).
+    # Consumed by action_rules.compile_action_rules(), not by match_routes().
+    command_triggers: dict = field(default_factory=dict)
 
 
 def _compile_flags(flags: str) -> int:
@@ -70,10 +76,15 @@ def _compile_route(raw: dict[str, Any]) -> Optional[Route]:
             # Fail-open: a single bad regex skips THIS route only, others work.
             _debug_log(f"tool_routing: bad regex in route {rid!r}: {e}")
             return None
-    if not pats:
+    cmd_triggers = raw.get("command_triggers")
+    if not isinstance(cmd_triggers, dict):
+        cmd_triggers = {}
+    # A route is valid with EITHER prompt triggers OR command_triggers (Stage-1
+    # action-recall routes carry only the latter — see Route.command_triggers).
+    if not pats and not cmd_triggers:
         return None
     cls = raw.get("class", "augment")
-    if cls not in ("augment", "supersede"):
+    if cls not in ("augment", "supersede", "action"):
         cls = "augment"
     return Route(
         id=rid,
@@ -86,6 +97,7 @@ def _compile_route(raw: dict[str, Any]) -> Optional[Route]:
         observable=bool(raw.get("observable", False)),
         chain=list(raw.get("chain") or []),
         trial=bool(raw.get("trial", False)),
+        command_triggers=cmd_triggers,
     )
 
 

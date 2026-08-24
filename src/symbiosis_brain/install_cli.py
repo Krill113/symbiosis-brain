@@ -322,6 +322,16 @@ def cmd_setup(args):
 
         _register_mcp(vault)
         mcp_registered = True
+
+        # Stage-1 action-recall: compile action-rules.tsv now so the very
+        # first PreToolUse hook after setup already has fresh rules to match
+        # against, instead of waiting for the first brain_sync. Best-effort —
+        # a failure here must not roll back an otherwise-successful setup.
+        try:
+            from symbiosis_brain.action_rules import compile_action_rules
+            compile_action_rules(vault)
+        except Exception:
+            pass
     except Exception as e:
         print(f"setup упал: {e}\nОткатываю изменения...", file=sys.stderr)
 

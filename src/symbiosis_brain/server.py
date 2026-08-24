@@ -721,6 +721,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "skipped": sync_result.skipped,
             "repaired": repair,
         }
+
+        # Stage-1 action-recall: keep action-rules.tsv fresh off the back of
+        # the sync that just ran. Cheap (a handful of grep -E subprocess
+        # calls) and fail-open — never let a compile hiccup fail brain_sync.
+        try:
+            from symbiosis_brain.action_rules import compile_action_rules
+            compile_action_rules(_vault_path)
+        except Exception:
+            logger.warning("brain_sync: action-rules compile failed", exc_info=True)
+
         return [TextContent(type="text", text=f"Sync complete: {json.dumps(summary)}")]
 
     elif name == "brain_lint":

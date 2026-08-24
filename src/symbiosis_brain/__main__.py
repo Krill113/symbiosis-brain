@@ -335,7 +335,9 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         return 0
     if tool_name not in cfg.matchers:
         return 0
-    if tool_name == "Bash":
+    if tool_name in ("Bash", "PowerShell"):
+        # bash_whitelist is reused as-is for PowerShell (same mechanism, not
+        # renamed — see PreActionConfig.bash_whitelist docstring).
         cmd = tool_input.get("command") or ""
         if not matches_whitelist(cmd, cfg.bash_whitelist):
             return 0
@@ -425,6 +427,36 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         return 0  # fail-open on any runtime error
 
 
+def _run_compile_action_rules(argv: list[str]) -> int:
+    """`compile-action-rules --vault X` — (re)compile action-rules.tsv (Stage 1).
+
+    Called from `brain_sync` (server.py) and from `setup claude-code`
+    (install_cli.py) to keep <vault>/.index/action-rules.tsv fresh. Fail-open:
+    compile_action_rules() itself never raises, but this wrapper still
+    guards against a bad --vault path or an import-time surprise so a CLI
+    caller never sees a traceback for what is a best-effort refresh.
+    """
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(prog="symbiosis_brain compile-action-rules")
+    parser.add_argument("--vault", required=True)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 0  # fail-open on bad args
+
+    try:
+        from symbiosis_brain.action_rules import compile_action_rules
+
+        vault = Path(args.vault).expanduser()
+        path = compile_action_rules(vault)
+        print(str(path))
+        return 0
+    except Exception:
+        return 0  # fail-open
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "search-gist":
@@ -433,6 +465,8 @@ def main():
         sys.exit(_run_prewarm(argv[1:]))
     if argv and argv[0] == "pre-action-recall":
         sys.exit(_run_pre_action_recall(argv[1:]))
+    if argv and argv[0] == "compile-action-rules":
+        sys.exit(_run_compile_action_rules(argv[1:]))
     # Default — MCP server
     from symbiosis_brain.server import main as server_main
     server_main()

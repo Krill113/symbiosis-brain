@@ -71,8 +71,11 @@ _DEFAULT_BASH_WHITELIST = [
 class PreActionConfig:
     enabled: bool = True
     matchers: list[str] = field(default_factory=lambda: [
-        "Task", "Agent", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"
+        "Task", "Agent", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "PowerShell"
     ])
+    # Name kept as `bash_whitelist` (not renamed) — it gates PowerShell commands
+    # too via the same mechanism (see __main__._run_pre_action_recall, which
+    # applies it to both "Bash" and "PowerShell" tool_name).
     bash_whitelist: list[str] = field(default_factory=lambda: list(_DEFAULT_BASH_WHITELIST))
     excluded_note_types: list[str] = field(default_factory=lambda: ["user"])
     hit_limit: int = 3

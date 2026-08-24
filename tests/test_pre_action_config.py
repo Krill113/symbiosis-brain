@@ -12,6 +12,7 @@ def test_load_with_no_file_returns_defaults(tmp_path: Path):
     assert cfg.enabled is True
     assert "Task" in cfg.matchers
     assert "Bash" in cfg.matchers
+    assert "PowerShell" in cfg.matchers
     assert cfg.hit_limit == 3
     assert "user" in cfg.excluded_note_types
 

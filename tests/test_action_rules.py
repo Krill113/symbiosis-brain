@@ -340,3 +340,198 @@ def test_cli_compile_action_rules_missing_vault_arg_fails_open(tmp_path):
         capture_output=True, text=True, encoding="utf-8", cwd=str(repo_root), timeout=60,
     )
     assert result.returncode == 0
+
+
+# ── Compiler-level regression coverage for the adversarial-review fixes ──
+
+def test_no_test_match_vectors_drops_the_rule(tmp_path):
+    """A tool side with no test_match vectors must NOT compile 'trusted by
+    default' — an unvalidated pattern could be overbroad and, because the
+    hook exits on its first hit, would silently swallow every rule (and the
+    normal python recall) behind it."""
+    rule = {
+        "id": "overbroad-no-vectors",
+        "class": "action",
+        "priority": 99,
+        "command_triggers": {"bash": [{"re": ".*"}]},
+        "hint": "fires on literally everything",
+        # no test_match at all
+        "test_nomatch": {"bash": ["echo hi"]},
+    }
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    assert out.read_text(encoding="utf-8") == ""
+    meta = json.loads((tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8"))
+    assert meta["rules_compiled"] == 0
+    skipped = {s["id"]: s["reason"] for s in meta["skipped"]}
+    assert "overbroad-no-vectors" in skipped
+    assert "test_match" in skipped["overbroad-no-vectors"]
+
+
+def test_newline_in_regex_excludes_rule(tmp_path):
+    """Only `\\t` was guarded before; a `\\n`/`\\r` in the pattern would
+    corrupt the TSV (extra line) just as badly as a tab."""
+    rule = dict(VALID_RULE)
+    rule = {
+        "id": "newline-in-regex-rule",
+        "class": "action",
+        "priority": 60,
+        "command_triggers": {"bash": [{"re": "^foo$\n^bar$"}]},
+        "hint": "should be dropped — embedded newline would corrupt the TSV",
+        "test_match": {"bash": ["foo"]},
+        "test_nomatch": {"bash": ["baz"]},
+    }
+    _write_local(tmp_path, [VALID_RULE, rule])
+    out = ar.compile_action_rules(tmp_path)
+    meta = json.loads((tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8"))
+    skipped_ids = {s["id"] for s in meta["skipped"]}
+    assert "newline-in-regex-rule" in skipped_ids
+    for line in out.read_text(encoding="utf-8").splitlines():
+        assert len(line.split("\t")) == 4
+
+
+def test_invalid_id_chars_excludes_rule(tmp_path):
+    rule = {
+        "id": 'evil"id',
+        "class": "action",
+        "priority": 60,
+        "command_triggers": {"bash": [{"re": "^echo hi$"}]},
+        "hint": "should be dropped — id has a quote in it",
+        "test_match": {"bash": ["echo hi"]},
+        "test_nomatch": {"bash": ["echo bye"]},
+    }
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    assert out.read_text(encoding="utf-8") == ""
+    meta = json.loads((tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8"))
+    assert meta["rules_compiled"] == 0
+    reasons = " ".join(s["reason"] for s in meta["skipped"])
+    assert "id" in reasons
+
+
+def test_fast_reject_files_written_per_toolkey(tmp_path):
+    _write_local(tmp_path, [VALID_RULE, CYRILLIC_RULE])
+    ar.compile_action_rules(tmp_path)
+    bash_re = (tmp_path / ".index" / "action-rules.bash.re").read_text(encoding="utf-8")
+    ps_re = (tmp_path / ".index" / "action-rules.powershell.re").read_text(encoding="utf-8")
+    # both bash rows land in the bash fast-reject file (git-reset + taskkill)
+    assert bash_re.count("\n") == 2
+    assert "git" in bash_re and "askkill" in bash_re.lower() or "Tt" in bash_re
+    # only the git-reset rule has a powershell side
+    assert ps_re.count("\n") == 1
+
+
+# ── Hook-level regression coverage (bash matcher) ──
+
+def _run_hook(tmp_path, command, tool_name="Bash", session_id="hooktest",
+              config=None, extra_env=None):
+    import os
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    hook = repo_root / "hooks" / "brain-pre-action-trigger.sh"
+
+    env = dict(os.environ)
+    env["SYMBIOSIS_BRAIN_VAULT"] = str(tmp_path)
+    env.pop("SYMBIOSIS_BRAIN_TOOLS", None)
+    env.pop("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED", None)
+    env["TMPDIR"] = str(tmp_path)
+    env["TEMP"] = str(tmp_path)
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    if config is not None:
+        (home / ".claude" / "symbiosis-brain-pre-action.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    if extra_env:
+        env.update(extra_env)
+
+    payload = json.dumps({
+        "tool_name": tool_name,
+        "tool_input": {"command": command},
+        "session_id": session_id,
+    })
+    result = subprocess.run(
+        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        env=env, capture_output=True, timeout=15,
+    )
+    return result
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_hook_matches_multiline_command(tmp_path):
+    """A risky command on line 2 of a multi-step script must still be caught
+    — the JSON-escaped `\\n` needs decoding to a real newline before grep
+    sees it, or every anchored rule only ever looks at line 1."""
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    result = _run_hook(tmp_path, "cd /repo\ngit reset --hard origin/main")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip())
+    assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_hook_matches_pretty_printed_payload(tmp_path):
+    """`"command": "..."` (space after the colon) must match just like the
+    compact `"command":"..."` shape — the extraction regex used to be
+    stricter than the tool_name/session_id ones right above it."""
+    import subprocess
+
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    hook = repo_root / "hooks" / "brain-pre-action-trigger.sh"
+    import os
+    env = dict(os.environ)
+    env["SYMBIOSIS_BRAIN_VAULT"] = str(tmp_path)
+    env.pop("SYMBIOSIS_BRAIN_TOOLS", None)
+    env.pop("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED", None)
+    env["TMPDIR"] = str(tmp_path)
+    env["TEMP"] = str(tmp_path)
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "git reset --hard origin/main"},
+        "session_id": "pretty",
+    }, indent=2)
+    result = subprocess.run(
+        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        env=env, capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip())
+    assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_hook_honors_config_enabled_false(tmp_path):
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    result = _run_hook(tmp_path, "git reset --hard origin/main",
+                        config={"enabled": False})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_hook_honors_config_matchers_excluding_bash(tmp_path):
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    result = _run_hook(tmp_path, "git reset --hard origin/main",
+                        config={"matchers": ["Task", "Edit"]})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_hook_config_matchers_including_bash_still_fires(tmp_path):
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    result = _run_hook(tmp_path, "git reset --hard origin/main",
+                        config={"matchers": ["Task", "Bash"]})
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip())
+    assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]

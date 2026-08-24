@@ -117,7 +117,7 @@ flowchart TD
 **Hooks (6 events, all bash):**
 - `SessionStart` — scope resolution, server prewarm, MCP roster cache
 - `UserPromptSubmit` — hybrid recall + tool-route hints, injected as `[memory: N hits]` / `[route]`
-- `PreToolUse` — pre-action recall before Edit / Write / Task / MultiEdit
+- `PreToolUse` — pre-action recall before Edit / Write / Task / MultiEdit / NotebookEdit, plus instant action-rule warnings on risky Bash / PowerShell commands
 - `Stop` — context-threshold save reminder (default zones 25 / 35 / 45%)
 - `PreCompact` — last-chance save before `/compact`
 - `SessionEnd` — vault git sync

@@ -38,6 +38,50 @@ case "$PA_TOOL" in
     ;;
 esac
 
+# ── Action-recall: pure-bash pre-action command matcher (Stage 1) ──
+# Warns from past mistakes at the MOMENT a risky Bash/PowerShell command is
+# about to run, from a TSV compiled ahead of time by
+# `symbiosis-brain compile-action-rules` (see action_rules.py) — no uv/python
+# here, must stay instant. On a hit we emit additionalContext ourselves and
+# skip the python pre-action-recall call below (avoids two JSON blobs on
+# stdout). Fail-open at every step: any missing piece just falls through to
+# the existing path further down.
+case "$PA_TOOL" in
+  Bash|PowerShell)
+    AR_RULES="${SYMBIOSIS_BRAIN_VAULT}/.index/action-rules.tsv"
+    if [ -f "$AR_RULES" ]; then
+      AR_CMD=$(printf '%s' "$INPUT" | grep -oE '"command":"([^"\\]|\\.)*"' | head -1 | sed -E 's/^"command":"//; s/"$//')
+      if [ -n "$AR_CMD" ]; then
+        case "$PA_TOOL" in
+          Bash) AR_TOOLKEY=bash ;;
+          PowerShell) AR_TOOLKEY=powershell ;;
+        esac
+        AR_HIT_ID=""
+        AR_HIT_HINT=""
+        while IFS=$'\t' read -r AR_T AR_ID AR_RE AR_HINT || [ -n "$AR_T" ]; do
+          AR_T="${AR_T%$'\r'}"
+          AR_HINT="${AR_HINT%$'\r'}"
+          [ "$AR_T" = "$AR_TOOLKEY" ] || continue
+          if printf '%s' "$AR_CMD" | grep -qE "$AR_RE" 2>/dev/null; then
+            AR_HIT_ID="$AR_ID"
+            AR_HIT_HINT="$AR_HINT"
+            break
+          fi
+        done < "$AR_RULES"
+        if [ -n "$AR_HIT_ID" ]; then
+          AR_TS=$(date -Iseconds 2>/dev/null || date)
+          printf '{"ts":"%s","session_id":"%s","rule_id":"%s","tool":"%s"}\n' \
+            "$AR_TS" "$PA_SID" "$AR_HIT_ID" "$AR_TOOLKEY" \
+            >> "${SYMBIOSIS_BRAIN_VAULT}/.index/action-rule-hits.jsonl" 2>/dev/null || true
+          printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"[action-rule %s] %s"}}\n' \
+            "$AR_HIT_ID" "$AR_HIT_HINT"
+          exit 0
+        fi
+      fi
+    fi
+    ;;
+esac
+
 if [ -z "$SYMBIOSIS_BRAIN_TOOLS" ] || [ -z "$SYMBIOSIS_BRAIN_VAULT" ]; then
   exit 0
 fi

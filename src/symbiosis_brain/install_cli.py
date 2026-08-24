@@ -438,6 +438,30 @@ def cmd_doctor(args) -> int:
         print("✗ CLAUDE.md      FAIL (block missing)")
         issues += 1
 
+    # 7. Action-recall matcher — only meaningful once our PreToolUse hook is
+    # actually installed. `setup claude-code` widened the matcher to include
+    # PowerShell, but merge_settings_json only runs from `setup`; an install
+    # that predates that change keeps its old Bash-only matcher forever
+    # unless someone re-runs setup, and nothing else told them to.
+    if s.exists():
+        try:
+            pre_tool_use = (json.loads(s.read_text(encoding="utf-8"))
+                             .get("hooks", {}).get("PreToolUse", []))
+        except Exception:
+            pre_tool_use = []
+        our_entries = [
+            e for e in pre_tool_use
+            if isinstance(e, dict)
+            and any("brain-pre-action-trigger.sh" in (h.get("command") or "")
+                    for h in e.get("hooks", []) if isinstance(h, dict))
+        ]
+        if our_entries:
+            if any("PowerShell" in (e.get("matcher") or "") for e in our_entries):
+                print("✓ Action-recall  OK (PreToolUse matcher covers PowerShell)")
+            else:
+                print("✗ Action-recall  STALE (PreToolUse matcher predates PowerShell support)")
+                issues += 1
+
     print()
     if issues:
         print(f"{issues} issue(s) found. Run `symbiosis-brain setup claude-code --repair` to fix.")

@@ -173,3 +173,38 @@ A freshly written local route fires on the next prompt with no MCP restart
 Safe to re-run. Known tools are reported, not re-added. Unknown tools already
 present in `tool-routing.local.json` (same `id`) are updated in place, not
 duplicated. Declining a tool leaves the file unchanged for that `id`.
+
+## Action rules (`class:"action"`)
+
+A third route class, separate from `augment`/`supersede` above: it warns from
+past mistakes at the MOMENT a matching Bash/PowerShell command is about to
+run, not on prompt text. Compiled by `symbiosis-brain compile-action-rules`
+into `<vault>/.index/action-rules.*` and matched by a pure-bash block in the
+PreToolUse hook (see `action_rules.py`). Not authored through the Step 1–6
+flow above — hand-write it into `tool-routing.local.json` alongside your
+other routes:
+
+```json
+{"id": "git-reset-hard-after-fetch", "class": "action", "priority": 84,
+ "command_triggers": {
+   "bash": [{"re": "(^|[;&|]+)[[:space:]]*git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin/"}],
+   "powershell": [{"re": "(^|[;&|]+)[[:space:]]*git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin/"}]
+ },
+ "hint": "Never reset --hard origin/* right after fetch: a failed fetch leaves a stale ref. [[mistakes/x]]",
+ "test_match": {"bash": ["git reset --hard origin/main"], "powershell": ["git reset --hard origin/main"]},
+ "test_nomatch": {"bash": ["git reset --soft HEAD~1"], "powershell": ["git reset HEAD README.md"]}}
+```
+
+- `command_triggers.bash` / `.powershell` — POSIX ERE patterns (`grep -E`
+  syntax, e.g. `[[:space:]]`, NOT Python `re` — `[[:space:]]` silently
+  misparses under Python's engine). At least one of the two tool sides.
+- `test_match` / `test_nomatch` — **required**, per tool side. A tool side
+  with no `test_match` vectors is dropped at compile time rather than
+  shipped unvalidated — an over-broad unvalidated pattern would otherwise
+  fire on everything and, because the hook exits on the first hit, silently
+  suppress normal recall for every subsequent rule too.
+- `id` — must match `[A-Za-z0-9._-]+` (compiled rules are rejected otherwise;
+  it lands unescaped in the hook's JSON stdout and in `action-rule-hits.jsonl`).
+- After editing `tool-routing.local.json`, run
+  `symbiosis-brain compile-action-rules --vault <vault>` (or let
+  `brain_sync`/setup do it) to (re)generate the compiled matcher files.

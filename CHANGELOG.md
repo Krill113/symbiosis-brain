@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Action-recall (Stage 1): warnings from past mistakes fire at the moment of a risky Bash/PowerShell command**, not just against prompt text. `class:"action"` routes in `tool-routing.local.json` compile to `<vault>/.index/action-rules.tsv` (regex-validated against their own test vectors via `grep -E`), matched by a pure-bash block in the PreToolUse hook before the uv/python path even runs. PowerShell now gets the same recall coverage Bash already had.
+- **Action-recall (Stage 1): warnings from past mistakes fire at the moment of a risky Bash/PowerShell command**, not just against prompt text. `class:"action"` routes in `tool-routing.local.json` compile to `<vault>/.index/action-rules.tsv` plus a per-tool fast-reject pattern file (regex-validated against their own test vectors via `grep -E`), matched by a pure-bash block in the PreToolUse hook before the uv/python path even runs — a single combined `grep -qEf` fork rejects the common non-matching case instead of one fork per rule row. PowerShell now gets the same recall coverage Bash already had — **existing installs need one `symbiosis-brain setup claude-code --repair` (or a fresh `doctor` run, which now flags a stale matcher) to pick up the widened PreToolUse matcher.** A rule with no `test_match` vectors on a tool side is now dropped at compile time instead of shipping unvalidated.
+
+### Fixed
+- The action-rule matcher now honors `enabled: false` and `matchers` in `~/.claude/symbiosis-brain-pre-action.json` (previously only the `SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED` env var could turn it off), decodes JSON string escaping (`\n`/`\"`/`\\`) out of the command before matching so multi-line commands and heredocs are actually visible to the matcher, and tolerates whitespace after `"command":` the same way the adjacent extractions already did.
 
 ## [0.5.0] — 2026-08-11
 

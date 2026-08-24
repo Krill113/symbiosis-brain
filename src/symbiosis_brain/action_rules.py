@@ -15,14 +15,22 @@ without error but matches the wrong thing. So every regex is validated by
 shelling out to the SAME ``grep -E`` the bash hook will run it through, using
 each route's own ``test_match``/``test_nomatch`` vectors as the oracle.
 
-Fail-open everywhere: a rule with no test vectors passing, a rule whose
-regex contains a tab (would corrupt the TSV), or grep being unavailable on
-PATH — all skip that rule (or all rules) and record why in ``meta.json``.
-Nothing here raises out of ``compile_action_rules``.
+Fail-open everywhere: a rule with no test_match vectors for a given tool side
+(unvalidated — see below), a rule whose regex contains a tab/newline/CR
+(would corrupt the TSV), an id outside ``[A-Za-z0-9._-]``, or grep being
+unavailable on PATH — all skip that rule (or all rules) and record why in
+``meta.json``. Nothing here raises out of ``compile_action_rules``.
+
+A tool side (bash/powershell) with an empty or missing ``test_match`` list is
+dropped rather than compiled: an unvalidated pattern that happens to be
+overbroad would fire on unrelated commands, and because the hook exits on
+the first hit, would silently suppress every other rule (and the normal
+python recall) behind it.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -35,8 +43,16 @@ from symbiosis_brain.pre_action_config import _debug_log, routing_local_path
 
 TSV_BASENAME = "action-rules.tsv"
 META_BASENAME = "action-rules.meta.json"
+# Per-toolkey fast-reject pattern file consumed by the pure-bash hook: all of
+# that tool's patterns combined, for a single `grep -qEf` existence check
+# before falling back to the row-by-row TSV loop (see compile_action_rules).
+RE_BASENAME_FMT = "action-rules.{tool}.re"
 _TOOL_KEYS = ("bash", "powershell")
 _GREP_TIMEOUT_SECONDS = 5
+# Route ids land unescaped in the hook's JSON stdout (only the hint is JSON-
+# escaped) and also become filesystem-adjacent tokens (jsonl fields) — keep
+# them to a safe, portable character set instead of escaping at emit time.
+_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _find_grep() -> Optional[str]:
@@ -151,6 +167,8 @@ def _compile_one_rule(
     rid = raw.get("id")
     if not rid or not isinstance(rid, str):
         return [], "missing or invalid id"
+    if not _ID_RE.match(rid):
+        return [], "id contains characters outside [A-Za-z0-9._-]"
     cmd_triggers = raw.get("command_triggers")
     if not isinstance(cmd_triggers, dict):
         return [], "no command_triggers"
@@ -173,12 +191,21 @@ def _compile_one_rule(
             pattern = trig.get("re") if isinstance(trig, dict) else None
             if not pattern or not isinstance(pattern, str):
                 return [], f"{toolkey}: trigger missing 're'"
-            if "\t" in pattern:
-                return [], f"{toolkey}: regex contains a tab character"
+            if any(c in pattern for c in ("\t", "\n", "\r")):
+                return [], f"{toolkey}: regex contains a tab/newline/CR character"
+            match_vecs = list(test_match.get(toolkey) or [])
+            if not match_vecs:
+                # Docstring promise: a rule with no test vectors is unvalidated
+                # and MUST be skipped — an empty test_match would otherwise
+                # let `_validate_pattern`'s empty loop vacuously "pass" and
+                # compile an unreviewed (possibly overbroad) pattern straight
+                # into the hook's grep -f, silently swallowing every hit
+                # below it (the hook exits after the first match).
+                return [], f"{toolkey}: no test_match vectors — rule not validated"
             ok, reason = _validate_pattern(
                 grep_path,
                 pattern,
-                list(test_match.get(toolkey) or []),
+                match_vecs,
                 list(test_nomatch.get(toolkey) or []),
             )
             if not ok:
@@ -251,6 +278,28 @@ def compile_action_rules(vault: Path) -> Path:
         atomic_write_text(tsv_path, tsv_content)
     except OSError as e:
         _debug_log(f"action_rules: failed to write TSV: {e}")
+
+    # Per-toolkey fast-reject pattern file: ALL of that tool's patterns
+    # combined so the hook can ask "does anything match at all?" with ONE
+    # `grep -qEf` fork instead of one fork per rule row. The overwhelming
+    # majority of commands match nothing, so this turns the common case from
+    # O(rule count) forks into O(1). On an actual hit (rare — it means a
+    # warning is about to fire) the hook falls back to the existing per-row
+    # loop over the TSV to identify *which* rule matched, unchanged: that
+    # keeps rule identification on the exact same grep -E engine `_validate_
+    # pattern` used to vet the pattern in the first place, rather than
+    # inventing a second, potentially non-identical, matching path.
+    per_tool_patterns: dict[str, list[str]] = {k: [] for k in _TOOL_KEYS}
+    for _priority, _rule_id, toolkey, pattern, _hint_escaped in compiled_rows:
+        per_tool_patterns[toolkey].append(pattern)
+
+    for toolkey in _TOOL_KEYS:
+        re_path = index_dir / RE_BASENAME_FMT.format(tool=toolkey)
+        re_content = "".join(f"{pattern}\n" for pattern in per_tool_patterns[toolkey])
+        try:
+            atomic_write_text(re_path, re_content)
+        except OSError as e:
+            _debug_log(f"action_rules: failed to write {toolkey} fast-reject file: {e}")
 
     compiled_ids = {row[1] for row in compiled_rows}
     meta = {

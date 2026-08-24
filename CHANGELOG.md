@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Action-recall (Stage 1): warnings from past mistakes fire at the moment of a risky Bash/PowerShell command**, not just against prompt text. `class:"action"` routes in `tool-routing.local.json` compile to `<vault>/.index/action-rules.tsv` (regex-validated against their own test vectors via `grep -E`), matched by a pure-bash block in the PreToolUse hook before the uv/python path even runs. PowerShell now gets the same recall coverage Bash already had.
+
 ## [0.5.0] — 2026-08-11
 
 ### Fixed

@@ -14,6 +14,64 @@ def test_three_match_keep_two():
     assert [r.id for r in m] == ["a", "b"]
 
 
+# --- Stage-1 action-recall: command_triggers schema extension ---
+
+def test_compile_route_valid_with_only_command_triggers():
+    """A class:"action" route with NO prompt triggers, only command_triggers,
+    must still compile (valid if triggers OR command_triggers present)."""
+    raw = {
+        "id": "some-action-rule",
+        "class": "action",
+        "priority": 80,
+        "command_triggers": {"bash": [{"re": "^rm -rf"}]},
+        "hint": "careful",
+    }
+    route = tr._compile_route(raw)
+    assert route is not None
+    assert route.id == "some-action-rule"
+    assert route.cls == "action"
+    assert route.triggers == []
+    assert route.command_triggers == {"bash": [{"re": "^rm -rf"}]}
+
+
+def test_compile_route_invalid_with_neither_triggers_nor_command_triggers():
+    raw = {"id": "empty-route", "class": "action", "hint": "x"}
+    assert tr._compile_route(raw) is None
+
+
+def test_compile_route_still_works_with_only_prompt_triggers():
+    """Old-style augment/supersede routes (no command_triggers) unaffected."""
+    raw = {
+        "id": "old-style",
+        "class": "augment",
+        "triggers": [{"re": "foo"}],
+        "hint": "h",
+    }
+    route = tr._compile_route(raw)
+    assert route is not None
+    assert route.command_triggers == {}
+
+
+def test_load_routes_tolerates_command_triggers_only_route(tmp_path):
+    """load_routes() must not choke on a vault-local override that adds a
+    command_triggers-only route alongside the shipped default catalog."""
+    local = tmp_path / "tool-routing.local.json"
+    local.write_text(json.dumps([
+        {
+            "id": "action-only-route",
+            "class": "action",
+            "command_triggers": {"powershell": [{"re": "^Remove-Item"}]},
+            "hint": "careful",
+        }
+    ]), encoding="utf-8")
+    routes = tr.load_routes(vault=tmp_path)
+    ids = {r.id for r in routes}
+    assert "action-only-route" in ids
+    added = next(r for r in routes if r.id == "action-only-route")
+    assert added.triggers == []  # never fires in the text-prompt matcher
+    assert tr.match_routes("Remove-Item foo", routes) == []
+
+
 def test_snippet_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     r = tr.Route(id="x", cls="augment", triggers=[re.compile("a")], hint="h")

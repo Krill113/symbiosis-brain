@@ -11,10 +11,16 @@ from __future__ import annotations
 import json
 import shutil
 
-from _bash_resolver import _bash  # health-checked absolute bash; bare "bash" is the WSL stub on Windows CI
 from pathlib import Path
 
 import pytest
+
+# health-checked absolute bash; bare "bash" is the WSL stub on Windows CI.
+# Package form for imports from the repo root, bare form under pytest prepend mode.
+try:
+    from tests._bash_resolver import _bash
+except ImportError:  # pragma: no cover - pytest prepend mode
+    from _bash_resolver import _bash
 
 from symbiosis_brain import action_rules as ar
 

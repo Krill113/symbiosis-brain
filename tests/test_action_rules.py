@@ -56,16 +56,19 @@ VALID_RULE = {
     },
 }
 
+# Synthetic throughout (id, hint, wikilink target, vectors) — fixtures never mirror
+# a real vault or a real tool-routing.local.json; a Cyrillic hint with a newline and
+# a wikilink is all the round-trip test needs.
 CYRILLIC_RULE = {
-    "id": "kill-process-by-name-hits-mcp",
+    "id": "stop-daemon-by-image-name",
     "class": "action",
     "priority": 88,
     "command_triggers": {
-        "bash": [{"re": "(^|[;&|]+)[[:space:]]*[Tt][Aa][Ss][Kk][Kk][Ii][Ll][Ll].*(/|//)+[Ii][Mm][[:space:]]*python"}],
+        "bash": [{"re": "(^|[;&|]+)[[:space:]]*[Tt][Aa][Ss][Kk][Kk][Ii][Ll][Ll].*(/|//)+[Ii][Mm][[:space:]]*demo"}],
     },
-    "hint": "Убей процесс по PID, не по имени — так убивается и MCP-сервер python.\nСмотри [[mistakes/kill-process-by-name-killed-mcp-servers]].",
-    "test_match": {"bash": ["taskkill //IM python.exe //F"]},
-    "test_nomatch": {"bash": ["taskkill //PID 1234 //F"]},
+    "hint": "Останавливай демон по PID, а не по имени образа — под тем же именем живут соседи.\nСмотри [[mistakes/y]].",
+    "test_match": {"bash": ["taskkill //IM demo.exe //F"]},
+    "test_nomatch": {"bash": ["taskkill //PID 42 //F"]},
 }
 
 BAD_VECTOR_RULE = {
@@ -110,12 +113,12 @@ def test_valid_compilation_writes_tsv_and_meta(tmp_path):
         for line in out.read_text(encoding="utf-8").splitlines()
         if line
     ]
-    # git-reset rule has both bash+powershell triggers -> 2 rows; kill-process only bash -> 1 row
+    # git-reset rule has both bash+powershell triggers -> 2 rows; stop-daemon only bash -> 1 row
     assert len(rows) == 3
     for row in rows:
         assert len(row) == 4
     ids = {row[1] for row in rows}
-    assert ids == {"git-reset-hard-after-fetch", "kill-process-by-name-hits-mcp"}
+    assert ids == {"git-reset-hard-after-fetch", "stop-daemon-by-image-name"}
     tools = {row[0] for row in rows}
     assert tools == {"bash", "powershell"}
 
@@ -168,12 +171,12 @@ def test_hint_tsv_roundtrip_and_cyrillic_and_wikilink(tmp_path):
     assert len(lines) == 1
     tool, rule_id, regex, hint_field = lines[0].split("\t")
     assert tool == "bash"
-    assert rule_id == "kill-process-by-name-hits-mcp"
+    assert rule_id == "stop-daemon-by-image-name"
     # hint_field is ready to be dropped straight into a JSON string literal
     restored = json.loads('"' + hint_field + '"')
     assert restored == (
-        "Убей процесс по PID, не по имени — так убивается и MCP-сервер python. "
-        "Смотри [[mistakes/kill-process-by-name-killed-mcp-servers]]."
+        "Останавливай демон по PID, а не по имени образа — под тем же именем живут соседи. "
+        "Смотри [[mistakes/y]]."
     )
     assert "\n" not in hint_field
     assert "\t" not in hint_field

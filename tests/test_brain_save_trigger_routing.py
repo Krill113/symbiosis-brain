@@ -7,7 +7,13 @@ START = pathlib.Path(__file__).resolve().parents[1] / 'hooks' / 'brain-session-s
 
 # Resolver lives in _bash_resolver.py so test_action_rules.py shares the same
 # health-checked absolute-path lookup (bare "bash" = WSL stub on Windows CI).
-from _bash_resolver import _bash_works, _find_bash, _BASH, _bash  # noqa: E402,F401
+# Two import forms: pytest prepends tests/ to sys.path (bare name works); the
+# CI sanity step imports this module as `tests.test_brain_save_trigger_routing`
+# from the repo root, where only the package form resolves.
+try:
+    from tests._bash_resolver import _bash_works, _find_bash, _BASH, _bash  # noqa: E402,F401
+except ImportError:  # pragma: no cover - pytest prepend mode
+    from _bash_resolver import _bash_works, _find_bash, _BASH, _bash  # noqa: E402,F401
 
 
 def _run(prompt, env_extra=None, sb_tmp=None, session='s1'):
@@ -266,19 +272,24 @@ def test_find_bash_allows_windows_sibling_dirs(tmp_path):
     assert result2 is None
 
 
+def _resolver_module():
+    # _bash() reads _BASH from the module it was defined in. That module may be
+    # loaded as `tests._bash_resolver` or as bare `_bash_resolver` depending on
+    # how this file was imported — patch the one the function actually uses.
+    import sys
+    return sys.modules[_bash.__module__]
+
+
 def test_bash_skips_when_unresolved(monkeypatch):
-    import _bash_resolver
     monkeypatch.delenv('CI', raising=False)
     monkeypatch.delenv('SB_REQUIRE_BASH', raising=False)
-    # _bash() reads the resolver module's own _BASH, not this module's re-export
-    monkeypatch.setattr(_bash_resolver, '_BASH', None)
+    monkeypatch.setattr(_resolver_module(), '_BASH', None)
     with pytest.raises(pytest.skip.Exception):
         _bash()
 
 
 def test_bash_fails_on_ci_when_unresolved(monkeypatch):
-    import _bash_resolver
     monkeypatch.setenv('CI', '1')
-    monkeypatch.setattr(_bash_resolver, '_BASH', None)
+    monkeypatch.setattr(_resolver_module(), '_BASH', None)
     with pytest.raises(pytest.fail.Exception):
         _bash()

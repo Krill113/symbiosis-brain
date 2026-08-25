@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 import shutil
+
+from _bash_resolver import _bash  # health-checked absolute bash; bare "bash" is the WSL stub on Windows CI
 from pathlib import Path
 
 import pytest
 
 from symbiosis_brain import action_rules as ar
 
+# Same resolver the compiler uses (PATH, then Git-for-Windows roots derived
+# from bash/git) — a dev box whose PATH lacks Git\usr\bin still runs these.
 pytestmark = pytest.mark.skipif(
-    shutil.which("grep") is None, reason="grep not on PATH — cannot validate ERE rules"
+    ar._find_grep() is None, reason="grep not found — cannot validate ERE rules"
 )
 
 
@@ -236,7 +240,6 @@ def test_missing_local_override_still_compiles_defaults_only(tmp_path):
     assert meta["rules_total"] == 0
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_bash_block_matches_compiled_rule(tmp_path):
     """End-to-end: compiled TSV + hook script's pure-bash matcher fires
     without invoking uv/python, and records a hit."""
@@ -264,7 +267,7 @@ def test_hook_bash_block_matches_compiled_rule(tmp_path):
         "session_id": "hooktest",
     }, separators=(",", ":"))
     result = subprocess.run(
-        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        [_bash(),str(hook)], input=payload, text=True, encoding="utf-8",
         env=env, capture_output=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -281,7 +284,6 @@ def test_hook_bash_block_matches_compiled_rule(tmp_path):
     assert hit["session_id"] == "hooktest"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_bash_block_no_match_falls_through_silently(tmp_path):
     import os
     import subprocess
@@ -305,7 +307,7 @@ def test_hook_bash_block_no_match_falls_through_silently(tmp_path):
         "session_id": "hooktest2",
     }, separators=(",", ":"))
     result = subprocess.run(
-        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        [_bash(),str(hook)], input=payload, text=True, encoding="utf-8",
         env=env, capture_output=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -454,13 +456,12 @@ def _run_hook(tmp_path, command, tool_name="Bash", session_id="hooktest",
         "session_id": session_id,
     })
     result = subprocess.run(
-        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        [_bash(),str(hook)], input=payload, text=True, encoding="utf-8",
         env=env, capture_output=True, timeout=15,
     )
     return result
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_matches_multiline_command(tmp_path):
     """A risky command on line 2 of a multi-step script must still be caught
     — the JSON-escaped `\\n` needs decoding to a real newline before grep
@@ -473,7 +474,6 @@ def test_hook_matches_multiline_command(tmp_path):
     assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_matches_pretty_printed_payload(tmp_path):
     """`"command": "..."` (space after the colon) must match just like the
     compact `"command":"..."` shape — the extraction regex used to be
@@ -498,7 +498,7 @@ def test_hook_matches_pretty_printed_payload(tmp_path):
         "session_id": "pretty",
     }, indent=2)
     result = subprocess.run(
-        ["bash", str(hook)], input=payload, text=True, encoding="utf-8",
+        [_bash(),str(hook)], input=payload, text=True, encoding="utf-8",
         env=env, capture_output=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -506,7 +506,6 @@ def test_hook_matches_pretty_printed_payload(tmp_path):
     assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_honors_config_enabled_false(tmp_path):
     _write_local(tmp_path, [VALID_RULE])
     ar.compile_action_rules(tmp_path)
@@ -516,7 +515,6 @@ def test_hook_honors_config_enabled_false(tmp_path):
     assert result.stdout.strip() == ""
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_honors_config_matchers_excluding_bash(tmp_path):
     _write_local(tmp_path, [VALID_RULE])
     ar.compile_action_rules(tmp_path)
@@ -526,7 +524,6 @@ def test_hook_honors_config_matchers_excluding_bash(tmp_path):
     assert result.stdout.strip() == ""
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_hook_config_matchers_including_bash_still_fires(tmp_path):
     _write_local(tmp_path, [VALID_RULE])
     ar.compile_action_rules(tmp_path)
@@ -535,3 +532,49 @@ def test_hook_config_matchers_including_bash_still_fires(tmp_path):
     assert result.returncode == 0, result.stderr
     out = json.loads(result.stdout.strip())
     assert "[action-rule git-reset-hard-after-fetch]" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_find_grep_derives_from_git_on_windows(tmp_path):
+    # Only git on PATH (Git\cmd), grep lives under Git\usr\bin -> must be found.
+    root = tmp_path / "Git"
+    grep_exe = root / "usr" / "bin" / "grep.exe"
+    grep_exe.parent.mkdir(parents=True)
+    grep_exe.write_text("", encoding="utf-8")
+    git_exe = root / "cmd" / "git.exe"
+    git_exe.parent.mkdir(parents=True)
+    git_exe.write_text("", encoding="utf-8")
+
+    def fake_which(name):
+        return str(git_exe) if name in ("git", "git.exe") else None
+
+    found = ar._find_grep(which=fake_which, environ={}, windows=True)
+    assert found is not None
+    assert Path(found) == grep_exe
+
+
+def test_find_grep_none_when_nothing_on_path(tmp_path):
+    found = ar._find_grep(which=lambda name: None, environ={}, windows=True)
+    assert found is None
+    # non-Windows: PATH only, no root probing
+    assert ar._find_grep(which=lambda name: None, environ={}, windows=False) is None
+
+
+def test_compile_keeps_previous_artifacts_when_grep_unavailable(tmp_path, monkeypatch):
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    tsv = tmp_path / ".index" / "action-rules.tsv"
+    re_bash = tmp_path / ".index" / "action-rules.bash.re"
+    before_tsv = tsv.read_text(encoding="utf-8")
+    before_re = re_bash.read_text(encoding="utf-8")
+    assert before_tsv.strip() and before_re.strip()
+
+    monkeypatch.setattr(ar, "_find_grep", lambda *a, **k: None)
+    ar.compile_action_rules(tmp_path)
+
+    # previous compiled artifacts survive an unvalidatable run
+    assert tsv.read_text(encoding="utf-8") == before_tsv
+    assert re_bash.read_text(encoding="utf-8") == before_re
+    meta = json.loads((tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8"))
+    assert meta["validation"] == "unavailable"
+    assert meta["kept_previous"] is True
+    assert meta["rules_total"] == 1

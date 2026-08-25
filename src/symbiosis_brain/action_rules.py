@@ -55,28 +55,64 @@ _GREP_TIMEOUT_SECONDS = 5
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def _find_grep() -> Optional[str]:
+def _find_grep(which=None, environ=None, windows=None) -> Optional[str]:
     """Locate a ``grep`` executable. Tries PATH directly first, then derives
-    a location from ``bash`` on PATH (Git-for-Windows ships grep alongside
-    bash under the same root, but only bash is reliably on PATH)."""
-    found = shutil.which("grep")
+    a Git-for-Windows location from whatever IS on PATH.
+
+    On Windows only ``git`` is reliably on PATH (``Git\\cmd``); ``bash`` and
+    ``grep`` live under ``Git\\bin`` / ``Git\\usr\\bin`` which many
+    environments — notably the MCP server process and PowerShell-launched
+    python — never see. Deriving from ``git`` (and the standard install
+    roots) is what keeps validation working there; without it every rule is
+    "unvalidated" and the compile would produce nothing.
+
+    Parameters are injectable for tests; ``None`` means the real thing.
+    """
+    import os
+
+    if which is None:
+        which = shutil.which
+    if environ is None:
+        environ = os.environ
+    if windows is None:
+        windows = os.name == "nt"
+
+    found = which("grep")
     if found:
         return found
-    bash = shutil.which("bash")
-    if not bash:
+    if not windows:
         return None
-    bash_path = Path(bash).resolve()
-    candidates = [
-        bash_path.parent / "grep.exe",
-        bash_path.parent / "grep",
-        bash_path.parent.parent / "usr" / "bin" / "grep.exe",
-        bash_path.parent.parent / "usr" / "bin" / "grep",
-        bash_path.parent / "usr" / "bin" / "grep.exe",
-        bash_path.parent / "usr" / "bin" / "grep",
-    ]
-    for cand in candidates:
-        if cand.exists():
-            return str(cand)
+
+    roots: list[Path] = []
+    for exe in ("bash", "git"):
+        hit = which(exe) or which(exe + ".exe")
+        if hit:
+            p = Path(hit).resolve()
+            roots.append(p.parent)          # Git\bin  (bash) / Git\cmd (git)
+            roots.append(p.parent.parent)   # Git\
+    for var, sub in (
+        ("ProgramFiles", ("Git",)),
+        ("ProgramFiles(x86)", ("Git",)),
+        ("LocalAppData", ("Programs", "Git")),
+    ):
+        base = environ.get(var)
+        if base:
+            roots.append(Path(base, *sub))
+
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        for cand in (
+            root / "grep.exe",
+            root / "usr" / "bin" / "grep.exe",
+            root / "bin" / "grep.exe",
+            root / "grep",
+            root / "usr" / "bin" / "grep",
+        ):
+            if cand.exists():
+                return str(cand)
     return None
 
 
@@ -265,6 +301,27 @@ def compile_action_rules(vault: Path) -> Path:
 
     # priority DESC, then id ASC (deterministic; first match in the hook wins)
     compiled_rows.sort(key=lambda row: (-row[0], row[1], row[2]))
+
+    if grep_path is None and tsv_path.exists():
+        # Nothing could be validated, so nothing compiled. Overwriting the
+        # previously compiled TSV with an empty one would silently disable
+        # every action rule the next time brain_sync runs from a process whose
+        # PATH lacks grep (seen on Windows: MCP server env has git, not grep).
+        # Keep the last good artifacts and say so in meta.
+        _debug_log("action_rules: grep unavailable — keeping previous compiled artifacts")
+        meta = {
+            "compiled_at": datetime.now(timezone.utc).isoformat(),
+            "rules_total": rules_total,
+            "rules_compiled": 0,
+            "skipped": skipped,
+            "validation": "unavailable",
+            "kept_previous": True,
+        }
+        try:
+            atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+        except OSError as e:
+            _debug_log(f"action_rules: failed to write meta: {e}")
+        return tsv_path
 
     lines = [
         "\t".join((toolkey, rule_id, pattern, hint_escaped))

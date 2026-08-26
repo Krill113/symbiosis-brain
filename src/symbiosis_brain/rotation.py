@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from symbiosis_brain.atomic_write import atomic_write_text
+from symbiosis_brain.gist_limits import GIST_ARCHIVE_MAX, GIST_INDEX_ONELINER_MAX
 from symbiosis_brain.write_lock import note_write_lock
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,6 @@ logger = logging.getLogger(__name__)
 HANDOFF_HEADING_RE = re.compile(
     r"^## Handoff (\d{4}-\d{2}-\d{2})(?:[ \t]+(.+?))?[ \t]*$"
 )  # used on single line — no MULTILINE flag
-
-GIST_MAX = 140
 
 SHIPPED_RE = re.compile(
     r"\*\*Shipped[^*\n]*?\*\*\s*(.+?)(?=\n\n|\n-\s|\n\*\*|\Z)",
@@ -141,9 +140,9 @@ def extract_gist(section_body: str) -> str:
     # First sentence — stop at . ; or : (followed by space or end)
     first = re.split(r"[.;:](?:\s|$)", raw, maxsplit=1)[0].strip()
     # Single truncation point for the archive note's frontmatter gist (B-N3): the
-    # index one-liner truncates again at INDEX_ONELINER_MAX, and both go through
+    # index one-liner truncates again at GIST_INDEX_ONELINER_MAX, and both go through
     # _plain_snippet, so neither cut can tear a wiki-link.
-    return _plain_snippet(first, GIST_MAX)
+    return _plain_snippet(first, GIST_ARCHIVE_MAX)
 
 
 STOP_WORDS = {
@@ -223,7 +222,6 @@ def assign_slugs(sections: list[HandoffSection]) -> list[Optional[str]]:
 ARCHIVE_HEADING = "## Archive"
 ARCHIVE_INTRO = "Старые handoff'ы (по убыванию даты):"
 INDEX_ENTRY_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}):")
-INDEX_ONELINER_MAX = 100
 
 
 def _yaml_quote_string(s: str) -> str:
@@ -283,7 +281,7 @@ def render_archive_index_entry(
     date_str = section.date.isoformat()
     slug_part = f"-{slug}" if slug else ""
     link = f"archive/handoffs/{scope}-{date_str}{slug_part}"
-    oneliner = _plain_snippet(gist, INDEX_ONELINER_MAX)
+    oneliner = _plain_snippet(gist, GIST_INDEX_ONELINER_MAX)
     return f"- {date_str}: [[{link}]] — {oneliner}"
 
 

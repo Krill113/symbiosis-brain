@@ -21,6 +21,7 @@ from symbiosis_brain.markdown_parser import parse_note, render_note
 from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.write_lock import note_write_lock
+from symbiosis_brain.gist_limits import GIST_SOFT_LIMIT
 from symbiosis_brain.validation import validate_note, ValidationError, new_links_introduced
 from symbiosis_brain.parent_watchdog import start_parent_watchdog
 
@@ -104,9 +105,12 @@ def _init(vault_path: Path):
     _linter = VaultLinter(_storage, vault_path=vault_path)
 
     sync_result = _sync.sync_all()
-    logger.info("Vault synced: added=%d updated=%d removed=%d skipped=%d",
+    logger.info("Vault synced: added=%d updated=%d removed=%d skipped=%d failed=%d",
                 len(sync_result.added), len(sync_result.updated),
-                len(sync_result.removed), sync_result.skipped)
+                len(sync_result.removed), sync_result.skipped,
+                len(sync_result.failed))
+    for rel_path, reason in sync_result.failed:
+        logger.warning("Vault sync skipped %s: %s", rel_path, reason)
 
     current_model = _search._model_name
     stored_model = _storage.get_schema_version("embedding_model")
@@ -181,6 +185,97 @@ def _append_log(vault_path: Path, action: str, path: str, title: str):
             f.write(f"| {timestamp} | {action} | {path} | {title} |\n")
     except Exception:
         logger.warning("Failed to append to vault log", exc_info=True)
+
+
+# Categories hidden by default: stylistic, i.e. "could be nicer", never "is broken".
+_LINT_STYLISTIC = ("orphans", "weak_links", "forward_refs",
+                   "gist_too_long", "gist_equals_title")
+_LINT_ALL = ("orphans", "weak_links", "broken_links", "forward_refs",
+             "not_indexed", "scope_warnings", "type_drift",
+             "gist_missing", "gist_too_long", "gist_equals_title")
+
+
+def _render_lint_report(report: dict, verbose: bool) -> str:
+    """Render VaultLinter.lint() output in one of two modes.
+
+    The linter always computes EVERY category — `verbose` decides only which
+    sections get printed. The counter line carries all counters in BOTH modes:
+    that was the owner's condition for splitting the report at all (decision 4,
+    2026-08-25) — stylistic findings may leave the body, never the header, or
+    nobody ever sees them rot. Default prints the "mouth" (things actually
+    broken); verbose adds the stylistic buckets that made a live report ~311
+    lines, ~187 of them orphans and weak links.
+    """
+    s = report["summary"]
+    lines = [
+        "# Vault Lint Report",
+        "",
+        f"Total notes: {s['total_notes']}  |  "
+        f"Audited: {s.get('audited_notes', s['total_notes'])}  |  "
+        f"Orphans: {s['orphan_count']}  |  "
+        f"Weak links: {s['weak_link_count']}  |  "
+        f"Broken links: {s['broken_link_count']}  |  "
+        f"Forward refs: {s.get('forward_ref_count', 0)}  |  "
+        f"Not indexed: {s.get('not_indexed_count', 0)}  |  "
+        f"Scope warnings: {s['scope_warning_count']}  |  "
+        f"Type drift: {s['type_drift_count']}  |  "
+        f"Gist missing: {s.get('gist_missing_count', 0)}  |  "
+        f"Gist too long: {s.get('gist_too_long_count', 0)}  |  "
+        f"Gist equals title: {s.get('gist_equals_title_count', 0)}",
+    ]
+
+    if verbose and report.get("orphans"):
+        lines.append(f"\n## Orphans (0 wiki-links) — {s['orphan_count']}")
+        for i in report["orphans"]:
+            lines.append(f"- `{i['path']}` — {i['title']}")
+    if verbose and report.get("weak_links"):
+        lines.append(f"\n## Weak Links (<2 wiki-links) — {s['weak_link_count']}")
+        for i in report["weak_links"]:
+            lines.append(f"- `{i['path']}` — {i['title']} ({i['link_count']} link)")
+    if report.get("broken_links"):
+        lines.append(f"\n## Broken Links — {s['broken_link_count']}")
+        for i in report["broken_links"]:
+            lines.append(f"- `{i['source']}` → [[{i['target']}]] (no matching note)")
+    if verbose and report.get("forward_refs"):
+        lines.append(f"\n## Forward Refs — {s.get('forward_ref_count', 0)}")
+        for i in report["forward_refs"]:
+            lines.append(f"- `{i['source']}` → [[{i['target']}]] (external or not created yet)")
+    if report.get("not_indexed"):
+        lines.append(f"\n## Not Indexed — {s.get('not_indexed_count', 0)}")
+        for i in report["not_indexed"]:
+            lines.append(
+                f"- `{i['path']}` — on disk but absent from the index "
+                f"(unparsable frontmatter? run brain_sync and read `failed`)"
+            )
+    if report.get("scope_warnings"):
+        lines.append(f"\n## Scope Warnings (scope not in whitelist) — {s['scope_warning_count']}")
+        for i in report["scope_warnings"]:
+            lines.append(f"- `{i['path']}` — scope=`{i['scope']}` (see [[reference/scope-taxonomy]])")
+    if report.get("type_drift"):
+        lines.append(f"\n## Type Drift (folder ≠ note_type) — {s['type_drift_count']}")
+        for i in report["type_drift"]:
+            lines.append(
+                f"- `{i['path']}` — type=`{i['actual_type']}`, "
+                f"expected=`{i['expected_type']}` (set `allow_type_mismatch: true` to silence)"
+            )
+    if report.get("gist_missing"):
+        lines.append(f"\n## Gist Missing — {s['gist_missing_count']}")
+        for i in report["gist_missing"]:
+            lines.append(f"- `{i['path']}` — {i['title']}")
+    if verbose and report.get("gist_too_long"):
+        lines.append(f"\n## Gist Too Long (>{GIST_SOFT_LIMIT} chars) — {s['gist_too_long_count']}")
+        for i in report["gist_too_long"]:
+            lines.append(f"- `{i['path']}` — {i['title']} ({i['length']} chars)")
+    if verbose and report.get("gist_equals_title"):
+        lines.append(f"\n## Gist Equals Title — {s['gist_equals_title_count']}")
+        for i in report["gist_equals_title"]:
+            lines.append(f"- `{i['path']}` — {i['title']}")
+
+    if not verbose and any(report.get(k) for k in _LINT_STYLISTIC):
+        lines.append("\nStylistic findings hidden — call brain_lint(verbose=true) to list them.")
+    if not any(report.get(k) for k in _LINT_ALL):
+        lines.append("\nAll notes are well-connected.")
+    return "\n".join(lines)
 
 
 def _write_note_body_unlocked(rel_path: str, new_text: str, op: str, title: str) -> None:
@@ -318,8 +413,15 @@ async def list_tools() -> list[Tool]:
                 },
             },
         }),
-        Tool(name="brain_lint", description="Audit vault: orphans, weak links, broken references, scope warnings, type drift", inputSchema={
-            "type": "object", "properties": {},
+        Tool(name="brain_lint", description="Audit vault: broken references, files on disk missing from the index, scope warnings, type drift, missing gists. Stylistic findings are always counted in the header and listed only with verbose=true.", inputSchema={
+            "type": "object",
+            "properties": {
+                "verbose": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Also list stylistic findings (orphans, weak links, gist too long, gist equals title, forward refs).",
+                },
+            },
         }),
         Tool(
             name="brain_rename",
@@ -731,6 +833,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "updated": len(sync_result.updated),
             "removed": len(sync_result.removed),
             "skipped": sync_result.skipped,
+            # Paths, not a count: a note that failed to parse is invisible in the
+            # vault until somebody is told WHICH file to open (B5.1).
+            "failed": [[rel_path, error] for rel_path, error in sync_result.failed],
             "repaired": repair,
         }
 
@@ -747,69 +852,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "brain_lint":
         report = _linter.lint()
-        s = report["summary"]
-        lines = [
-            f"# Vault Lint Report",
-            f"",
-            f"Total notes: {s['total_notes']}  |  "
-            f"Orphans: {s['orphan_count']}  |  "
-            f"Weak links: {s['weak_link_count']}  |  "
-            f"Broken links: {s['broken_link_count']}  |  "
-            f"Forward refs: {s['forward_ref_count']}  |  "
-            f"Scope warnings: {s['scope_warning_count']}  |  "
-            f"Type drift: {s['type_drift_count']}  |  "
-            f"Gist missing: {s.get('gist_missing_count', 0)}  |  "
-            f"Gist too long: {s.get('gist_too_long_count', 0)}  |  "
-            f"Gist equals title: {s.get('gist_equals_title_count', 0)}",
-        ]
-        if report["orphans"]:
-            lines.append(f"\n## Orphans (0 wiki-links) — {s['orphan_count']}")
-            for i in report["orphans"]:
-                lines.append(f"- `{i['path']}` — {i['title']}")
-        if report["weak_links"]:
-            lines.append(f"\n## Weak Links (<2 wiki-links) — {s['weak_link_count']}")
-            for i in report["weak_links"]:
-                lines.append(f"- `{i['path']}` — {i['title']} ({i['link_count']} link)")
-        if report["broken_links"]:
-            lines.append(f"\n## Broken Links — {s['broken_link_count']}")
-            for i in report["broken_links"]:
-                lines.append(f"- `{i['source']}` → [[{i['target']}]] (no matching note)")
-        if report.get("forward_refs"):
-            lines.append(f"\n## Forward Refs — {s['forward_ref_count']}")
-            for i in report["forward_refs"]:
-                lines.append(f"- `{i['source']}` → [[{i['target']}]] (external or not created yet)")
-        if report["scope_warnings"]:
-            lines.append(f"\n## Scope Warnings (scope not in whitelist) — {s['scope_warning_count']}")
-            for i in report["scope_warnings"]:
-                lines.append(f"- `{i['path']}` — scope=`{i['scope']}` (see [[reference/scope-taxonomy]])")
-        if report.get("type_drift"):
-            lines.append(f"\n## Type Drift (folder ≠ note_type) — {s['type_drift_count']}")
-            for i in report["type_drift"]:
-                lines.append(
-                    f"- `{i['path']}` — type=`{i['actual_type']}`, "
-                    f"expected=`{i['expected_type']}` (set `allow_type_mismatch: true` to silence)"
-                )
-        if report.get("gist_missing"):
-            lines.append(f"\n## Gist Missing — {s['gist_missing_count']}")
-            for i in report["gist_missing"]:
-                lines.append(f"- `{i['path']}` — {i['title']}")
-        if report.get("gist_too_long"):
-            lines.append(f"\n## Gist Too Long (>100 chars) — {s['gist_too_long_count']}")
-            for i in report["gist_too_long"]:
-                lines.append(f"- `{i['path']}` — {i['title']} ({i['length']} chars)")
-        if report.get("gist_equals_title"):
-            lines.append(f"\n## Gist Equals Title — {s['gist_equals_title_count']}")
-            for i in report["gist_equals_title"]:
-                lines.append(f"- `{i['path']}` — {i['title']}")
-        if (not report["orphans"] and not report["weak_links"]
-                and not report["broken_links"] and not report["scope_warnings"]
-                and not report.get("forward_refs")
-                and not report.get("type_drift")
-                and not report.get("gist_missing")
-                and not report.get("gist_too_long")
-                and not report.get("gist_equals_title")):
-            lines.append("\nAll notes are well-connected.")
-        return [TextContent(type="text", text="\n".join(lines))]
+        verbose = bool(arguments.get("verbose", False))
+        return [TextContent(type="text", text=_render_lint_report(report, verbose))]
 
     elif name == "brain_rename":
         from symbiosis_brain.refactor import brain_rename as _brain_rename

@@ -34,8 +34,10 @@ if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
 
-GIST_SOFT_LIMIT = 100  # chars; lint reports >100 as `gist_too_long`, soft warn at write-time
-GIST_HARD_LIMIT = 140  # chars; brain_write rejects gist >140 (Q5 closure 2026-05-14)
+# Re-exported (not re-declared) so existing importers of
+# `validation.GIST_SOFT_LIMIT` keep working — the numbers themselves live in
+# gist_limits, the single source of truth (B-N6).
+from symbiosis_brain.gist_limits import GIST_HARD_LIMIT, GIST_SOFT_LIMIT  # noqa: F401
 MIN_WIKILINKS = 2
 FORWARD_REF_PREFIX = "forward:"
 

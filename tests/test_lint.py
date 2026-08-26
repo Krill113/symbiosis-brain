@@ -106,9 +106,62 @@ class TestVaultLinter:
         linter = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy)
         report = linter.lint()
 
-        # taxonomy file is excluded from audit; only orphan.md + linked.md are counted.
-        assert report["summary"]["total_notes"] == 2
+        # total_notes counts everything in the DB (matches brain_status); the
+        # taxonomy file is excluded from the per-note AUDIT, not from the total.
+        assert report["summary"]["total_notes"] == 3
+        assert report["summary"]["audited_notes"] == 2
         assert report["summary"]["orphan_count"] >= 1
+
+    def test_total_notes_matches_storage_count(self, tmp_vault_with_taxonomy: Path, db_path: Path):
+        """`Total notes` must equal what brain_status prints. It used to be the
+        AUDITED count (taxonomy skipped BEFORE the increment, lint.py:46-48), so
+        the report was permanently one short — and that off-by-one got read as
+        "there is an unreadable note somewhere" for months (B5.2)."""
+        (tmp_vault_with_taxonomy / "wiki" / "a.md").write_text(
+            "---\ntitle: A\ntype: wiki\nscope: global\n---\n\nSee [[B]].\n",
+            encoding="utf-8",
+        )
+        (tmp_vault_with_taxonomy / "wiki" / "b.md").write_text(
+            "---\ntitle: B\ntype: wiki\nscope: global\n---\n\nSee [[A]].\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+        assert report["summary"]["total_notes"] == len(storage.list_notes())
+
+    def test_audited_excludes_taxonomy(self, tmp_vault_with_taxonomy: Path, db_path: Path):
+        """The taxonomy file is still exempt from the per-note rules — it just
+        gets its own counter now instead of quietly eating one off the total."""
+        (tmp_vault_with_taxonomy / "wiki" / "a.md").write_text(
+            "---\ntitle: A\ntype: wiki\nscope: global\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        s = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()["summary"]
+        assert s["audited_notes"] == s["total_notes"] - 1
+
+    def test_not_indexed_lists_disk_only_file(self, tmp_vault_with_taxonomy: Path, db_path: Path):
+        """A note whose YAML does not parse never reaches the DB, and the linter
+        reads ONLY the DB (lint.py:22) — so it was structurally blind to it.
+        not_indexed diffs disk against DB and names the file (B5.2)."""
+        (tmp_vault_with_taxonomy / "wiki" / "ok.md").write_text(
+            "---\ntitle: Ok\ntype: wiki\nscope: global\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        (tmp_vault_with_taxonomy / "wiki" / "unparsable.md").write_text(
+            "---\ntitle: Nope\ngist: Open defect: criteria\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+        assert [i["path"] for i in report["not_indexed"]] == ["wiki/unparsable.md"]
+        assert report["summary"]["not_indexed_count"] == 1
 
     def test_case_insensitive_matching(self, tmp_vault_with_taxonomy: Path, db_path: Path):
         """[[Alpha-Seti]] matches note with stem 'alpha-seti' (case-insensitive)."""

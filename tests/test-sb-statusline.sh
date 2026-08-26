@@ -8,8 +8,17 @@ WRAPPER="$HOOKS/sb-statusline.sh"
 BASE="$HOOKS/sb-base-statusline.sh"
 SESSION_ID="sb-status-$$"
 
+# Own temp dir for the WHOLE file, exported before the first case. The helpers read
+# ${TMPDIR:-${TEMP:-/tmp}}, and on Git-Bash for Windows a bare /tmp IS the live
+# %LOCALAPPDATA%\Temp — the same dir the running sessions use. Pinning /tmp made the
+# last-save case read whatever marker another window had just written (measured:
+# 19 passed / 1 failed with TMPDIR set in the environment, 20 / 0 with it unset), and
+# let the suite scribble over live bridge files on the way.
+SB_WORK="$(mktemp -d)"
+export TMPDIR="$SB_WORK" TEMP="$SB_WORK"
+
 cleanup() {
-  rm -f "/tmp/brain-last-save-pct-${SESSION_ID}"
+  rm -rf "$SB_WORK"
 }
 trap cleanup EXIT
 
@@ -26,7 +35,7 @@ export SYMBIOSIS_BRAIN_SAVE_THRESHOLDS="40,70,90"
 export SYMBIOSIS_BRAIN_RULES_ZONES="30,60,85"
 export SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL="10"
 export SYMBIOSIS_BRAIN_SCOPE="alpha-seti"
-echo "12" > "/tmp/brain-last-save-pct-${SESSION_ID}"
+echo "12" > "$SB_WORK/brain-last-save-pct-${SESSION_ID}"
 out=$(echo "$INPUT" | bash "$LINE" 2>/dev/null)
 
 if [[ "$out" == *"🧠 [Symbiosis-Brain]"* ]]; then t "sb-line emits header" PASS; else t "sb-line emits header" FAIL; fi
@@ -52,10 +61,8 @@ out=$(echo "$INPUT" | SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD="false" bash "$WRAPPER
 if [[ "$out" == *"🧠 [Symbiosis-Brain]"* ]]; then t "wrapper survives user cmd crash" PASS; else t "wrapper survives user cmd crash" FAIL; fi
 
 # ── Stage-0 hygiene ───────────────────────────────────────────────────────────
-# From here on the tests need their own temp dir: they assert on the bridge files
-# the status line writes (context %, rate limits, sync alarm).
-SB_WORK="$(mktemp -d)"
-export TMPDIR="$SB_WORK" TEMP="$SB_WORK"
+# These assert on the bridge files the status line writes (context %, rate limits,
+# sync alarm) — all of them inside $SB_WORK, which is exported at the top of the file.
 SB_SID="sb-bridge-$$"
 SB_JSON="{\"session_id\":\"${SB_SID}\",\"cwd\":\"/x/proj\",\"model\":{\"display_name\":\"Claude Fable 5\"},\"used_percentage\":23,\"five_hour\":{\"used_percentage\":33,\"resets_at\":1787662800},\"seven_day\":{\"used_percentage\":20}}"
 
@@ -135,8 +142,6 @@ elif grep -nE '\|[[:space:]]*(grep|sed|awk|cut|tr|head|wc)[[:space:]]|\$\((grep|
 else
   t "statusline helpers stay fork-free" PASS
 fi
-
-rm -rf "$SB_WORK"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

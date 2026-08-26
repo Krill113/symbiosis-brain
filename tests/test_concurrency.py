@@ -414,3 +414,72 @@ def test_brain_status_exposes_wal_and_index_health(tmp_vault, db_path):
     text = output[0].text
     assert "Vector index in sync: no" in text
     server._storage.close()
+
+
+def _reindex_lockfile(db_path: Path):
+    import hashlib
+    from symbiosis_brain import search as search_mod
+    tag = hashlib.sha256(str(db_path).encode()).hexdigest()[:12]
+    return search_mod.LOCK_DIR / f"sb-reindex-{tag}.lock"
+
+
+def _refuse_unlink_of(monkeypatch, lockfile: Path) -> None:
+    """Make Path.unlink raise PermissionError for exactly one file.
+
+    Reproduces the Windows shape: a live handle (AV, search indexer, a second
+    copy of the process) turns unlink into WinError 32 -> PermissionError, which
+    IS an OSError but NOT a FileNotFoundError."""
+    real_unlink = Path.unlink
+
+    def refusing_unlink(self, *a, **kw):
+        if str(self) == str(lockfile):
+            raise PermissionError(32, "the process cannot access the file")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", refusing_unlink)
+
+
+def test_reindex_lock_exits_cleanly_on_permission_error(tmp_path, monkeypatch):
+    """Releasing our own lock must survive an undeletable lock file.
+
+    Pre-fix the `except FileNotFoundError` in _reindex_lock's finally let the
+    PermissionError escape and kill the caller — on the cold-start path, i.e.
+    the whole MCP server. RED before the fix: the `with` block raises."""
+    import os as _os
+    from symbiosis_brain import search as search_mod
+
+    db_path = tmp_path / "brain.db"
+    lockfile = _reindex_lockfile(db_path)
+    lockfile.unlink(missing_ok=True)
+    _refuse_unlink_of(monkeypatch, lockfile)
+    try:
+        ran = False
+        with search_mod._reindex_lock(db_path):
+            ran = True
+        assert ran, "the guarded body must have run"
+    finally:
+        # Path.unlink is still patched here — go around it.
+        if _os.path.exists(lockfile):
+            _os.remove(lockfile)
+
+
+def test_lock_cleanup_does_not_mask_original_exception(tmp_path, monkeypatch):
+    """A failing cleanup must never replace the caller's exception.
+
+    Pre-fix the PermissionError raised inside `finally` shadowed whatever the
+    body raised, so the real cause never reached the log. RED before the fix:
+    pytest.raises(RuntimeError) sees a PermissionError instead."""
+    import os as _os
+    from symbiosis_brain import search as search_mod
+
+    db_path = tmp_path / "brain.db"
+    lockfile = _reindex_lockfile(db_path)
+    lockfile.unlink(missing_ok=True)
+    _refuse_unlink_of(monkeypatch, lockfile)
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            with search_mod._reindex_lock(db_path):
+                raise RuntimeError("boom")
+    finally:
+        if _os.path.exists(lockfile):
+            _os.remove(lockfile)

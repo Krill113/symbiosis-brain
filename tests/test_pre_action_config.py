@@ -118,3 +118,24 @@ def test_routing_local_path_under_vault(tmp_path):
     assert routing_local_path(vault) == vault / "tool-routing.local.json"
     assert routing_default_path().parent.name == "data"
     assert routing_default_path().parent.parent.name == "symbiosis_brain"
+
+
+def test_debug_log_path_honors_env_override(tmp_path, monkeypatch):
+    """pytest must never append to the user's live brain-hook-debug.log (A-N3).
+    An absolute SYMBIOSIS_BRAIN_DEBUG_LOG wins over the TMPDIR-derived default;
+    with the variable unset the old behaviour is kept byte for byte."""
+    from symbiosis_brain.pre_action_config import _debug_log, _debug_log_path
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    target = tmp_path / "sub" / "custom-debug.log"
+    target.parent.mkdir()
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEBUG_LOG", str(target))
+
+    assert _debug_log_path() == target
+    _debug_log("hello from the test")
+    assert "hello from the test" in target.read_text(encoding="utf-8")
+    assert not (tmp_path / "brain-hook-debug.log").exists()
+
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_DEBUG_LOG")
+    assert _debug_log_path() == tmp_path / "brain-hook-debug.log"

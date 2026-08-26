@@ -314,3 +314,85 @@ def test_setup_logging_falls_back_on_bad_level(tmp_vault, monkeypatch):
         for h in list(server_mod.logger.handlers):
             server_mod.logger.removeHandler(h)
             h.close()
+
+
+def test_has_index_delta_false_when_clean(engine):
+    """No missing rows, no orphan rows -> no delta.
+
+    Guards the other direction of the new probe: if it reported drift on a
+    healthy index, every cold start would drag repair_index (and its
+    cross-process lock) in for nothing."""
+    storage, search = engine
+    assert search.is_index_dirty() is False
+    assert search.has_index_delta() is False
+
+
+def test_balanced_drift_is_detected(engine):
+    """1 missing + 1 orphan: the COUNTS still match, so is_index_dirty() calls
+    the index healthy and the startup safety net (server.py:147) never fires —
+    the drift then survives until somebody runs brain_sync by hand. RED before
+    SearchEngine.has_index_delta exists."""
+    storage, search = engine
+    # missing=1: note n1 exists, its vector row does not.
+    storage._conn.execute("DELETE FROM notes_vec WHERE path='wiki/n1.md'")
+    # orphan=1: note n2 is gone, its vector row stays.
+    storage._conn.execute("DELETE FROM notes WHERE path='wiki/n2.md'")
+    storage._conn.commit()
+
+    assert _counts(storage) == (2, 2), "counts must be balanced for this test to mean anything"
+    assert search.is_index_dirty() is False
+    assert search.has_index_delta() is True
+
+
+def test_startup_repairs_balanced_drift(tmp_vault: Path, monkeypatch):
+    """End-to-end for B6(a): _init must repair a balanced drift, not walk past it.
+
+    The drift is built so that sync_all() cannot paper over it:
+      * n0 keeps its file (hash unchanged -> sync skips it) but loses its vector row;
+      * n2 loses BOTH its file and its note row, so sync sees nothing to remove,
+        while its vector row survives as an orphan.
+    notes == notes_vec == 2 the whole time, which is exactly what the old
+    count-gate mistook for a healthy index."""
+    monkeypatch.setattr("symbiosis_brain.search._embed", _fake_embed)
+    from symbiosis_brain import server
+
+    for i in range(3):
+        (tmp_vault / "wiki" / f"n{i}.md").write_text(
+            f"---\ntitle: Note {i}\ntype: wiki\nscope: global\ntags: []\n---\n\nBody {i}.\n",
+            encoding="utf-8",
+        )
+    server._init(tmp_vault)
+    server._storage.close()
+    for attr in ("_storage", "_search", "_sync", "_graph", "_temporal",
+                 "_linter", "_vault_path"):
+        setattr(server, attr, None)
+
+    s = Storage(tmp_vault / ".index" / "brain.db")
+    se = SearchEngine(s)
+    se.delete_vec("wiki/n0.md")
+    s._conn.execute("DELETE FROM notes WHERE path='wiki/n2.md'")
+    s._conn.commit()
+    assert _counts(s) == (2, 2)
+    s.close()
+    (tmp_vault / "wiki" / "n2.md").unlink()
+
+    call_count = {"repair_index": 0}
+    orig_repair = SearchEngine.repair_index
+
+    def counting_repair(self, *a, **kw):
+        call_count["repair_index"] += 1
+        return orig_repair(self, *a, **kw)
+
+    monkeypatch.setattr(SearchEngine, "repair_index", counting_repair)
+    try:
+        server._init(tmp_vault)
+        assert call_count["repair_index"] == 1, \
+            "balanced drift must reach repair_index from the startup safety net"
+        assert server._search.has_index_delta() is False
+        assert _counts(server._storage) == (2, 2)
+    finally:
+        if server._storage is not None:
+            server._storage.close()
+        for attr in ("_storage", "_search", "_sync", "_graph", "_temporal",
+                     "_linter", "_vault_path"):
+            setattr(server, attr, None)

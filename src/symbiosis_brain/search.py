@@ -103,12 +103,24 @@ def _get_embedder():
                 age = time.time() - lockfile.stat().st_mtime
             except FileNotFoundError:
                 continue
+            except OSError:
+                # Unreadable rather than gone: on Windows a live handle raises
+                # PermissionError (WinError 32), which IS an OSError but NOT a
+                # FileNotFoundError — pre-fix it escaped and killed the cold
+                # start. Treat the lock as fresh and fall through to the wait.
+                # NEVER `continue` here: a persistent error would busy-loop.
+                logger.warning("fastembed lock: cannot stat lock file", exc_info=True)
+                age = 0.0
             if age > _FASTEMBED_LOCK_TIMEOUT_S:
                 try:
                     lockfile.unlink()
+                    continue
                 except FileNotFoundError:
-                    pass
-                continue
+                    continue
+                except OSError:
+                    # Undeletable, not absent — same Windows shape as above.
+                    # Fall through to the wait instead of retrying immediately.
+                    logger.warning("fastembed lock: cannot remove stale lock", exc_info=True)
             if time.time() >= deadline:
                 # Lock held too long — give up, attempt unguarded init.
                 # Worst case: parallel cold-starts compete; not a hang.
@@ -123,7 +135,10 @@ def _get_embedder():
         if acquired:
             try:
                 lockfile.unlink()
-            except FileNotFoundError:
+            except OSError:
+                # Cleanup is best-effort: a stale file is broken later by the
+                # staleness check, but an exception here would replace whatever
+                # the guarded body raised.
                 pass
     return _embedder
 
@@ -154,6 +169,14 @@ def _reindex_lock(db_path):
                 mtime = lockfile.stat().st_mtime
             except FileNotFoundError:
                 continue
+            except OSError:
+                # Unreadable rather than gone — a live handle on Windows raises
+                # PermissionError, an OSError but not a FileNotFoundError, and it
+                # used to escape this loop and kill the caller mid-startup. Treat
+                # the lock as fresh and fall through to the wait below; never
+                # `continue` here, or a persistent error busy-loops the thread.
+                logger.warning("reindex lock: cannot stat lock file", exc_info=True)
+                mtime = time.time()
             if time.time() - mtime > _REINDEX_LOCK_STALE_S:
                 # Re-stat immediately before unlinking: if the mtime moved
                 # since we judged staleness, another process already broke
@@ -165,9 +188,12 @@ def _reindex_lock(db_path):
                         logger.warning(
                             "reindex lock: broke stale lock (age > %ds)",
                             _REINDEX_LOCK_STALE_S)
+                    continue
                 except FileNotFoundError:
-                    pass
-                continue
+                    continue
+                except OSError:
+                    # Undeletable (live handle). Fall through to the wait.
+                    logger.warning("reindex lock: cannot break stale lock", exc_info=True)
             if time.time() >= deadline:
                 break
             time.sleep(0.5)
@@ -181,7 +207,9 @@ def _reindex_lock(db_path):
         if acquired:
             try:
                 lockfile.unlink()
-            except FileNotFoundError:
+            except OSError:
+                # Best-effort release: an exception raised inside `finally`
+                # would replace the exception the guarded body raised (B6c).
                 pass
 
 
@@ -335,6 +363,37 @@ class SearchEngine:
         n = self.storage._conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
         v = self.storage._conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0]
         return n != v
+
+    def has_index_delta(self) -> bool:
+        """True if any note lacks a notes_vec row OR any notes_vec row has no note.
+
+        Two cheap `SELECT 1 ... LEFT JOIN ... WHERE ... IS NULL LIMIT 1` probes —
+        the same joins repair_index() computes inside its lock. Unlike
+        is_index_dirty()'s bare COUNT comparison this catches BALANCED drift
+        (an equal number of missing and orphaned rows — the classic residue of a
+        historical rename), which repair_index() is built to fix but the old
+        count gate never let it see (B6a).
+
+        Never raises: any DB error -> False. This runs on the cold-start path,
+        where a failing drift probe must not take the whole server down with it.
+        """
+        if not self._vec_enabled:
+            return False
+        try:
+            missing = self.storage._conn.execute(
+                "SELECT 1 FROM notes n LEFT JOIN notes_vec v ON v.path = n.path"
+                " WHERE v.path IS NULL LIMIT 1"
+            ).fetchone()
+            if missing is not None:
+                return True
+            orphan = self.storage._conn.execute(
+                "SELECT 1 FROM notes_vec v LEFT JOIN notes n ON n.path = v.path"
+                " WHERE n.path IS NULL LIMIT 1"
+            ).fetchone()
+            return orphan is not None
+        except Exception:
+            logger.warning("has_index_delta: probe failed, assuming clean", exc_info=True)
+            return False
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:

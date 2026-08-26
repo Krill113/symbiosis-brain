@@ -15,7 +15,7 @@ from mcp.types import TextContent, Tool
 from symbiosis_brain.graph import GraphTraverser
 from symbiosis_brain.search import SearchEngine, _reindex_lock
 from symbiosis_brain.storage import Storage
-from symbiosis_brain.sync import VAULT_DIRS, VaultSync
+from symbiosis_brain.sync import VAULT_DIRS, SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
 from symbiosis_brain.markdown_parser import parse_note, render_note
 from symbiosis_brain.lint import VaultLinter
@@ -77,6 +77,21 @@ _linter: VaultLinter | None = None
 _ready: asyncio.Event | None = None
 
 
+def _apply_targeted_index(sync_result: SyncResult) -> None:
+    """Apply one sync diff to the vector index: drop vectors of removed notes,
+    (re)embed added and updated ones.
+
+    Single implementation shared by _init and the brain_sync tool — the loop used
+    to be copy-pasted in both (B6b) with nothing keeping the copies in step."""
+    for path in sync_result.removed:
+        _search.delete_vec(path)
+    for path in sync_result.added + sync_result.updated:
+        note = _storage.get_note(path)
+        if note is None:
+            continue
+        _search.index_note(path, f"{note['title']}\n{note['content']}")
+
+
 def _init(vault_path: Path):
     global _storage, _search, _sync, _graph, _temporal, _vault_path, _linter
     _vault_path = vault_path
@@ -128,23 +143,17 @@ def _init(vault_path: Path):
         # fall through to the targeted path below.
 
     # Targeted incremental indexing — only the actual diff. Note: this MUST
-    # run before the count-drift safety net below, otherwise the safety net
+    # run before the drift safety net below, otherwise the safety net
     # would fire after every sync that added notes (notes table briefly has
     # more rows than notes_vec until index_note runs).
-    for path in sync_result.removed:
-        _search.delete_vec(path)
-    for path in sync_result.added + sync_result.updated:
-        note = _storage.get_note(path)
-        if note is None:
-            continue
-        _search.index_note(path, f"{note['title']}\n{note['content']}")
+    _apply_targeted_index(sync_result)
 
     # Final safety net: if drift remains after targeted updates, repair only
     # the delta. NEVER index_all() here — a 1-row drift used to trigger a
     # full-corpus re-embed (~500 CPU-s / 11 GB, see plan 2026-08-10). Drift
     # here is routine, not exceptional: the __main__ hook paths sync_all()
     # without vec maintenance by design.
-    if _search.is_index_dirty():
+    if _search.has_index_delta():
         logger.warning("notes_vec inconsistent after targeted updates; repairing")
         repair = _search.repair_index()
         logger.info("Vector index repaired: embedded=%d orphans_deleted=%d",
@@ -715,13 +724,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 _search.index_all()
             repair = {"embedded": len(_storage.list_notes()), "orphans_deleted": 0}
         else:
-            for path in sync_result.removed:
-                _search.delete_vec(path)
-            for path in sync_result.added + sync_result.updated:
-                note = _storage.get_note(path)
-                if note is None:
-                    continue
-                _search.index_note(path, f"{note['title']}\n{note['content']}")
+            _apply_targeted_index(sync_result)
             repair = _search.repair_index()
         summary = {
             "added": len(sync_result.added),

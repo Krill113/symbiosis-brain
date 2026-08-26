@@ -236,7 +236,7 @@ def _run_prewarm(argv: list[str]) -> int:
     cold-start (~25s → ~6-8s observed). Subprocess Python heap is discarded —
     this only warms file-level caches, not the embedder object itself.
 
-    Silent on success; logs to <TMPDIR>/brain-hook-debug.log on unexpected
+    Silent on success; logs to _debug_log_path() on unexpected
     error so we don't lose visibility."""
     import argparse
     import datetime
@@ -250,8 +250,8 @@ def _run_prewarm(argv: list[str]) -> int:
     if not vault.exists():
         return 0  # graceful no-op for missing vault
 
-    from symbiosis_brain.pre_action_config import _tmp_dir
-    debug = _tmp_dir() / "brain-hook-debug.log"
+    from symbiosis_brain.pre_action_config import _debug_log_path
+    debug = _debug_log_path()
 
     try:
         # Triggers fastembed import + onnx file IO into page cache.

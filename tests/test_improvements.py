@@ -65,3 +65,45 @@ class TestCountNotes:
         storage.upsert_note("w/a.md", "V1", "old", "wiki", "global")
         storage.upsert_note("w/a.md", "V2", "new", "wiki", "global")
         assert storage.count_notes() == 1
+
+
+class TestFrontmatterDateBinding:
+    def test_no_deprecation_warnings_on_rotate_path(self, db_path: Path):
+        """brain_rotate_handoffs writes `valid_from: <date>` UNQUOTED into every
+        archive note (rotation.py:238). Re-reading that note and upserting it is
+        the exact chain behind the suite's six DeprecationWarnings:
+        YAML -> datetime.date -> sqlite3's default date adapter. Asserted here
+        with an explicit filter so the test stands on its own, independent of
+        pyproject's filterwarnings."""
+        import warnings
+
+        from symbiosis_brain.markdown_parser import parse_note
+
+        archive_note = (
+            "---\ntitle: Handoff 2026-08-25\ntype: project\nscope: demo\n"
+            "gist: something shipped\n"
+            "valid_from: 2026-08-25\n"
+            "tags: [handoff, demo]\n"
+            "---\n\n# Handoff 2026-08-25\n\nBody.\n"
+        )
+        storage = Storage(db_path)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                parsed = parse_note(archive_note)
+                assert isinstance(parsed["valid_from"], str)
+                storage.upsert_note(
+                    path="archive/handoffs/demo-2026-08-25.md",
+                    title=parsed["title"],
+                    content=parsed["body"],
+                    note_type=parsed["type"],
+                    scope=parsed["scope"],
+                    tags=parsed["tags"],
+                    frontmatter=parsed["extra"],
+                    valid_from=parsed["valid_from"],
+                    valid_to=parsed["valid_to"],
+                )
+            row = storage.get_note("archive/handoffs/demo-2026-08-25.md")
+            assert row["valid_from"] == "2026-08-25"
+        finally:
+            storage.close()

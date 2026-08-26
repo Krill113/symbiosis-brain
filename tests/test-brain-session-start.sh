@@ -12,7 +12,25 @@ SB_TEST_TMP=$(mktemp -d)
 export TMPDIR="$SB_TEST_TMP" TEMP="$SB_TEST_TMP"
 trap 'rm -rf "$SB_TEST_TMP"' EXIT
 
-HOOK="$HOME/.claude/hooks/brain-session-start.sh"
+# A no-op `claude` on PATH for the WHOLE file. The hook primes its MCP roster by
+# running `claude mcp list` in a detached subshell, and every run_hook below is a
+# SessionStart payload — so on a machine where the real CLI is installed the suite
+# spawned a fresh headless Claude per case. Each of those fires SessionStart itself
+# and opens the LIVE brain.db: the vault index log showed bursts of starts with
+# different pids every 3-5 seconds, dozens of concurrent writers against one SQLite
+# file. Harmless on a Linux runner (no CLI on PATH), destructive on the owner's box.
+# The two cases that need a talking stub install their own further down.
+mkdir -p "$SB_TEST_TMP/bin"
+printf '#!/bin/sh
+exit 0
+' > "$SB_TEST_TMP/bin/claude"
+chmod +x "$SB_TEST_TMP/bin/claude"
+export PATH="$SB_TEST_TMP/bin:$PATH"
+
+# The deployed hook is what SessionStart actually runs, so that is what these assert
+# on; SB_HOOK points the suite at another copy (a worktree, a candidate build)
+# without touching ~/.claude.
+HOOK="${SB_HOOK:-$HOME/.claude/hooks/brain-session-start.sh}"
 # Repo source-of-truth (used for sourcing normalize_scope helper in tests).
 HOOK_SOURCE="${HOOK_SOURCE:-hooks/brain-session-start.sh}"
 VAULT="$SB_TEST_TMP/sb-test-vault-$$"
@@ -225,10 +243,12 @@ test_session_start_cleans_rules_flags
 test_session_start_emits_tool_roster
 
 # === Stage-4 routing: roster prime + route-file GC + counter exclusion ===
-# NOTE: these target the DEPLOYED hook ($HOME/.claude/hooks/brain-session-start.sh).
-# Until a go-live redeploy publishes the Stage-4 bash edits, the roster-prime and
-# stale-GC assertions are RED-BY-DESIGN. The counter-survives assertion is GREEN
-# already (the per-session rm-block never listed brain-route-turn-<sid>).
+# NOTE: these target the DEPLOYED hook ($HOME/.claude/hooks/brain-session-start.sh,
+# or $SB_HOOK). CI installs the hooks in its `setup claude-code` step before running
+# the suite, so they are green there. Locally they stay RED until the branch is
+# published with `install --repair` — the deployed copy can be months older than the
+# working tree. The counter-survives assertion is green either way (the per-session
+# rm-block never listed brain-route-turn-<sid>).
 
 # (1) SessionStart primes the MCP roster cache in a detached subshell: with a
 # stubbed `claude` on PATH it must write brain-mcp-roster-<sid> (atomic mv).

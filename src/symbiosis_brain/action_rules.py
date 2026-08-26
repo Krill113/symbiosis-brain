@@ -26,6 +26,19 @@ dropped rather than compiled: an unvalidated pattern that happens to be
 overbroad would fire on unrelated commands, and because the hook exits on
 the first hit, would silently suppress every other rule (and the normal
 python recall) behind it.
+
+Validation is RULE-level, not pattern-level. Every pattern of one tool side
+goes into ONE temp ``.re`` file and the side is validated as their union —
+exactly the semantics ``grep -Ef`` already gives at runtime, where the hook
+fires when ANY row of the rule matches. Per-pattern validation used to demand
+that EACH regex match EVERY vector, so a rule written as two honest triggers
+was dropped and the only way to ship it was a hand-fused alternation with the
+command anchor copy-pasted into each branch. A pattern that catches none of
+its side's ``test_match`` vectors is reported in ``meta.json`` under
+``unmatched_patterns`` — a warning, not a drop. Dropping stays reserved for
+real failures: a ``test_match`` vector the union misses, a ``test_nomatch``
+vector the union hits, missing vectors, and structural errors (which stay
+per-pattern: a tab/newline/CR corrupts the TSV regardless of its siblings).
 """
 from __future__ import annotations
 
@@ -144,16 +157,28 @@ def _grep_matches_file(grep_path: str, pattern_file: str, command: str) -> Optio
     return None  # 2+ = grep-side error (e.g. malformed regex)
 
 
-def _validate_pattern(
-    grep_path: str, pattern: str, matches: list[str], nomatches: list[str]
+def _validate_side(
+    grep_path: str, patterns: list[str], matches: list[str], nomatches: list[str]
 ) -> tuple[bool, str]:
+    """Validate ONE tool side of a rule as the UNION of its patterns.
+
+    All patterns go into a single temp ``.re`` file (one per line) and are fed
+    to the SAME ``grep -Ef`` the hook runs, so "the side matched" means exactly
+    what it means at runtime: any of the rule's patterns matched. Contract:
+    every ``test_match`` vector must be caught by the union, no ``test_nomatch``
+    vector may be. Returns ``(ok, reason)``.
+
+    Replaces the old ``_validate_pattern``, which demanded that EACH pattern
+    match EVERY vector. Side effect: grep forks for a side with N patterns and
+    M+K vectors drop from ``N*(M+K)`` to ``M+K``.
+    """
     import os
     import tempfile
 
     fd, tmp_name = tempfile.mkstemp(suffix=".re")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(pattern + "\n")
+            f.write("".join(p + "\n" for p in patterns))
         for cmd in matches:
             result = _grep_matches_file(grep_path, tmp_name, cmd)
             if result is None:
@@ -176,6 +201,51 @@ def _validate_pattern(
     return True, ""
 
 
+def _dead_patterns(
+    grep_path: str, patterns: list[str], matches: list[str]
+) -> list[str]:
+    """Patterns of a side that caught NO ``test_match`` vector at all.
+
+    Called ONLY after ``_validate_side`` succeeded, so the union is known good
+    and this is pure diagnostics: without it, union validation would hide a
+    typo in the second trigger behind a working first one — the rule compiles
+    while half its patterns are dead.
+
+    A single-pattern side is skipped outright: it passed the union check
+    against a non-empty vector list, so it cannot be dead, and skipping keeps
+    the common case (every live rule today) at zero extra forks.
+
+    Never raises. A grep invocation error counts as "caught it" — we do not
+    warn about a pattern we could not test.
+    """
+    if len(patterns) < 2:
+        return []
+    import os
+    import tempfile
+
+    dead: list[str] = []
+    for pattern in patterns:
+        fd, tmp_name = tempfile.mkstemp(suffix=".re")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(pattern + "\n")
+            caught = False
+            for cmd in matches:
+                if _grep_matches_file(grep_path, tmp_name, cmd) is not False:
+                    caught = True
+                    break
+            if not caught:
+                dead.append(pattern)
+        except OSError:
+            pass  # cannot test this pattern -> do not warn about it
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+    return dead
+
+
 def _escape_hint(hint: str) -> str:
     """Flatten to one line and JSON-escape, ready to paste straight inside
     a JSON string literal (the bash hook does no further processing)."""
@@ -196,18 +266,22 @@ def _load_merged_raw(vault: Path) -> list[dict]:
 
 def _compile_one_rule(
     raw: dict[str, Any], grep_path: Optional[str]
-) -> tuple[list[tuple[str, str, str]], Optional[str]]:
-    """Returns (rows, skip_reason). rows is a list of (toolkey, regex, id)
-    for each tool side that validated; skip_reason is set (rows empty) when
-    the whole rule is dropped."""
+) -> tuple[list[tuple[str, str, str]], Optional[str], list[dict[str, str]]]:
+    """Returns (rows, skip_reason, unmatched).
+
+    ``rows`` is a list of (toolkey, regex, id) for each tool side that
+    validated; ``skip_reason`` is set (rows empty) when the whole rule is
+    dropped; ``unmatched`` lists ``{"id","tool","re"}`` for every pattern that
+    caught none of its side's ``test_match`` vectors — a warning surfaced in
+    ``meta.json``, never a reason to drop."""
     rid = raw.get("id")
     if not rid or not isinstance(rid, str):
-        return [], "missing or invalid id"
+        return [], "missing or invalid id", []
     if not _ID_RE.match(rid):
-        return [], "id contains characters outside [A-Za-z0-9._-]"
+        return [], "id contains characters outside [A-Za-z0-9._-]", []
     cmd_triggers = raw.get("command_triggers")
     if not isinstance(cmd_triggers, dict):
-        return [], "no command_triggers"
+        return [], "no command_triggers", []
     test_match = raw.get("test_match") or {}
     test_nomatch = raw.get("test_nomatch") or {}
     if not isinstance(test_match, dict):
@@ -216,40 +290,52 @@ def _compile_one_rule(
         test_nomatch = {}
 
     if grep_path is None:
-        return [], "grep unavailable on PATH — cannot validate ERE rules"
+        return [], "grep unavailable on PATH — cannot validate ERE rules", []
 
     rows: list[tuple[str, str, str]] = []
+    unmatched: list[dict[str, str]] = []
     for toolkey in _TOOL_KEYS:
         trigs = cmd_triggers.get(toolkey)
         if not trigs:
             continue
+        # Structural checks stay PER PATTERN and still drop the whole rule: a
+        # tab/newline/CR corrupts the TSV no matter what its siblings match,
+        # and a trigger without 're' is a malformed catalog entry. They run
+        # BEFORE any grep so the reported reason names the real defect.
+        patterns: list[str] = []
         for trig in trigs:
             pattern = trig.get("re") if isinstance(trig, dict) else None
             if not pattern or not isinstance(pattern, str):
-                return [], f"{toolkey}: trigger missing 're'"
+                return [], f"{toolkey}: trigger missing 're'", []
             if any(c in pattern for c in ("\t", "\n", "\r")):
-                return [], f"{toolkey}: regex contains a tab/newline/CR character"
-            match_vecs = list(test_match.get(toolkey) or [])
-            if not match_vecs:
-                # Docstring promise: a rule with no test vectors is unvalidated
-                # and MUST be skipped — an empty test_match would otherwise
-                # let `_validate_pattern`'s empty loop vacuously "pass" and
-                # compile an unreviewed (possibly overbroad) pattern straight
-                # into the hook's grep -f, silently swallowing every hit
-                # below it (the hook exits after the first match).
-                return [], f"{toolkey}: no test_match vectors — rule not validated"
-            ok, reason = _validate_pattern(
-                grep_path,
-                pattern,
-                match_vecs,
-                list(test_nomatch.get(toolkey) or []),
-            )
-            if not ok:
-                return [], f"{toolkey}: {reason}"
+                return [], f"{toolkey}: regex contains a tab/newline/CR character", []
+            patterns.append(pattern)
+        if not patterns:
+            continue
+        match_vecs = list(test_match.get(toolkey) or [])
+        if not match_vecs:
+            # Docstring promise: a rule with no test vectors is unvalidated
+            # and MUST be skipped — an empty test_match would otherwise let
+            # `_validate_side`'s empty loop vacuously "pass" and compile an
+            # unreviewed (possibly overbroad) pattern straight into the hook's
+            # grep -f, silently swallowing every hit below it (the hook exits
+            # after the first match).
+            return [], f"{toolkey}: no test_match vectors — rule not validated", []
+        ok, reason = _validate_side(
+            grep_path,
+            patterns,
+            match_vecs,
+            list(test_nomatch.get(toolkey) or []),
+        )
+        if not ok:
+            return [], f"{toolkey}: {reason}", []
+        for pattern in _dead_patterns(grep_path, patterns, match_vecs):
+            unmatched.append({"id": rid, "tool": toolkey, "re": pattern})
+        for pattern in patterns:
             rows.append((toolkey, pattern, rid))
     if not rows:
-        return [], "command_triggers has no bash/powershell entries"
-    return rows, None
+        return [], "command_triggers has no bash/powershell entries", []
+    return rows, None, unmatched
 
 
 def compile_action_rules(vault: Path) -> Path:
@@ -263,6 +349,10 @@ def compile_action_rules(vault: Path) -> Path:
 
     rules_total = 0
     skipped: list[dict[str, str]] = []
+    # Dead patterns across all rules: {"id","tool","re"}. Always emitted (empty
+    # list when nothing is dead) so a reader never has to tell "no dead
+    # patterns" apart from "compiled by a build that predates the key".
+    unmatched_patterns: list[dict[str, str]] = []
     # (priority, id, toolkey, regex, hint_escaped)
     compiled_rows: list[tuple[int, str, str, str, str]] = []
 
@@ -289,13 +379,14 @@ def compile_action_rules(vault: Path) -> Path:
         hint_escaped = _escape_hint(raw.get("hint", ""))
 
         try:
-            rows, skip_reason = _compile_one_rule(raw, grep_path)
+            rows, skip_reason, unmatched = _compile_one_rule(raw, grep_path)
         except Exception as e:  # fail-open: never let one bad rule abort the run
-            rows, skip_reason = [], f"unexpected error: {e}"
+            rows, skip_reason, unmatched = [], f"unexpected error: {e}", []
 
         if skip_reason is not None:
             skipped.append({"id": str(rid), "reason": skip_reason})
             continue
+        unmatched_patterns.extend(unmatched)
         for toolkey, pattern, rule_id in rows:
             compiled_rows.append((priority, rule_id, toolkey, pattern, hint_escaped))
 
@@ -364,6 +455,7 @@ def compile_action_rules(vault: Path) -> Path:
         "rules_total": rules_total,
         "rules_compiled": len(compiled_ids),
         "skipped": skipped,
+        "unmatched_patterns": unmatched_patterns,
     }
     try:
         atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")

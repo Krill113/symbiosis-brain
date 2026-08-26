@@ -38,8 +38,7 @@ Ask each question against THIS session. Note only concrete moments.
 2. Did the user correct me the same way twice? Corrections are first-class signals,
    not just memory material.
 3. Did I write the same snippet or command sequence three times, with variations?
-4. Do 3+ tool calls always travel together? That is a bundle («связка») waiting to
-   be named.
+4. Do 3+ tool calls always travel together? That is a bundle waiting to be named.
 5. What took 3+ calls that should take one?
 6. Did I re-derive something a note, skill, or script already holds? Then the fix is
    a **trigger**, not a new artifact. If several notes cover one theme (a cluster —
@@ -67,10 +66,10 @@ These become self-imposed constraints that bite later when the environment chang
 | repeated mistake, judgment-shaped | patch the existing `feedback`/`pattern` note (new note only if none fits) | 1 |
 | repeated action, no judgment inside | script — `references/automation-recipe.md` | 1 |
 | repeated action needing judgment | skill draft — `references/automation-recipe.md` | 2 |
-| bigger than a script or a skill («тянет на приложение») | proposal to the owner | 3 |
+| bigger than a script or a skill (it is really an application) | proposal to the owner | 3 |
 
 - **Tier 1 — do it, then report.** Small, reversible, obviously useful. The owner
-  hears «сделано X для Y, лежит Z, триггер T» — enough to stay informed and to
+  hears `made X for Y, lives at Z, trigger T` — enough to stay informed and to
   correct you.
 - **Tier 2 — draft, show, install on OK.** Skills go through the TDD cycle
   (baseline run without the skill, then the same prompt with it) before anything is

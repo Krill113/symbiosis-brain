@@ -114,10 +114,11 @@ flowchart TD
 
 **Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill), `brain-autolearn` (repetition → action rule / script / skill).
 
-**Hooks (6 events, all bash):**
+**Hooks (7 events, all bash):**
 - `SessionStart` — scope resolution, server prewarm, MCP roster cache
 - `UserPromptSubmit` — hybrid recall + tool-route hints, injected as `[memory: N hits]` / `[route]`
 - `PreToolUse` — pre-action recall before Edit / Write / Task / MultiEdit / NotebookEdit, plus instant action-rule warnings on risky Bash / PowerShell commands
+- `PostToolUse` — records the context % at the moment memory was written, so the `Stop` delta-guard measures growth since the last save
 - `Stop` — context-threshold save reminder (default zones 25 / 35 / 45%)
 - `PreCompact` — last-chance save before `/compact`
 - `SessionEnd` — vault git sync

@@ -18,7 +18,7 @@ helper produces silence and exit 0, never a blocked tool call or a blocked promp
 | **brain-save-marker.sh** | PostToolUse (`brain_write\|brain_append\|brain_patch`) | Record the current context % as the last-save baseline for the Stop-hook delta-guard |
 | **brain-sync.sh** | SessionEnd | Commit the vault, `pull --rebase --autostash`, push; leave an alarm marker instead of resolving a conflict |
 | **sb-statusline.sh** | statusLine | Wrapper: exports the data bridges, then renders row 1 (yours or ours) and row 2 (Symbiosis Brain state) |
-| **sb-hooklib.sh** | *(sourced)* | `sb_tmp_dir` / `sb_session_id` — one fork-free parser shared by every hook and both status rows |
+| **sb-hooklib.sh** | *(sourced)* | `sb_tmp_dir` / `sb_session_id` — the fork-free parser sourced by `brain-session-start.sh`, `brain-save-marker.sh` and the three status-line scripts (`brain-save-trigger.sh` / `brain-pre-action-trigger.sh` still parse with grep+sed) |
 | **sb-export.sh** | *(sourced)* | The single export point for the two status-line bridges |
 | **sb-line.sh** | *(sourced)* | Row 2: scope, context %, save thresholds, rules zones, sync alarm |
 | **sb-base-statusline.sh** | *(sourced)* | Default row 1 — replaced when you set your own status line |

@@ -24,6 +24,14 @@ def _strip_anchor(p: str) -> str:
 # scope prefix iff it matches: <word>:<optional space><path-with-slash-or-extension>.
 _SCOPE_PREFIX_RE = _re.compile(r"^[a-z][a-z0-9_-]*:\s?(?=\S)", _re.IGNORECASE)
 
+# An EXTERNAL namespace is machine-written and never carries a space: a skill or tool
+# id like [[superpowers:writing-skills]]. Prose does: [[Q5: closure]], [[TODO: write
+# this up]] — and against the space-tolerant pattern above every one of those read as
+# "namespace q5 / todo, not in the taxonomy, therefore external", which silently
+# turned the hard block on a broken link into no diagnostic at all. The `forward:`
+# prefix is ours and keeps the space-tolerant spelling; nothing else does.
+_EXTERNAL_NS_RE = _re.compile(r"^[a-z][a-z0-9_-]*:(?=\S)", _re.IGNORECASE)
+
 
 def _strip_scope_prefix(p: str) -> str:
     """Remove '<scope>:' or '<scope>: ' prefix from a wiki-link target.
@@ -42,11 +50,14 @@ _FORWARD_PREFIX_NAME = "forward"
 def is_external_ref(target: str, valid_scopes: frozenset[str] | None = None) -> bool:
     """True when [[target]] points OUTSIDE the vault and need not resolve.
 
-    External refs are: (1) the `forward:` prefix — always; (2) `<ns>:...` where `ns`
-    is not in the scope-taxonomy whitelist (e.g. `[[superpowers:writing-skills]]` —
-    a skill name, not a note). valid_scopes=None → only `forward:` counts as external
-    (today's behaviour; that is how we call it when the taxonomy is unavailable).
-    A target with no `<word>:` prefix is always False, so a plain typo still blocks.
+    External refs are: (1) the `forward:` prefix — always, with or without a space
+    after the colon; (2) `<ns>:<no space><path>` where `ns` is not in the
+    scope-taxonomy whitelist (e.g. `[[superpowers:writing-skills]]` — a skill name,
+    not a note). valid_scopes=None → only `forward:` counts as external (today's
+    behaviour; that is how we call it when the taxonomy is unavailable).
+    A target with no `<word>:` prefix is always False, so a plain typo still blocks —
+    and so is prose that merely reads like one (`[[Q5: closure]]`), which the space
+    rule separates from a real namespace.
     Never raises — both call-sites (validation.py, lint.py) are on hot write paths.
     """
     if not isinstance(target, str):
@@ -58,6 +69,8 @@ def is_external_ref(target: str, valid_scopes: frozenset[str] | None = None) -> 
     prefix = stripped[: m.end()].split(":", 1)[0].strip().lower()
     if prefix == _FORWARD_PREFIX_NAME:
         return True
+    if _EXTERNAL_NS_RE.match(stripped) is None:
+        return False
     return valid_scopes is not None and prefix not in valid_scopes
 
 

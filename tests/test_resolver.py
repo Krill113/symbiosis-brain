@@ -228,3 +228,19 @@ def test_is_external_ref_plain_target_is_false():
     assert is_external_ref("   ", scopes) is False
     assert is_external_ref("notes:", scopes) is False       # после ':' пусто → не префикс
     assert is_external_ref("Ghost Note", scopes) is False
+
+
+def test_is_external_ref_prose_colon_is_not_a_namespace():
+    """A space after the colon separates prose from a namespace. `[[Q5: closure]]` and
+    `[[TODO: write this up]]` used to read as namespaces `q5` / `todo`, absent from the
+    taxonomy and therefore "external" — so a genuinely broken link produced no
+    diagnostic at all. A real external namespace is machine-written and has no space."""
+    scopes = frozenset({"global", "beta"})
+    assert is_external_ref("Q5: closure", scopes) is False
+    assert is_external_ref("TODO: write this up", scopes) is False
+    assert is_external_ref("Note: see the plan", scopes) is False
+    # the machine-written form is still external
+    assert is_external_ref("superpowers:writing-skills", scopes) is True
+    # and forward: keeps both spellings
+    assert is_external_ref("forward: wiki/planned", scopes) is True
+    assert is_external_ref("forward:wiki/planned", scopes) is True

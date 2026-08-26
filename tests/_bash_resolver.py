@@ -67,16 +67,26 @@ def _find_bash(
 _BASH = _find_bash()
 
 
-def _bash():
-    """Absolute bash path for spawning; fails on CI, skips locally, when absent."""
-    if _BASH is None:
+def require_tool(path, name, hint):
+    """M3 rule for every external binary these tests spawn: on a CI runner an
+    unresolved tool is a FAILURE, because a skip there makes a whole slice of Windows
+    coverage disappear with nobody noticing; on a dev box it stays a skip.
+    Returns the path so callers can use it inline.
+    """
+    if path is None:
         if os.environ.get("CI") or os.environ.get("SB_REQUIRE_BASH"):
             pytest.fail(
-                "bash unresolved on a CI runner - Windows coverage would silently vanish"
-            )  # M3
-        pytest.skip(
-            "bash not found: probed git-derived and standard Git-for-Windows "
-            "locations (bin before usr/bin, health-checked) and PATH minus "
-            "%SystemRoot%. Install Git for Windows."
-        )
-    return _BASH
+                f"{name} unresolved on a CI runner - Windows coverage would silently vanish"
+            )
+        pytest.skip(hint)
+    return path
+
+
+def _bash():
+    """Absolute bash path for spawning; fails on CI, skips locally, when absent."""
+    return require_tool(
+        _BASH, "bash",
+        "bash not found: probed git-derived and standard Git-for-Windows "
+        "locations (bin before usr/bin, health-checked) and PATH minus "
+        "%SystemRoot%. Install Git for Windows.",
+    )

@@ -340,12 +340,22 @@ def populated_vault(tmp_path: Path) -> Path:
 
 
 def _run_cli(stdin_payload: dict, vault: Path) -> tuple[int, str, str]:
-    """Run `python -m symbiosis_brain pre-action-recall` with payload via stdin pipe."""
+    """Run `python -m symbiosis_brain pre-action-recall` with payload via stdin pipe.
+
+    HOME/USERPROFILE are redirected at a sibling of the vault: the child resolves its
+    config through Path.home()/".claude"/symbiosis-brain-pre-action.json, so without
+    this the assertions depend on whatever the developer happens to have configured
+    locally, and anything the child writes lands in the live ~/.claude.
+    (TMPDIR/TEMP are already session-isolated by conftest._isolate_hook_artifacts.)
+    """
+    home = vault.parent / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
          "--vault", str(vault)],
         input=json.dumps(stdin_payload),
         capture_output=True, text=True, timeout=30,
+        env={**os.environ, "HOME": str(home), "USERPROFILE": str(home)},
     )
     return proc.returncode, proc.stdout, proc.stderr
 

@@ -18,17 +18,27 @@ import pytest
 # health-checked absolute bash; bare "bash" is the WSL stub on Windows CI.
 # Package form for imports from the repo root, bare form under pytest prepend mode.
 try:
-    from tests._bash_resolver import _bash
+    from tests._bash_resolver import _bash, require_tool
 except ImportError:  # pragma: no cover - pytest prepend mode
-    from _bash_resolver import _bash
+    from _bash_resolver import _bash, require_tool
 
 from symbiosis_brain import action_rules as ar
 
 # Same resolver the compiler uses (PATH, then Git-for-Windows roots derived
 # from bash/git) — a dev box whose PATH lacks Git\usr\bin still runs these.
-pytestmark = pytest.mark.skipif(
-    ar._find_grep() is None, reason="grep not found — cannot validate ERE rules"
-)
+_GREP = ar._find_grep()
+
+
+@pytest.fixture(autouse=True)
+def _require_grep():
+    """A plain skipif here made every test in this file vanish silently when grep did
+    not resolve — 31 of them, six added by the action-rule checkpoint. On CI that is a
+    failure (the same M3 rule the bash resolver follows); on a dev box it stays a skip."""
+    require_tool(
+        _GREP, "grep",
+        "grep not found — cannot validate ERE rules; probed PATH and the "
+        "Git-for-Windows roots. Install Git for Windows.",
+    )
 
 
 def _write_local(vault: Path, routes: list[dict]) -> None:

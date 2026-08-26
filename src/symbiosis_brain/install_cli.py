@@ -133,7 +133,12 @@ def _check_mcp_running() -> bool:
 
 
 SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init",
-               "brain-welcome", "brain-tools", "brain-backfill-gists")
+               "brain-welcome", "brain-tools", "brain-backfill-gists", "brain-autolearn")
+
+# Subdirectories of a skill that never leave the maintainer's machine. `evals/` holds
+# real session digests; CLAUDE.md forbids shipping non-synthetic material, and a user
+# has no use for someone else's transcripts.
+SKILL_COPY_EXCLUDE_DIRS = ("evals",)
 
 # Bash is the single source of truth. All shipped hooks are .sh (the Python hook
 # shims were removed to kill dual-maintenance drift). brain-pre-action-trigger.sh
@@ -203,24 +208,37 @@ def _register_mcp(vault_path: Path) -> None:
 
 
 def _copy_skills(target_dir: Path) -> list[str]:
-    """Copy shipped skills into target_dir. Returns names missing from the package."""
+    """Copy shipped skills into target_dir. Returns names missing from the package.
+
+    Copies the whole skill directory — SKILL.md plus references/** recursively —
+    skipping SKILL_COPY_EXCLUDE_DIRS. Per file: identical → skip, different →
+    backup_file() then overwrite. Until brain-autolearn shipped, every skill was a
+    lone SKILL.md and this copied exactly that one file; its two reference files
+    would have been dropped on the floor.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     src_root = _packaged_skills_dir()
     missing: list[str] = []
     for name in SKILL_NAMES:
-        src = src_root / name / "SKILL.md"
-        if not src.exists():
+        src_dir = src_root / name
+        if not (src_dir / "SKILL.md").exists():
             print(f"WARN: skill {name} not found in package, skipping")
             missing.append(name)
             continue
-        dst_dir = target_dir / name
-        dst_dir.mkdir(exist_ok=True)
-        dst = dst_dir / "SKILL.md"
-        if dst.exists() and dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8"):
-            continue  # identical, skip
-        if dst.exists():
-            install_lib.backup_file(dst)
-        shutil.copyfile(src, dst)
+        for src in sorted(src_dir.rglob("*")):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(src_dir)
+            if any(part in SKILL_COPY_EXCLUDE_DIRS for part in rel.parts[:-1]):
+                continue
+            dst = target_dir / name / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                if dst.read_text(encoding="utf-8", errors="replace") == \
+                        src.read_text(encoding="utf-8", errors="replace"):
+                    continue  # identical, skip
+                install_lib.backup_file(dst)
+            shutil.copyfile(src, dst)
     return missing
 
 

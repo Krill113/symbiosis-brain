@@ -100,6 +100,9 @@ jobs:
           rm -rf "$BT_HOME" "$BT_VAULT"
           mkdir -p "$BT_HOME"
           export HOME="$BT_HOME"
+          # Path.home() reads USERPROFILE first on Windows — keep the two in step so
+          # this block can never resolve to the real profile if it ever runs there.
+          export USERPROFILE="$BT_HOME"
           export SYMBIOSIS_BRAIN_VAULT="$BT_VAULT"
 
           # Deploy hooks/skills/settings into the isolated $HOME so the

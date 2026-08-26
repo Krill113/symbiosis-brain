@@ -31,6 +31,7 @@ Trigger proactively (don't wait for the user to ask) when:
 If triggered at session end or after a multi-step task — do a quick self-scan before Step 1:
 
 - **Dead ends / wasted effort?** Wrong path tried, unnecessary retries → save as `mistake`
+- **Then two separate passes, in this order, after the scan above:** (1) invoke skill `brain-autolearn` — repeated mistakes and repeated actions → action rules / scripts / skills / proposals, owner kept in the loop; (2) invoke skill `brain-self-critique` — how Symbiosis Brain itself served this session (noisy or missed recall, `brain_*` friction, workarounds, hook misfires). Each records its own findings through its own procedure — keep them out of this retrospective. On a clean session each must end in seconds with "nothing".
 - **Workflow improvement?** Subagent strategy that worked, better tool usage → save as `pattern`
 - **Implicit user signals missed?** User rephrased, showed frustration, had to redirect → save as `user`
 - **Tool/API surprise?** Unexpected behavior worth remembering → save as `pattern`

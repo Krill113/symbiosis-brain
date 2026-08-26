@@ -587,3 +587,166 @@ def test_compile_keeps_previous_artifacts_when_grep_unavailable(tmp_path, monkey
     assert meta["validation"] == "unavailable"
     assert meta["kept_previous"] is True
     assert meta["rules_total"] == 1
+
+
+# ── CP-4 / C1: rule-level (union) validation of a tool side ──────────────────
+#
+# The compiler used to validate EACH pattern against ALL of its side's
+# test_match vectors, so a rule written as two honest triggers was dropped and
+# the only way to ship it was hand-fusing an alternation (which forces the
+# author to duplicate the command anchor into every branch — exactly where
+# silent coverage holes are born). `grep -Ef` already gives union semantics at
+# runtime: the hook matches when ANY row of the rule matches. These fixtures
+# pin that the compiler now agrees.
+#
+# Fully synthetic: nonsense verbs, no vault content, no real rule ids.
+
+_UNION_P1 = "(^|[;&|]+)[[:space:]]*foo[[:space:]]+bar\\b"
+_UNION_P2 = "(^|[;&|]+)[[:space:]]*baz[[:space:]]+qux\\b"
+_DEAD_RE = "^never-matches-any-vector-xyz$"
+
+
+def _two_trigger_rule(**over):
+    """Base two-trigger rule: vector A is caught ONLY by _UNION_P1, vector B
+    ONLY by _UNION_P2 — so the rule compiles if and only if the side is
+    validated as the union of its patterns."""
+    rule = {
+        "id": "two-trigger-union-demo",
+        "class": "action",
+        "priority": 55,
+        "command_triggers": {"bash": [{"re": _UNION_P1}, {"re": _UNION_P2}]},
+        "hint": "synthetic: two honest triggers on one side",
+        "test_match": {"bash": ["foo bar --now", "baz qux -f"]},
+        "test_nomatch": {"bash": ["echo hello"]},
+    }
+    rule.update(over)
+    return rule
+
+
+def _meta(vault: Path) -> dict:
+    return json.loads(
+        (vault / ".index" / "action-rules.meta.json").read_text(encoding="utf-8")
+    )
+
+
+def _tsv_rows(out: Path) -> list[list[str]]:
+    return [ln.split("\t") for ln in out.read_text(encoding="utf-8").splitlines() if ln]
+
+
+def test_two_patterns_per_side_validate_as_union(tmp_path):
+    _write_local(tmp_path, [_two_trigger_rule()])
+    out = ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["skipped"] == []
+    assert meta["rules_total"] == 1
+    assert meta["rules_compiled"] == 1
+
+    rows = _tsv_rows(out)
+    # one TSV row per trigger, both carrying the SAME rule id — the hook takes
+    # the first matching row and prints its id, so matching is already
+    # rule-level; only validation was not.
+    assert len(rows) == 2
+    assert {r[0] for r in rows} == {"bash"}
+    assert {r[1] for r in rows} == {"two-trigger-union-demo"}
+    assert {r[2] for r in rows} == {_UNION_P1, _UNION_P2}
+
+    bash_re = (tmp_path / ".index" / "action-rules.bash.re").read_text(encoding="utf-8")
+    assert bash_re.splitlines() == [_UNION_P1, _UNION_P2]
+
+
+def test_nomatch_checked_against_union(tmp_path):
+    """A negative vector must be rejected when ANY pattern of the side catches
+    it — otherwise a second trigger could quietly re-open the hole the first
+    one was written to close."""
+    rule = _two_trigger_rule(
+        id="union-nomatch-demo",
+        test_match={"bash": ["foo bar --now"]},
+        test_nomatch={"bash": ["baz qux -f"]},  # caught by _UNION_P2
+    )
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["rules_compiled"] == 0
+    assert out.read_text(encoding="utf-8") == ""
+    reasons = {s["id"]: s["reason"] for s in meta["skipped"]}
+    assert "union-nomatch-demo" in reasons
+    # The REASON is the point: before the union fix this rule was dropped too,
+    # but for the wrong cause ("test_match did not match" on the other pattern).
+    assert "test_nomatch unexpectedly matched" in reasons["union-nomatch-demo"]
+
+
+def test_dead_pattern_reported_not_dropped(tmp_path):
+    """Union validation can hide a typo in the second trigger behind a working
+    first one. That is a WARNING in meta.json, never a drop — dropping stays
+    reserved for real test_match/test_nomatch failures."""
+    rule = _two_trigger_rule(
+        id="dead-pattern-demo",
+        command_triggers={"bash": [{"re": _UNION_P1}, {"re": _DEAD_RE}]},
+        test_match={"bash": ["foo bar --now"]},
+    )
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["skipped"] == []
+    assert meta["rules_compiled"] == 1
+    assert len(_tsv_rows(out)) == 2  # the dead pattern still ships as a row
+    assert meta["unmatched_patterns"] == [
+        {"id": "dead-pattern-demo", "tool": "bash", "re": _DEAD_RE}
+    ]
+
+
+def test_meta_unmatched_patterns_empty_when_all_used(tmp_path):
+    """The key is ALWAYS present (empty list when every pattern pulled its
+    weight), so a reader never has to tell 'no dead patterns' apart from
+    'compiled by an older build'. Key ORDER is part of the artifact contract."""
+    _write_local(tmp_path, [_two_trigger_rule()])
+    ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["unmatched_patterns"] == []
+    assert list(meta) == [
+        "compiled_at",
+        "rules_total",
+        "rules_compiled",
+        "skipped",
+        "unmatched_patterns",
+    ]
+
+
+def test_no_test_match_vectors_still_skips_rule(tmp_path):
+    """Regression: union validation must not turn an unvalidated side into a
+    vacuous pass. A side with no test_match vectors is still dropped — an
+    unreviewed, possibly overbroad pattern in the hook's grep -f would silently
+    swallow every rule below it (the hook exits on its first hit)."""
+    rule = _two_trigger_rule(id="two-trigger-no-vectors", test_match={})
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["rules_compiled"] == 0
+    assert out.read_text(encoding="utf-8") == ""
+    reasons = {s["id"]: s["reason"] for s in meta["skipped"]}
+    assert "test_match" in reasons["two-trigger-no-vectors"]
+
+
+def test_structural_error_still_drops_rule(tmp_path):
+    """Regression: structural checks stay PER PATTERN and still drop the whole
+    rule. A tab in the SECOND trigger would corrupt the TSV no matter what the
+    first one matches, so it must be caught BEFORE any grep runs — and the
+    reported reason must name it, not the unrelated vector that used to fail
+    first under per-pattern validation."""
+    rule = _two_trigger_rule(
+        id="two-trigger-tab-demo",
+        command_triggers={"bash": [{"re": _UNION_P1}, {"re": "^echo\thi$"}]},
+    )
+    _write_local(tmp_path, [rule])
+    out = ar.compile_action_rules(tmp_path)
+    meta = _meta(tmp_path)
+
+    assert meta["rules_compiled"] == 0
+    assert out.read_text(encoding="utf-8") == ""
+    reasons = {s["id"]: s["reason"] for s in meta["skipped"]}
+    assert "tab/newline/CR" in reasons["two-trigger-tab-demo"]

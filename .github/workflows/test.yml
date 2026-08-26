@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for f in hooks/*.sh; do
+          for f in hooks/*.sh tools/hooks/pre-push; do
             bash -n "$f"
             echo "ok  $f"
           done

@@ -13,5 +13,7 @@
   / env vars / relative paths and generic placeholders.
 - The private vault lives OUTSIDE this repo (sibling dir, gitignored) — never
   `git add` vault content.
-- Planned automated guard: Gitleaks pre-commit + CI with custom rules for the
-  patterns above.
+- CI: gitleaks (default rules) over full history on every push/PR. Private-marker
+  patterns are checked locally by a pre-push hook (`tools/hooks/pre-push`, enabled
+  with `git config core.hooksPath tools/hooks` and `$SB_PUBLISH_AUDIT`) —
+  deliberately not in a public config.

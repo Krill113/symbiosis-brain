@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Blocks a push that would carry private markers (local absolute paths,
+# usernames, private project names, tokens) into the public history.
+#
+# The patterns themselves deliberately do NOT live in this repo: publishing them
+# would leak the very strings they guard. This hook only calls an auditor whose
+# path comes from $SB_PUBLISH_AUDIT.
+#
+# Enable once per clone:
+#   git config core.hooksPath tools/hooks
+#   export SB_PUBLISH_AUDIT=/path/to/your/audit-script      # .ps1 or executable
+#
+# The auditor is invoked once per pushed ref as
+#   <auditor> -Repo . -Base <base-sha-or-ref> -Head <local-sha>
+# and a non-zero exit blocks the push. A `*.ps1` auditor goes through
+# `pwsh -NoProfile -File`.
+#
+# Without $SB_PUBLISH_AUDIT this hook prints one line and gets out of the way —
+# a fork or a fresh clone must never be blocked by a guard it cannot run.
+#
+# One-off override: SB_SKIP_PUBLISH_AUDIT=1 git push ...
+
+if [ "${SB_SKIP_PUBLISH_AUDIT:-0}" = "1" ]; then
+  echo "pre-push: audit skipped by SB_SKIP_PUBLISH_AUDIT=1"
+  exit 0
+fi
+
+AUDIT="${SB_PUBLISH_AUDIT:-}"
+if [ -z "$AUDIT" ] || [ ! -f "$AUDIT" ]; then
+  echo "pre-push: no private-marker audit configured (set SB_PUBLISH_AUDIT)"
+  exit 0
+fi
+
+# A brand-new branch has no remote sha, so the diff base falls back to
+# origin/main — which is only meaningful when it is current. Refresh it first;
+# being offline (or having no such remote) must not block the push.
+git fetch --quiet origin main 2>/dev/null || true
+
+zero="0000000000000000000000000000000000000000"
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue      # branch deletion — nothing to audit
+  if [ "$remote_sha" = "$zero" ]; then
+    base="origin/main"
+  else
+    base="$remote_sha"
+  fi
+  case "$AUDIT" in
+    *.ps1) pwsh -NoProfile -File "$AUDIT" -Repo . -Base "$base" -Head "$local_sha" || status=1 ;;
+    *)     "$AUDIT" -Repo . -Base "$base" -Head "$local_sha" || status=1 ;;
+  esac
+done
+
+if [ "$status" -ne 0 ]; then
+  echo "pre-push: BLOCKED — fix the hits above, or set SB_SKIP_PUBLISH_AUDIT=1 for a deliberate exception."
+fi
+exit "$status"

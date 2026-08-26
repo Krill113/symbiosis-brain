@@ -1,4 +1,6 @@
+import ast
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -248,3 +250,40 @@ def test_register_mcp_raises_when_add_returns_nonzero(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match=r"claude mcp add.*failed"):
         install_cli._register_mcp(Path("/tmp/v"))
+
+
+def _user_facing_strings(node):
+    """Yield (text, lineno) for string literals that end up in front of a user:
+    print() arguments, the message of a raised RuntimeError, and module-level
+    *_TEXT constants (PROMPT_TEXT reaches the user through input(), not print).
+    Comments and docstrings are deliberately out of scope."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        name = getattr(func, "id", None) or getattr(func, "attr", None)
+        if name in ("print", "RuntimeError"):
+            for arg in node.args:
+                for const in ast.walk(arg):
+                    if isinstance(const, ast.Constant) and isinstance(const.value, str):
+                        yield const.value, const.lineno
+    elif isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id.endswith("_TEXT"):
+                for const in ast.walk(node.value):
+                    if isinstance(const, ast.Constant) and isinstance(const.value, str):
+                        yield const.value, const.lineno
+
+
+def test_user_facing_output_has_no_cyrillic():
+    """`symbiosis-brain setup/doctor/uninstall` is the first thing a new user of
+    an OSS product sees — it must speak English. Comments and docstrings stay as
+    they are; only text that reaches the user is checked."""
+    cyrillic = re.compile(r"[\u0400-\u04FF]")   # ASCII-only source, no literal Cyrillic
+    offenders: list[str] = []
+    for module in (install_cli, install_lib):
+        source_path = Path(module.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            for text, lineno in _user_facing_strings(node):
+                if cyrillic.search(text):
+                    offenders.append(f"{source_path.name}:{lineno}: {text[:60]!r}")
+    assert not offenders, "Cyrillic in user-facing output:\n" + "\n".join(offenders)

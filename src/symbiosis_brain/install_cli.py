@@ -47,12 +47,12 @@ SB_PERMISSIONS = [
 ]
 
 PROMPT_TEXT = """
-Symbiosis Brain — общая память тебя и Claude. Заметки живут
-в обычной папке (markdown-файлы), которую ты можешь:
-  • открыть в Obsidian для красивой визуализации
-  • положить в git и синхронизировать между машинами
+Symbiosis Brain — shared memory for you and Claude. Notes live in a plain
+folder of markdown files, which you can:
+  • open in Obsidian for a graph view of everything you know
+  • keep under git and sync between machines
 
-Где разместить папку с заметками?
+Where should the notes folder live?
 [default: {default}]
 > """
 
@@ -159,8 +159,8 @@ def _register_mcp(vault_path: Path) -> None:
             ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"WARN: `claude mcp list` failed ({e}). Пропускаю MCP-регистрацию — "
-              f"добавь вручную: claude mcp add -s user symbiosis-brain -- "
+        print(f"WARN: `claude mcp list` failed ({e}). Skipping MCP registration — "
+              f"add it by hand: claude mcp add -s user symbiosis-brain -- "
               f"symbiosis-brain serve --vault {vault_path}")
         return
 
@@ -227,9 +227,9 @@ def _ask_vault_path(default: Path) -> Path:
         answer = input(PROMPT_TEXT.format(default=default)).strip()
     except EOFError:
         print(
-            "\nНет интерактивного stdin (headless/CI) — не могу спросить путь к vault.\n"
-            "Укажи его явно: `symbiosis-brain setup claude-code --vault <путь>`\n"
-            "(или `--repair`, если он уже настроен).",
+            "\nNo interactive stdin (headless/CI) — cannot ask where the vault should live.\n"
+            "Pass it explicitly: `symbiosis-brain setup claude-code --vault <path>`\n"
+            "(or `--repair`, if it is already configured).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -315,8 +315,8 @@ def cmd_setup(args):
             if missing_hooks:
                 parts.append(f"hooks: {', '.join(missing_hooks)}")
             raise RuntimeError(
-                "пакет не содержит часть файлов setup (" + "; ".join(parts) + "). "
-                "Похоже на баг сборки — переустанови пакет и повтори "
+                "the package is missing part of the setup payload (" + "; ".join(parts) + "). "
+                "This looks like a build bug — reinstall the package and re-run "
                 "`symbiosis-brain setup claude-code --repair`."
             )
 
@@ -333,7 +333,7 @@ def cmd_setup(args):
         except Exception:
             pass
     except Exception as e:
-        print(f"setup упал: {e}\nОткатываю изменения...", file=sys.stderr)
+        print(f"setup failed: {e}\nRolling back...", file=sys.stderr)
 
         # Restore settings.json
         if settings_pre_backup:
@@ -362,13 +362,13 @@ def cmd_setup(args):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-        print(f"Vault сохранён в {vault} (не удалён).", file=sys.stderr)
+        print(f"Vault kept at {vault} (not deleted).", file=sys.stderr)
         sys.exit(1)
 
     print(
-        f"Готово. Vault: {vault}\n"
-        "Если Obsidian не найден — после рестарта Claude Code я предложу установить.\n"
-        "Перезапусти Claude Code, дальше я тебя представлю."
+        f"Done. Vault: {vault}\n"
+        "If Obsidian is missing, I will offer to install it after you restart Claude Code.\n"
+        "Restart Claude Code and I will introduce myself."
     )
 
 
@@ -501,7 +501,8 @@ def cmd_uninstall(args) -> int:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    print("Symbiosis Brain удалён. Vault сохранён, можешь снести вручную.")
+    print("Symbiosis Brain removed. The vault is preserved — delete it by hand "
+          "if you want a clean slate.")
     return 0
 
 

@@ -603,3 +603,151 @@ def test_cli_no_serena_advisory_when_roster_lacks_serena(populated_vault, tmp_pa
     rc, out, _ = _run_cli(payload, populated_vault)
     assert rc == 0
     assert "[serena]" not in out
+
+
+# ---------- C3: route hints on a SUBAGENT prompt (agent_route_block) ----------
+
+import re
+
+import symbiosis_brain.tool_routing as tr
+from symbiosis_brain.pre_action_recall import (
+    AGENT_ROUTE_MATCH_MAX_CHARS,
+    agent_route_block,
+)
+
+_BLOCK_KW = dict(scope=None, vault=None, roster=None, cap=2)
+
+
+def _aroute(rid, pattern, hint, priority=50, cls="augment"):
+    """Synthetic catalog entry — same shape tool_routing._compile_route builds."""
+    return tr.Route(
+        id=rid,
+        cls=cls,
+        triggers=[re.compile(pattern, re.IGNORECASE)],
+        hint=hint,
+        priority=priority,
+    )
+
+
+def test_agent_route_block_matches_trigger():
+    routes = [_aroute("fanout-guard", r"spawn\s+subagents",
+                      "Tell each agent not to spawn children.", 70)]
+    block = agent_route_block(
+        "Please spawn subagents to research the plugin system", routes, **_BLOCK_KW
+    )
+    assert block.splitlines() == [
+        "[routes: 1 hints for subagent]",
+        "- Tell each agent not to spawn children.",
+    ]
+
+
+def test_agent_route_block_empty_without_trigger():
+    routes = [_aroute("fanout-guard", r"spawn\s+subagents", "never shown", 70)]
+    assert agent_route_block("read the config file and report", routes, **_BLOCK_KW) == ""
+
+
+def test_agent_route_block_respects_cap():
+    """cap=2 keeps the top-2 by priority DESC — the same rule the user-prompt
+    path uses (match_routes), so a long agent brief cannot flood the context."""
+    routes = [
+        _aroute("low", "research", "hint-low", 40),
+        _aroute("mid", "research", "hint-mid", 60),
+        _aroute("high", "research", "hint-high", 80),
+    ]
+    block = agent_route_block("research the plugin system", routes, **_BLOCK_KW)
+    assert block.splitlines() == [
+        "[routes: 2 hints for subagent]",
+        "- hint-high",
+        "- hint-mid",
+    ]
+
+
+def test_agent_route_block_skips_action_class_routes():
+    """class:"action" lives in the bash action-rule path (compiled TSV, POSIX
+    ERE). It must never reach the agent block, even when its prompt triggers
+    match and its priority would win the cap."""
+    routes = [
+        _aroute("act", "deploy", "action hint", 90, cls="action"),
+        _aroute("aug", "deploy", "augment hint", 10),
+    ]
+    block = agent_route_block("deploy the service", routes, **_BLOCK_KW)
+    assert block.splitlines() == ["[routes: 1 hints for subagent]", "- augment hint"]
+
+
+def test_agent_route_block_matches_beyond_query_max_chars():
+    """The trigger usually sits in the middle of a long brief: the matching
+    window is AGENT_ROUTE_MATCH_MAX_CHARS (4000), not query_max_chars (500)."""
+    routes = [_aroute("late", r"spawn\s+subagents", "late hint", 70)]
+    filler = "x " * 600  # 1200 chars: past 500, well inside 4000
+    assert 500 < len(filler) < AGENT_ROUTE_MATCH_MAX_CHARS
+    assert "- late hint" in agent_route_block(filler + "spawn subagents now", routes,
+                                              **_BLOCK_KW)
+    # ...and the window is real: past it the trigger is not seen at all.
+    far = "y " * AGENT_ROUTE_MATCH_MAX_CHARS + "spawn subagents now"
+    assert agent_route_block(far, routes, **_BLOCK_KW) == ""
+
+
+class _ExplodingTrigger:
+    """A catalog entry that compiled fine but blows up at match time."""
+
+    def search(self, text):
+        raise RuntimeError("corrupt catalog entry")
+
+
+def test_agent_route_block_fail_open_on_broken_catalog():
+    bad = tr.Route(id="bad", cls="augment", triggers=[_ExplodingTrigger()], hint="never")
+    good = _aroute("good", "research", "good hint", 50)
+    # No exception escapes, and the caller simply gets no block.
+    assert agent_route_block("research the plugin system", [bad, good], **_BLOCK_KW) == ""
+
+
+def _write_local_routes(vault: Path, routes: list) -> None:
+    (vault / "tool-routing.local.json").write_text(json.dumps(routes), encoding="utf-8")
+
+
+def test_bash_tool_gets_no_agent_block(populated_vault: Path):
+    """A Bash command must never grow a [routes:] block: its hints arrive from
+    the compiled action-rule path in the hook, and a second block here would
+    double-inject. The route below WOULD match the command text."""
+    _write_local_routes(populated_vault, [{
+        "id": "test-commit-route",
+        "class": "augment",
+        "priority": 90,
+        "triggers": [{"re": "git commit", "flags": "i"}],
+        "hint": "ROUTE-HINT-SHOULD-NOT-APPEAR",
+    }])
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'feat: x'"},
+        "session_id": "agent-block-bash",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0
+    assert "[recall:" in out          # the normal path still produced its block
+    assert "[routes:" not in out
+    assert "ROUTE-HINT-SHOULD-NOT-APPEAR" not in out
+
+
+def test_task_payload_additional_context_contains_route_hint(populated_vault: Path):
+    """End-to-end through the CLI the hook calls: a Task brief whose trigger
+    sits past query_max_chars still gets its route hint."""
+    _write_local_routes(populated_vault, [{
+        "id": "test-subagent-fanout",
+        "class": "augment",
+        "priority": 90,
+        "triggers": [{"re": "spawn subagents", "flags": "i"}],
+        "hint": "Tell each agent not to spawn children.",
+    }])
+    long_prefix = "Context line. " * 60  # 840 chars > query_max_chars (500)
+    payload = {
+        "tool_name": "Task",
+        "tool_input": {
+            "prompt": long_prefix + "Then spawn subagents for the research mesh."
+        },
+        "session_id": "agent-block-task",
+    }
+    rc, out, _ = _run_cli(payload, populated_vault)
+    assert rc == 0, out
+    assert "[routes: 1 hints for subagent]" in out
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "- Tell each agent not to spawn children." in ctx

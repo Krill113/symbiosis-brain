@@ -36,6 +36,41 @@ Three modes in one script:
 `SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD` (default `10`). The hook reads them at runtime;
 no script edit needed.
 
+## Bridge files
+
+The status line is the only component that sees the harness JSON on every tick, so it
+publishes what other components need. All paths live under `SB_TMP`
+(`${TMPDIR:-${TEMP:-/tmp}}`). Both bridges are written by `sb-export.sh`, which
+`sb-statusline.sh` runs **before** it decides whose first line to render — so a user
+who brings their own status line (`SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD`) keeps them.
+
+| File | Written by | Read by |
+|------|-----------|---------|
+| `brain-context-pct-<session_id>` | `sb-export.sh` (every tick) | `brain-save-trigger.sh` (Stop thresholds), `brain-save-marker.sh` |
+| `brain-last-save-pct-<session_id>` | `brain-save-marker.sh` (PostToolUse) | `brain-save-trigger.sh` (delta-guard), `sb-line.sh` |
+| `claude-rate-limits.json` | `sb-export.sh` (every tick) | any limit-watcher agent |
+| `brain-sync-failed` | `brain-sync.sh` (on failure; removed on success) | `brain-session-start.sh` banner, `sb-line.sh` (`⚠️sync:<stage>`) |
+| `brain-sync-errors.log` | `brain-sync.sh` (appended) | the human |
+
+`claude-rate-limits.json` — one line, rewritten on every tick, written only when the
+harness sent a `five_hour` block:
+
+```json
+{"five_hour_pct":33,"resets_at":1787662800,"seven_day_pct":20,"ts":1787660714}
+```
+
+`five_hour_pct` / `seven_day_pct` are whole percents; `resets_at` is the unix second the
+5-hour window resets (`0` when the harness did not send it); `ts` is the unix second the
+snapshot was written. Override the path with `SYMBIOSIS_BRAIN_RATE_LIMITS_FILE`, turn the
+bridge off with `SYMBIOSIS_BRAIN_RATE_LIMITS_DISABLED=1`.
+
+`brain-sync-failed` is exactly one line: `stage=<pull|push|conflict> at=<ISO8601>`.
+
+**Extension point.** Set `SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD` in `~/.claude/settings.json`
+to run your own first line; `sb-statusline.sh` keeps rendering the Symbiosis Brain line
+below it and keeps both bridges alive. `symbiosis-brain setup` moves a pre-existing
+`statusLine.command` into that variable automatically.
+
 ## Installation
 
 The supported path is `symbiosis-brain setup claude-code`, which copies these

@@ -13,12 +13,27 @@ else
   IFS= read -r -d '' INPUT
 fi
 
+# One session-id parser for every hook (sb-hooklib.sh). Fail-open: without the library
+# SESSION_ID stays empty, the line still renders, only the markers are skipped.
+sb_dir=${BASH_SOURCE[0]%/*}
+[ "$sb_dir" = "${BASH_SOURCE[0]}" ] && sb_dir=.
+if ! declare -F sb_session_id >/dev/null 2>&1; then
+  . "$sb_dir/sb-hooklib.sh" 2>/dev/null || true
+fi
+
 SESSION_ID=
-[[ $INPUT =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && SESSION_ID=${BASH_REMATCH[1]}
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
+if declare -F sb_session_id >/dev/null 2>&1; then
+  sb_tmp_dir
+  sb_session_id "$INPUT"
+  SESSION_ID=$SB_SESSION_ID
+fi
 
 SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
-SAVE_THR="${SYMBIOSIS_BRAIN_SAVE_THRESHOLDS:-40,70,90}";  SAVE_THR=${SAVE_THR//,//}
+# Defaults MUST match brain-save-trigger.sh:13 (25,35,45) and :144 (30,60,85) — this
+# line advertises the thresholds the Stop-hook actually fires on. It shipped 40/70/90
+# for months, visible only on installs that don't set the env explicitly.
+SAVE_THR="${SYMBIOSIS_BRAIN_SAVE_THRESHOLDS:-25,35,45}";  SAVE_THR=${SAVE_THR//,//}
 RULES_THR="${SYMBIOSIS_BRAIN_RULES_ZONES:-30,60,85}";     RULES_THR=${RULES_THR//,//}
 RULES_R="${SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL:-10}"
 
@@ -31,5 +46,15 @@ if [ -n "$SESSION_ID" ]; then
   fi
 fi
 
-printf '🧠 [Symbiosis-Brain]  scope: %s  auto-save: [%s]  rules: [%s·R%s]  last-save: %s%%\n' \
-  "$SCOPE" "$SAVE_THR" "$RULES_THR" "$RULES_R" "$LAST_SAVE"
+# Vault sync alarm (brain-sync.sh). Fork-free: a test and a builtin read.
+SYNC_WARN=
+sb_sync_marker="$SB_TMP/brain-sync-failed"
+if [ -r "$sb_sync_marker" ]; then
+  read -r sb_sync_line < "$sb_sync_marker"
+  sb_sync_stage=${sb_sync_line#stage=}
+  sb_sync_stage=${sb_sync_stage%% *}
+  [ -n "$sb_sync_stage" ] && SYNC_WARN="  ⚠️sync:${sb_sync_stage}"
+fi
+
+printf '🧠 [Symbiosis-Brain]  scope: %s  auto-save: [%s]  rules: [%s·R%s]  last-save: %s%%%s\n' \
+  "$SCOPE" "$SAVE_THR" "$RULES_THR" "$RULES_R" "$LAST_SAVE" "$SYNC_WARN"

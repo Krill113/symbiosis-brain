@@ -140,6 +140,7 @@ HOOK_FILES_SH = (
     "brain-pre-action-trigger.sh",
     "brain-sync.sh",
     "sb-statusline.sh",
+    "sb-export.sh",
     "sb-line.sh",
     "sb-base-statusline.sh",
 )

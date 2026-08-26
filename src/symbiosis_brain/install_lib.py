@@ -146,6 +146,27 @@ def scaffold_vault(vault_path: Path) -> None:
             sep = "" if existing.endswith("\n") else "\n"
             gitignore.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
 
+    # Vault .gitattributes — log.md is the append-only journal every multi-machine
+    # sync collides on; `merge=union` keeps both sides (duplicates are a lint finding,
+    # a lost session log is not recoverable). Every other note keeps the standard
+    # merge so a real conflict still stops brain-sync.sh and asks the owner.
+    # Idempotent: only appends lines that are not already present.
+    gitattributes = vault_path / ".gitattributes"
+    needed_attrs = ["log.md merge=union"]
+    if not gitattributes.exists():
+        gitattributes.write_text(
+            "# Symbiosis Brain — merge policy for the vault.\n"
+            + "\n".join(needed_attrs) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        existing = gitattributes.read_text(encoding="utf-8")
+        present = set(existing.splitlines())
+        missing = [a for a in needed_attrs if a not in present]
+        if missing:
+            sep = "" if existing.endswith("\n") else "\n"
+            gitattributes.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
+
 
 def _hooks_block(hook_dir: str) -> dict:
     """Return hooks block structure for settings.json.

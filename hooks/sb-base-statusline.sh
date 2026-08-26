@@ -39,13 +39,21 @@ fi
 
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
+# Bridges (context %, rate limits) live in sb-export.sh — the single export point,
+# which sb-statusline.sh runs BEFORE it decides whose first line to render. When this
+# file is invoked on its own (a supported entry point), run them here instead.
+if [ -z "${SB_EXPORT_DONE:-}" ]; then
+  sb_dir=${BASH_SOURCE[0]%/*}
+  [ "$sb_dir" = "${BASH_SOURCE[0]}" ] && sb_dir=.
+  SB_STATUSLINE_INPUT=$data
+  . "$sb_dir/sb-hooklib.sh" 2>/dev/null || true
+  . "$sb_dir/sb-export.sh" 2>/dev/null || true
+fi
+
 # Unix seconds, resolved once per render. $EPOCHSECONDS is a bash 5 builtin and costs
 # nothing; older bash — notably macOS's stock /bin/bash 3.2 — pays for a single `date`.
-if [ -n "${EPOCHSECONDS:-}" ]; then SB_NOW=$EPOCHSECONDS; else SB_NOW=$(date +%s); fi
-
-# Export context % per-session for brain-save-trigger.sh (avoid cross-session bleed)
-if [ -n "$ctx" ] && [ -n "$session_id" ]; then
-  printf '%s\n' "$ctx" > "$SB_TMP/brain-context-pct-${session_id}"
+if [ -z "${SB_NOW:-}" ]; then
+  if [ -n "${EPOCHSECONDS:-}" ]; then SB_NOW=$EPOCHSECONDS; else SB_NOW=$(date +%s); fi
 fi
 
 # Rate limit data
@@ -58,14 +66,6 @@ fi
 if [[ $data =~ \"seven_day\"[[:space:]]*:[[:space:]]*\{([^}]*)\} ]]; then
   sb_sd=${BASH_REMATCH[1]}
   [[ $sb_sd =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && rate7d=${BASH_REMATCH[1]}
-fi
-
-# Optional JSON snapshot of rate limits for limit-watcher agents, refreshed each tick.
-# Opt-in: set SYMBIOSIS_BRAIN_RATE_LIMITS_FILE to the target path.
-if [ -n "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE" ] && [ -n "$rate5h" ]; then
-  printf '{"five_hour_pct":%s,"resets_at":%s,"seven_day_pct":%s,"ts":%s}\n' \
-    "${rate5h:-0}" "${reset5h:-0}" "${rate7d:-0}" "$SB_NOW" \
-    > "$SYMBIOSIS_BRAIN_RATE_LIMITS_FILE"
 fi
 
 # Progress bar: ████░░░░░░ (10 chars) -> REPLY

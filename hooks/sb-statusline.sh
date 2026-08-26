@@ -19,6 +19,11 @@ DIR=${BASH_SOURCE[0]%/*}
 
 export SB_STATUSLINE_INPUT="$INPUT"
 
+# Bridges first: they must not depend on whose line 1 wins. A user statusline used to
+# take the whole export block down with it (context % never reached the save trigger).
+. "$DIR/sb-hooklib.sh" 2>/dev/null || true
+. "$DIR/sb-export.sh" 2>/dev/null || true
+
 if [ -n "$SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD" ]; then
   eval "$SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD" <<<"$INPUT" || true
 elif [ -r "$DIR/sb-base-statusline.sh" ]; then

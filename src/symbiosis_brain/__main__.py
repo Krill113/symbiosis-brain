@@ -483,6 +483,31 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         hits = run_recall(query=query, scope=scope, config=cfg, engine=engine, seen=seen)
         recall_block = format_recall_block(query, hits)
 
+        # C3: route hints on a SUBAGENT prompt. The user's prompt has had these
+        # since Stage 4 (the search-gist fold), but a subagent brief never saw
+        # them — so a route whose whole point is "read this BEFORE you launch the
+        # agent" only fired when the user happened to type the trigger himself.
+        # Bash/PowerShell are excluded deliberately: their warnings come from the
+        # compiled action-rule path inside brain-pre-action-trigger.sh.
+        agent_block = ""
+        if tool_name in ("Task", "Agent") and cfg.routing_enabled:
+            try:
+                from symbiosis_brain import tool_routing as tr
+                from symbiosis_brain.pre_action_recall import agent_route_block
+
+                agent_block = agent_route_block(
+                    tool_input.get("prompt") or "",
+                    tr.load_routes(vault=vault_path),
+                    scope=scope,
+                    vault=vault_path,
+                    roster=tr._roster_set(session_id),
+                    cap=cfg.routing_cap,
+                    session_id=session_id,
+                    seen_ttl_seconds=cfg.routing_seen_ttl_seconds,
+                )
+            except Exception:
+                agent_block = ""  # fail-open: routing never blocks a tool call
+
         # F4: Serena pre-edit advisory (action-time). Fold into the same
         # additionalContext so a code edit gets the "map dependencies first"
         # nudge even when recall returned nothing. Advisory-only, fail-open.
@@ -507,7 +532,7 @@ def _run_pre_action_recall(argv: list[str]) -> int:
             except Exception:
                 advisory = ""  # fail-open: advisory must never block the edit
 
-        parts = [p for p in (recall_block, advisory) if p]
+        parts = [p for p in (recall_block, agent_block, advisory) if p]
         if not parts:
             return 0
         output = {

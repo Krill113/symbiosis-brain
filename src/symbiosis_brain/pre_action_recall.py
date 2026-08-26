@@ -5,6 +5,7 @@ Pure-Python module — no I/O side effects (caller wires SearchEngine).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from symbiosis_brain.pre_action_config import PreActionConfig
@@ -116,6 +117,90 @@ def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
         mark = "★ " if h.get("_in_both") else ""
         lines.append(f"- {mark}{path} — {gist}")
     return "\n".join(lines)
+
+
+# Matching window for a SUBAGENT prompt (C3). Deliberately WIDER than
+# PreActionConfig.query_max_chars (500): recall only needs a topical
+# fingerprint of the brief, while a route trigger is a literal phrase that
+# usually sits in the middle of a long task description.
+AGENT_ROUTE_MATCH_MAX_CHARS = 4000
+
+# Routes eligible on a subagent prompt. class:"action" is excluded on purpose:
+# those live in the compiled TSV read by the pure-bash matcher in
+# brain-pre-action-trigger.sh, and a second copy here would double-inject.
+_AGENT_ROUTE_CLASSES = ("augment", "supersede")
+
+
+def agent_route_block(
+    prompt: str,
+    routes: list,
+    *,
+    scope: str | None,
+    vault: Path | None,
+    roster: set[str] | None,
+    cap: int,
+    session_id: str = "",
+    seen_ttl_seconds: int = 86400,
+) -> str:
+    """Route hints for a subagent prompt (tool_name in {"Task", "Agent"}).
+
+    Matches ``tool_input["prompt"]`` — truncated to AGENT_ROUTE_MATCH_MAX_CHARS —
+    against ``Route.triggers`` (Python regexes). ``command_triggers`` are NOT
+    used here: they are POSIX ERE for ``grep -E`` and Python's ``re`` silently
+    misparses ``[[:space:]]`` (see action_rules.py docstring).
+
+    Only class augment/supersede routes with non-empty triggers fire; ``cap``
+    keeps the top-K by priority DESC (match_routes' own rule). ``when:`` gates
+    are evaluated as usual — against the PARENT session's roster. PreToolUse on
+    Task/Agent runs in the session that is ABOUT to spawn the subagent (the
+    subagent has no session yet), and ``_roster_set`` reads
+    ``brain-mcp-roster-<session_id>`` straight from that payload; the same roster
+    already feeds serena_advisory in ``__main__``. So ``mcp:*`` gates here are
+    normally OPEN. Only a missing roster file (roster is None) makes ``_when_ok``
+    fail closed and silently drop the route.
+
+    Dedup goes through tool_routing.dedup_augment, i.e. the SHARED
+    ``brain-route-seen-<sid>`` store: an augment hint already shown on the
+    user's prompt this session is not repeated on the subagent's. supersede is
+    never deduped.
+
+    Returns "" when nothing matched, ``routes`` is empty, or ANY error occurs
+    (fail-open — this runs inside PreToolUse and must never block a tool call).
+    Note: this is the one function in this module that touches disk, via the
+    dedup store owned by tool_routing.
+    """
+    try:
+        if not prompt or not routes:
+            return ""
+        from symbiosis_brain import tool_routing as tr
+
+        candidates = [
+            r for r in routes
+            if getattr(r, "cls", "") in _AGENT_ROUTE_CLASSES and getattr(r, "triggers", None)
+        ]
+        if not candidates:
+            return ""
+        matched = tr.match_routes(
+            prompt[:AGENT_ROUTE_MATCH_MAX_CHARS],
+            candidates,
+            roster=roster,
+            scope=scope,
+            vault=vault,
+            cap=cap,
+        )
+        if not matched:
+            return ""
+        matched = tr.dedup_augment(matched, session_id, ttl_seconds=seen_ttl_seconds)
+        hints = [
+            h for h in ((r.get("hint") or "").strip() for r in tr.route_hints(matched)) if h
+        ]
+        if not hints:
+            return ""
+        lines = [f"[routes: {len(hints)} hints for subagent]"]
+        lines.extend(f"- {h}" for h in hints)
+        return "\n".join(lines)
+    except Exception:
+        return ""  # fail-open: a routing hint is never worth blocking a tool call
 
 
 # Tools whose target is an actual code edit (F4 Serena pre-edit advisory).

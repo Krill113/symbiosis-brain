@@ -393,3 +393,26 @@ def test_debug_route_requires_vs_mcp(tmp_path):
     # vs-mcp absent → silent
     assert not any(r.id == "debug-civil3d-plugin"
                    for r in tr.match_routes(prompt, routes, roster=None))
+
+
+# --- C3: the agent block shares brain-route-seen-<sid> with the user prompt ---
+def test_agent_block_dedups_augment_within_session(tmp_path, monkeypatch):
+    """An augment hint already shown this session is not repeated on a subagent
+    prompt (shared store, prefix brain-route-seen-). supersede is never deduped."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    from symbiosis_brain.pre_action_recall import agent_route_block
+
+    aug = tr.Route(id="aug", cls="augment", triggers=[re.compile("spawn")],
+                   hint="augment hint")
+    sup = tr.Route(id="sup", cls="supersede", triggers=[re.compile("spawn")],
+                   hint="supersede hint")
+    kw = dict(scope=None, vault=None, roster=None, cap=2,
+              session_id="agent-dedup", seen_ttl_seconds=3600)
+
+    first = agent_route_block("spawn subagents", [aug, sup], **kw)
+    assert "- augment hint" in first
+    assert "- supersede hint" in first
+
+    second = agent_route_block("spawn subagents", [aug, sup], **kw)
+    assert second.splitlines() == ["[routes: 1 hints for subagent]", "- supersede hint"]

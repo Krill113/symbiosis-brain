@@ -74,6 +74,17 @@ if [ -f "$VAULT/CRITICAL_FACTS.md" ]; then
   echo ""
 fi
 
+# Vault sync alarm. brain-sync.sh runs at SessionEnd, which has no output channel:
+# a failed push/rebase would otherwise stay invisible until the vault diverged for
+# good. The marker is removed by the next successful sync.
+if [ -r "$SB_TMP/brain-sync-failed" ]; then
+  read -r SYNC_LINE < "$SB_TMP/brain-sync-failed"
+  SYNC_STAGE=${SYNC_LINE#stage=}; SYNC_STAGE=${SYNC_STAGE%% *}
+  SYNC_AT=${SYNC_LINE##*at=}
+  echo "⚠️ vault sync failed (${SYNC_STAGE}, ${SYNC_AT}) — see $SB_TMP/brain-sync-errors.log"
+  echo ""
+fi
+
 # Tool roster (one-line cheat sheet, low cost, refreshes on session start)
 echo "Available tools: brain_search/brain_read/brain_write (memory), Serena (find_symbol/replace_symbol_body), subagents (Explore/general-purpose), screenshot."
 echo ""

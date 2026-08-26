@@ -375,6 +375,30 @@ def test_merge_is_idempotent_across_repairs(tmp_path):
         "PreToolUse": 1, "PostToolUse": 1, "SessionEnd": 1}
 
 
+def test_init_vault_seeds_gitattributes_merge_union(tmp_path):
+    """log.md is an append-only journal and is the file that conflicts on every
+    multi-machine sync. `merge=union` keeps both sides (the lint dedups later); every
+    other note keeps the standard merge, so a real conflict still stops the sync and
+    asks the owner (owner decision A3). Idempotent — --repair runs on every upgrade."""
+    vault = tmp_path / "vault"
+    install_lib.scaffold_vault(vault)
+    ga = (vault / ".gitattributes").read_text(encoding="utf-8")
+    assert "log.md merge=union" in ga
+    install_lib.scaffold_vault(vault)
+    assert (vault / ".gitattributes").read_text(encoding="utf-8").count("log.md merge=union") == 1
+
+
+def test_init_vault_keeps_user_gitattributes(tmp_path):
+    """A vault that already has its own .gitattributes must keep it — we only append."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    install_lib.scaffold_vault(vault)
+    ga = (vault / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in ga
+    assert "log.md merge=union" in ga
+
+
 def test_our_hook_scripts_covers_every_hook_command():
     """OUR_HOOK_SCRIPTS is the ownership test used by _merge_hook_event, so it must name
     every script the installer itself writes into settings.json. If a future event (or a

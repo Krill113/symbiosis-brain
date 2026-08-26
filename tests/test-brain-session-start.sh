@@ -447,10 +447,29 @@ test_roster_prime_skipped_when_roster_is_fresh() {
   rm -rf "$stub_dir" "$roster" "$TMPDIR/claude-calls"
 }
 
+# (8) A failed vault sync has no output channel of its own (SessionEnd is mute), so
+# the alarm is surfaced on the next session start, next to CRITICAL_FACTS.
+test_session_start_shows_sync_alarm() {
+  setup_vault
+  local sid="sync-alarm-$$"
+  printf 'stage=conflict at=2026-08-25T21:15:00+03:00\n' > "$TMPDIR/brain-sync-failed"
+  local out
+  out=$(echo "{\"session_id\":\"${sid}\",\"source\":\"startup\"}" | \
+        SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" 2>/dev/null)
+  rm -f "$TMPDIR/brain-sync-failed"
+  if echo "$out" | grep -q "vault sync failed (conflict, 2026-08-25T21:15:00+03:00)"; then
+    echo "PASS: session_start_shows_sync_alarm"
+  else
+    echo "FAIL: session_start_shows_sync_alarm — banner missing"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
 test_session_id_parsed_with_space_after_colon
 test_last_save_marker_survives_compact
 test_prompt_recall_seen_files_gc_when_stale
 test_roster_prime_skipped_when_roster_is_fresh
+test_session_start_shows_sync_alarm
 
 # Cleanup
 rm -rf "$VAULT" "$FAKE_ROOT"

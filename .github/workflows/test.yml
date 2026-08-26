@@ -111,6 +111,7 @@ jobs:
 
           fail=0
           for t in tests/test-brain-session-start.sh \
+                   tests/test-brain-sync.sh \
                    tests/test-pre-action-trigger.sh \
                    tests/test-prompt-check-hook.sh \
                    tests/test-save-marker-hook.sh \

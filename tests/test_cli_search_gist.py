@@ -58,7 +58,30 @@ def test_emit_json_with_lone_surrogate_does_not_crash_and_keeps_clean_hit(monkey
     assert any(h.get("gist") == "clean survivable gist" for h in out["memory_hits"])
 
 
-def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path):
+@pytest.fixture
+def sb_home(tmp_path_factory) -> Path:
+    """A throwaway Path.home() for subprocess tests.
+
+    `search-gist` resolves its config through Path.home()/".claude"/
+    symbiosis-brain-pre-action.json (Path.home() reads USERPROFILE on Windows, HOME on
+    POSIX). A child that inherits the real ones reads the developer's own routing knobs
+    — the same subprocess passes or fails depending on the machine — and writes its
+    seen-store next to the live one. TMPDIR/TEMP are already covered session-wide by
+    conftest._isolate_hook_artifacts; this closes the home half.
+    """
+    home = tmp_path_factory.mktemp("sb-home")
+    (home / ".claude").mkdir(exist_ok=True)
+    return home
+
+
+def _hermetic_env(home: Path, **extra) -> dict:
+    """os.environ with Path.home() pointed at `home`, plus optional overrides."""
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    env.update(extra)
+    return env
+
+
+def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path, sb_home: Path):
     """Smoke test: invoke `python -m symbiosis_brain search-gist` and parse JSON output."""
     # Pre-populate vault with one note
     note_path = tmp_vault_with_taxonomy / "patterns" / "x.md"
@@ -73,7 +96,7 @@ def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path):
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "X",
          "--limit", "5"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
@@ -85,19 +108,21 @@ def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path):
     assert data[0]["scope"] == "global"
 
 
-def test_cli_search_gist_empty_vault_returns_empty_list(tmp_vault_with_taxonomy: Path):
+def test_cli_search_gist_empty_vault_returns_empty_list(tmp_vault_with_taxonomy: Path,
+                                                       sb_home: Path):
     result = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "nothing", "--limit", "5"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data == []
 
 
-def test_cli_search_gist_handles_cyrillic_and_arrow(tmp_vault_with_taxonomy: Path):
+def test_cli_search_gist_handles_cyrillic_and_arrow(tmp_vault_with_taxonomy: Path,
+                                                   sb_home: Path):
     """Regression: gist with cyrillic + `→` arrow must not crash with cp1251 UnicodeEncodeError on Windows.
 
     Why: on Windows default stdout codec is cp1251 unless reconfigured.
@@ -113,8 +138,7 @@ def test_cli_search_gist_handles_cyrillic_and_arrow(tmp_vault_with_taxonomy: Pat
     )
 
     # Force child to default Windows stdout (no PYTHONIOENCODING / PYTHONUTF8).
-    import os
-    env = {k: v for k, v in os.environ.items()
+    env = {k: v for k, v in _hermetic_env(sb_home).items()
            if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
     result = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
@@ -140,7 +164,8 @@ def test_cli_search_gist_handles_cyrillic_and_arrow(tmp_vault_with_taxonomy: Pat
 # property explicit and self-documenting.
 
 
-def test_search_gist_no_flag_returns_bare_list(tmp_vault_with_taxonomy: Path):
+def test_search_gist_no_flag_returns_bare_list(tmp_vault_with_taxonomy: Path,
+                                              sb_home: Path):
     """Backward-compat: the OLD calling convention (--query, NO --prompt-from-stdin
     / --envelope) MUST return the bare list exactly as the deployed hook expects."""
     note_path = tmp_vault_with_taxonomy / "patterns" / "bc.md"
@@ -153,7 +178,7 @@ def test_search_gist_no_flag_returns_bare_list(tmp_vault_with_taxonomy: Path):
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "BC", "--limit", "5"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
@@ -167,19 +192,21 @@ def test_search_gist_no_flag_returns_bare_list(tmp_vault_with_taxonomy: Path):
     assert first["path"] == "patterns/bc.md"
 
 
-def test_search_gist_missing_vault_no_flag_returns_bare_empty_list(tmp_path: Path):
+def test_search_gist_missing_vault_no_flag_returns_bare_empty_list(tmp_path: Path,
+                                                                  sb_home: Path):
     """Legacy missing-vault behavior: bare `[]`, not an envelope."""
     result = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_path / "does-not-exist"),
          "--query", "x"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert json.loads(result.stdout) == []
 
 
-def test_search_gist_envelope_under_prompt_from_stdin(tmp_vault_with_taxonomy: Path):
+def test_search_gist_envelope_under_prompt_from_stdin(tmp_vault_with_taxonomy: Path,
+                                                     sb_home: Path):
     """Envelope path: --prompt-from-stdin returns {memory_hits, route_hints}."""
     note_path = tmp_vault_with_taxonomy / "patterns" / "env.md"
     note_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +220,7 @@ def test_search_gist_envelope_under_prompt_from_stdin(tmp_vault_with_taxonomy: P
          "--vault", str(tmp_vault_with_taxonomy),
          "--prompt-from-stdin", "--limit", "5"],
         input=payload, capture_output=True, text=True, timeout=60,
+        env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
@@ -203,13 +231,14 @@ def test_search_gist_envelope_under_prompt_from_stdin(tmp_vault_with_taxonomy: P
     assert any(h.get("gist") == "envelope gist" for h in out["memory_hits"])
 
 
-def test_search_gist_envelope_under_explicit_envelope_flag(tmp_vault_with_taxonomy: Path):
+def test_search_gist_envelope_under_explicit_envelope_flag(tmp_vault_with_taxonomy: Path,
+                                                          sb_home: Path):
     """Explicit --envelope (still using --query) also opts into the dict shape."""
     result = subprocess.run(
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "anything", "--envelope"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, env=_hermetic_env(sb_home),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
@@ -217,7 +246,8 @@ def test_search_gist_envelope_under_explicit_envelope_flag(tmp_vault_with_taxono
     assert "memory_hits" in out and "route_hints" in out
 
 
-def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Path):
+def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Path,
+                                                                   sb_home: Path):
     """The prompt is read untruncated from raw stdin JSON (NOT from a truncated
     --query), and an embedded double-quote survives json.loads. We assert the
     Windows route fires off a long prompt whose UNC-path trigger sits PAST the
@@ -230,7 +260,7 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_path), "--prompt-from-stdin", "--skip-memory"],
         input=payload, capture_output=True, text=True, timeout=30,
-        env={**os.environ, "OSTYPE": "win32"},
+        env=_hermetic_env(sb_home, OSTYPE="win32"),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)

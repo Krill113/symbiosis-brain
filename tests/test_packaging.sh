@@ -25,7 +25,13 @@ for name in sorted(registered):
     shipped(f"symbiosis_brain/skills/{name}/SKILL.md")
 for ref in ("action-rule-recipe.md", "automation-recipe.md"):
     shipped(f"symbiosis_brain/skills/brain-autolearn/references/{ref}")
-print("skills OK")
+# Hooks and slash commands are force-included the same way skills are, and a missing
+# one is not cosmetic: cmd_setup raises on it and rolls the whole install back.
+for hook in install_cli.HOOK_FILES_SH:
+    shipped(f"symbiosis_brain/hooks/{hook}")
+for cmd in install_cli.COMMAND_FILES:
+    shipped(f"symbiosis_brain/commands/{cmd}")
+print("skills, hooks and commands OK")
 PY
 
 echo OK

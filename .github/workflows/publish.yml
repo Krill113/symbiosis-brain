@@ -38,6 +38,12 @@ jobs:
             exit 1
           fi
 
+      # Release notes are only resolved in the `release` job, which runs after the
+      # package is already on PyPI — and PyPI publishes are irreversible. Fail here
+      # instead, while the only cost is a red build.
+      - name: Verify release notes exist for the tag
+        run: python3 tools/changelog_section.py "${GITHUB_REF_NAME#v}" > /dev/null
+
       - name: Build wheel and sdist
         run: uv build
 

@@ -23,12 +23,21 @@ sb_session_id "$INPUT"
 # carries tool_input, i.e. the note's own text, and a note that merely MENTIONS
 # `"is_error":true` (this very checkpoint writes two — hooks/README.md and CHANGELOG)
 # would otherwise be read as a failed call and silently skip the marker.
-# The harness emits tool_response LAST, so the tail after that key is the response
-# and nothing else. Fork-free by design (parameter expansion, no jq, no python).
-SB_RESP=${INPUT#*\"tool_response\"}
+# The harness emits tool_response LAST, so the tail after the LAST occurrence of that
+# key is the response and nothing else — hence `##`, not `#`: a note body quoting the
+# literal `"tool_response"` would otherwise shift the cut to its own text and hand the
+# case below the tool_input to inspect.
+# Fork-free by design (parameter expansion, no jq, no python).
+SB_RESP=${INPUT##*\"tool_response\"}
 [ "$SB_RESP" = "$INPUT" ] && SB_RESP=          # no tool_response key -> nothing to inspect
 case "$SB_RESP" in
   *'"is_error":true'*|*'"is_error": true'*) exit 0 ;;
+  # The server itself does not raise: every refusal in server.py comes back as a
+  # normal, non-error TextContent starting with `Error: ` (missing gist, a failed
+  # write gate, an unknown scope). Without this arm a REJECTED brain_write still
+  # stamped the marker and reset the Stop-hook delta-guard, so the 25/35 save zones
+  # stayed silent until the context had grown another 10%.
+  *'"text":"Error: '*|*'"text": "Error: '*) exit 0 ;;
 esac
 
 sb_tmp_dir

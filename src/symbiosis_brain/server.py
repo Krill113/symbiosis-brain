@@ -4,6 +4,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from symbiosis_brain.write_lock import note_write_lock
 from symbiosis_brain.gist_limits import GIST_SOFT_LIMIT
 from symbiosis_brain.validation import validate_note, ValidationError, new_links_introduced
 from symbiosis_brain.parent_watchdog import start_parent_watchdog
+from symbiosis_brain.sqlite_health import sqlite_warning
 
 import frontmatter
 
@@ -96,6 +98,14 @@ def _apply_targeted_index(sync_result: SyncResult) -> None:
 def _init(vault_path: Path):
     global _storage, _search, _sync, _graph, _temporal, _vault_path, _linter
     _vault_path = vault_path
+
+    # One line per process, before anything touches the database: the next
+    # incident must not start with guessing which SQLite build was underneath.
+    logger.info("SQLite %s", sqlite3.sqlite_version)
+    _sqlite_note = sqlite_warning(sqlite3.sqlite_version)
+    if _sqlite_note:
+        logger.warning("%s", _sqlite_note)
+
     db_path = vault_path / ".index" / "brain.db"
     _storage = Storage(db_path)
     _search = SearchEngine(_storage)

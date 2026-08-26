@@ -190,11 +190,12 @@ Pull requests welcome. A few rules:
 Releases are auto-published to PyPI on `v*` git tags via GitHub Actions (Trusted Publisher OIDC, no API tokens).
 
 1. `hatch version <patch|minor|major>` — bumps `src/symbiosis_brain/__init__.py`
-2. Move `[Unreleased]` items in `CHANGELOG.md` into a new `[X.Y.Z] — YYYY-MM-DD` section
+2. Move `[Unreleased]` items in `CHANGELOG.md` into a new `[X.Y.Z] — YYYY-MM-DD` section, and — when the release deserves more than a dry list — write `docs/release-notes/vX.Y.Z.md` (see the README in that folder)
 3. `git commit -am "release: vX.Y.Z"`
 4. `git tag -a vX.Y.Z -m "vX.Y.Z" && git push --follow-tags` — the `-a` is load-bearing: `--follow-tags` pushes annotated tags only, so a lightweight tag stays local, the publish workflow never fires, and the push still looks like it succeeded. Confirm with `git ls-remote --tags origin`.
-5. Watch [Actions](https://github.com/Krill113/symbiosis-brain/actions) — `build`, `publish`, `verify` jobs must all pass
+5. Watch [Actions](https://github.com/Krill113/symbiosis-brain/actions) — `build`, `publish`, `verify` and `release` jobs must all pass
 6. Verify on [pypi.org/project/symbiosis-brain](https://pypi.org/project/symbiosis-brain/)
+7. The `release` job creates the GitHub Release itself, from `docs/release-notes/vX.Y.Z.md` with the CHANGELOG section as fallback — no manual `gh release create` any more
 
 </details>
 

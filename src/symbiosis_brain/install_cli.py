@@ -363,10 +363,13 @@ def cmd_setup(args):
         skills_pre_existing: set[Path] = set()
         hooks_pre_existing: set[Path] = set()
         commands_pre_existing: set[Path] = set()
+        # Whole tree, not just SKILL.md: a skill ships references/** too (brain-autolearn
+        # has two), and a rollback that only knows about SKILL.md leaves those behind in
+        # ~/.claude/skills/<name>/references/.
         for name in SKILL_NAMES:
-            f = skill_dir / name / "SKILL.md"
-            if f.exists():
-                skills_pre_existing.add(f)
+            d = skill_dir / name
+            if d.is_dir():
+                skills_pre_existing.update(f for f in d.rglob("*") if f.is_file())
         for name in HOOK_FILES_SH:
             f = hook_dir / name
             if f.exists():
@@ -382,9 +385,10 @@ def cmd_setup(args):
 
         # After copy, anything new (not pre-existing) is ours to rollback
         for name in SKILL_NAMES:
-            f = skill_dir / name / "SKILL.md"
-            if f.exists() and f not in skills_pre_existing:
-                created_files.append(f)
+            d = skill_dir / name
+            if d.is_dir():
+                created_files.extend(f for f in sorted(d.rglob("*"))
+                                     if f.is_file() and f not in skills_pre_existing)
         for name in HOOK_FILES_SH:
             f = hook_dir / name
             if f.exists() and f not in hooks_pre_existing:
@@ -528,7 +532,7 @@ def cmd_doctor(args) -> int:
     # shell out to `claude mcp list`, which is the most expensive thing doctor does.
     vault = _resolve_vault_path()
 
-    # 5. SQLite engine (WAL-Reset detector — report only, never patch: the fix
+    # 6. SQLite engine (WAL-Reset detector — report only, never patch: the fix
     # ships with CPython 3.15, and patching the interpreter's sqlite3.dll or
     # swapping in APSW was rejected deliberately).
     sqlite_version = sqlite3.sqlite_version
@@ -564,14 +568,14 @@ def cmd_doctor(args) -> int:
                     print(f"✗ integrity_check {detail}")
                     issues += 1
 
-    # 6. Vault
+    # 7. Vault
     if vault and vault.exists() and (vault / "reference" / "scope-taxonomy.md").exists():
         print(f"✓ Vault          OK ({vault})")
     else:
         print(f"✗ Vault          FAIL ({vault or 'not configured'})")
         issues += 1
 
-    # 7. CLAUDE.md
+    # 8. CLAUDE.md
     cm = _claude_md_path()
     if install_lib.has_marker(cm, install_lib.CLAUDE_MD_MARKER):
         print("✓ CLAUDE.md      OK (Symbiosis Brain block present)")
@@ -579,7 +583,7 @@ def cmd_doctor(args) -> int:
         print("✗ CLAUDE.md      FAIL (block missing)")
         issues += 1
 
-    # 8. Action-recall matcher — only meaningful once our PreToolUse hook is
+    # 9. Action-recall matcher — only meaningful once our PreToolUse hook is
     # actually installed. `setup claude-code` widened the matcher to include
     # PowerShell, but merge_settings_json only runs from `setup`; an install
     # that predates that change keeps its old Bash-only matcher forever

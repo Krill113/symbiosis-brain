@@ -45,8 +45,19 @@ def build_query(tool_name: str, tool_input: dict[str, Any], max_chars: int) -> O
 
 
 def _note_type(note: dict[str, Any]) -> Optional[str]:
-    """Extract note type from SearchEngine result. Type lives inside
-    `frontmatter` dict, NOT at top level (see search.py mode=gist handling)."""
+    """Note type of a SearchEngine result.
+
+    The canonical source is the top-level ``note_type`` COLUMN. ``parse_note``
+    pops ``type`` out of the YAML frontmatter into its own field, so a real
+    search row NEVER carries it under ``frontmatter`` — that dict only holds
+    the leftover ``extra`` keys (a note with a gist gives ``{"gist": ...}``).
+    Reading only ``frontmatter["type"]`` made ``excluded_note_types`` a silent
+    no-op on every path; the frontmatter lookup stays as a fallback for
+    hand-built rows and for any caller that shapes its own dicts.
+    """
+    nt = note.get("note_type")
+    if isinstance(nt, str) and nt:
+        return nt
     fm = note.get("frontmatter") or {}
     return fm.get("type") if isinstance(fm, dict) else None
 

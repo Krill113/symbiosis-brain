@@ -100,6 +100,12 @@ class PreActionConfig:
     timeout_seconds: int = 30
     recall_dedup_enabled: bool = True
     recall_dedup_ttl_seconds: int = 120
+    # Prompt-path (UserPromptSubmit) recall dedup window. Separate from the
+    # 120 s pre-action window on purpose: a user prompt arrives once every
+    # minute or two and would slip straight through that window, re-injecting
+    # the same notes turn after turn. Killed by the SAME switch as the
+    # pre-action dedup (`recall_dedup_enabled`) — we do not breed kill-switches.
+    prompt_recall_dedup_ttl_seconds: int = 1800
     # --- Stage-4 tool-routing (C1/C2). All fields are plain JSON-overridable via
     # the same ~/.claude/symbiosis-brain-pre-action.json file; load_config()'s
     # generic hasattr+type-check loop validates them with no extra code. ---

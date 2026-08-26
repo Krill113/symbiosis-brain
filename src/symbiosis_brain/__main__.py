@@ -80,6 +80,24 @@ def _append_route_events(
         pass  # fail-open
 
 
+def _load_pre_action_config():
+    """PreActionConfig for the hook CLI paths — defaults on ANY failure.
+
+    Returns None only when the module itself will not import; the caller then
+    falls back to the raw legacy search rather than dropping recall entirely.
+    Loaded ONCE per invocation and shared by the routing fold and the prompt
+    recall fold, which both read knobs from it.
+    """
+    try:
+        from symbiosis_brain.pre_action_config import PreActionConfig, load_config
+    except Exception:
+        return None
+    try:
+        return load_config()
+    except Exception:
+        return PreActionConfig()
+
+
 def _run_search_gist(argv: list[str]):
     import argparse
     import json
@@ -151,22 +169,21 @@ def _run_search_gist(argv: list[str]):
         return 0
 
     # Envelope path (Phase B / opt-in). Fold the routing engine in and emit
-    # {memory_hits, route_hints}. Every routing step is fail-open.
+    # {memory_hits, route_hints}. Every step is fail-open.
+    #
+    # Live config knobs (routing_*, recall dedup, excluded types) — loaded ONCE
+    # for BOTH folds below. A load error already degraded to dataclass defaults
+    # inside the helper; None means the module itself would not import, and the
+    # memory fold then falls back to the raw legacy search.
+    cfg = _load_pre_action_config()
+
     route_hint_list: list = []
     try:
         from symbiosis_brain import tool_routing as tr
-        from symbiosis_brain.pre_action_config import PreActionConfig, load_config
 
-        # Live config knobs (routing_enabled / routing_cap / routing_seen_ttl_seconds).
-        # Fail-open: any config-load error falls back to the dataclass defaults,
-        # never raises into the routing fold.
-        try:
-            cfg = load_config()
-        except Exception:
-            cfg = PreActionConfig()
-
-        if not cfg.routing_enabled:
-            # Routing disabled by config → emit empty hints, skip the engine.
+        if cfg is None or not cfg.routing_enabled:
+            # Routing disabled by config (or config unreadable) → emit empty
+            # hints, skip the engine.
             route_hint_list = []
         else:
             routes = tr.load_routes(vault=vault_path if vault_path.exists() else None)
@@ -192,16 +209,42 @@ def _run_search_gist(argv: list[str]):
 
     memory_hits: list = []
     if not args.skip_memory and vault_path.exists() and prompt:
-        memory_hits = _gist_search(vault_path, prompt, args.scope, args.limit)
+        if cfg is None:
+            memory_hits = _gist_search(vault_path, prompt, args.scope, args.limit)
+        else:
+            memory_hits = _prompt_recall_hits(
+                vault_path, prompt, args.scope, args.limit, args.session_id, cfg,
+            )
 
     _emit_json({"memory_hits": memory_hits, "route_hints": route_hint_list})
     return 0
 
 
+def _shape_hits(rows: list) -> list:
+    """Shape search rows into the `{path,title,scope,gist}` objects the DEPLOYED
+    bash hook parses (`brain-save-trigger.sh` reads `n['path']` and
+    `n.get('gist','')`). This shape is a hard contract — do not add, rename or
+    reorder keys. Shared by the legacy bare-list path and the envelope path so
+    both keep emitting byte-identical hit objects."""
+    return [
+        {
+            "path": r["path"],
+            "title": r["title"],
+            "scope": r["scope"],
+            "gist": r.get("gist", ""),
+        }
+        for r in rows
+    ]
+
+
 def _gist_search(vault_path, query, scope, limit) -> list:
-    """Run the gist-mode vault search and shape each hit as
-    `{path,title,scope,gist}`. Shared by the legacy bare-list and envelope paths
-    so both return byte-identical hit objects."""
+    """LEGACY bare-list path only: raw gist-mode top-N, no dedup, no type
+    filter, no over-fetch.
+
+    Kept byte-behaviour-identical on purpose — a pre-Phase-B copy of the hook
+    still calls `search-gist` without `--envelope`/`--prompt-from-stdin` and
+    parses exactly this. The envelope path goes through `_prompt_recall_hits`;
+    do NOT "unify" the two."""
     from symbiosis_brain.storage import Storage
     from symbiosis_brain.search import SearchEngine
     from symbiosis_brain.sync import VaultSync
@@ -217,15 +260,67 @@ def _gist_search(vault_path, query, scope, limit) -> list:
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
     results = search.search(query=query, scope=scope, limit=limit, mode="gist")
-    return [
-        {
-            "path": r["path"],
-            "title": r["title"],
-            "scope": r["scope"],
-            "gist": r.get("gist", ""),
-        }
-        for r in results
-    ]
+    return _shape_hits(results)
+
+
+def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg) -> list:
+    """Envelope-path prompt recall: the SAME pipeline PreToolUse runs.
+
+    Buys three things the raw `_gist_search` never had on the UserPromptSubmit
+    path — session dedup, `excluded_note_types`, and over-fetch (`run_recall`
+    pulls `hit_limit*2` and BACKFILLS the freed slots with fresh hits instead
+    of just cutting repeats out and showing 2 of 5).
+
+    The seen store gets its OWN prefix: sharing `brain-recall-seen-` with
+    pre-action recall would let the two paths strangle each other — different
+    limits (5 vs 3), different purpose, different cadence. TTL comes from
+    `prompt_recall_dedup_ttl_seconds` (1800 s); 120 s is far too short for a
+    path that fires once per user prompt.
+
+    Fail-open at every step: any error → [] and silence. This is the hottest
+    hook path in the product; it must never raise into the turn.
+    """
+    from dataclasses import replace
+
+    try:
+        from symbiosis_brain.pre_action_recall import run_recall
+        from symbiosis_brain.search import SearchEngine
+        from symbiosis_brain.storage import Storage
+        from symbiosis_brain.sync import VaultSync
+
+        db_path = vault_path / ".index" / "brain.db"
+        storage = Storage(db_path)
+        sync_result = VaultSync(vault_path, storage).sync_all()
+        engine = SearchEngine(storage)
+        for _p in sync_result.removed:
+            engine.delete_vec(_p)
+    except Exception:
+        return []
+
+    seen = None
+    if cfg.recall_dedup_enabled and session_id:
+        try:
+            from symbiosis_brain.recall_dedup import SeenStore
+
+            seen = SeenStore(
+                session_id,
+                ttl_seconds=cfg.prompt_recall_dedup_ttl_seconds,
+                prefix="brain-prompt-recall-seen-",
+            )
+        except Exception:
+            seen = None  # dedup is best-effort, never a reason to drop recall
+
+    try:
+        hits = run_recall(
+            query=prompt,
+            scope=scope,
+            config=replace(cfg, hit_limit=limit),
+            engine=engine,
+            seen=seen,
+        )
+    except Exception:
+        return []
+    return _shape_hits(hits)
 
 
 def _run_prewarm(argv: list[str]) -> int:

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -422,3 +423,219 @@ def test_event_log_concurrent_appends_multiprocess(tmp_path):
     # distinguishes normal small loss from a non-atomic regression without
     # flaking on the OS's non-deterministic append behaviour.
     assert len(valid) >= N // 2, f"only {len(valid)}/{N} valid lines — possible non-atomic regression"
+
+
+# --- CP-5 / C2 + C-N1: prompt-path dedup, type filter, over-fetch -----------
+#
+# The UserPromptSubmit path (`search-gist --envelope`) shaped hits straight out
+# of SearchEngine: no SeenStore, no excluded_note_types, no over-fetch. It now
+# runs the SAME pipeline PreToolUse runs (pre_action_recall.run_recall) behind
+# its OWN seen store, so the two paths cannot starve each other (different
+# limits, different purpose).
+#
+# TMPDIR isolation on EVERY subprocess call is mandatory: the child would
+# otherwise write seen-files into the developer's real temp dir and read the
+# real ones back — see [[mistakes/test-subprocess-inherits-system-tmpdir]].
+# HOME/USERPROFILE are redirected too, so the developer's own
+# ~/.claude/symbiosis-brain-pre-action.json can never change the answer.
+
+# Captured at IMPORT (collection) time, before any TMPDIR-redirecting fixture
+# runs: fastembed's model cache defaults to <tempdir>/fastembed_cache, so a
+# per-test TMPDIR would make every child re-download ~130 MB of ONNX. Pin it to
+# whatever the real temp dir was.
+_REAL_FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.join(
+    tempfile.gettempdir(), "fastembed_cache"
+)
+
+# One rare token every fixture note matches, so ranking is stable and the
+# candidate pool is always bigger than the limits under test.
+_RECALL_TOKEN = "zebracopter"
+
+
+def _make_recall_vault(tmp_path: Path) -> Path:
+    """Vault under tmp_path/vault so the redirected TMPDIR (tmp_path/tmp) never
+    lands inside the vault being synced."""
+    from symbiosis_brain.sync import VAULT_DIRS
+
+    vault = tmp_path / "vault"
+    for d in VAULT_DIRS:
+        (vault / d).mkdir(parents=True, exist_ok=True)
+    (vault / "reference" / "scope-taxonomy.md").write_text(
+        "## Whitelist\n\n| scope | purpose |\n|---|---|\n| `global` | x |\n",
+        encoding="utf-8",
+    )
+    return vault
+
+
+def _seed_recall_notes(vault: Path, note_count: int = 8,
+                       with_user_note: bool = False) -> None:
+    for i in range(note_count):
+        (vault / "patterns" / f"p{i}.md").write_text(
+            "---\n"
+            f"title: Pattern {i}\n"
+            "type: pattern\n"
+            "scope: global\n"
+            f"gist: gist number {i} about {_RECALL_TOKEN}\n"
+            "tags: []\n"
+            "---\n\n## Body\n\n"
+            f"This note explains {_RECALL_TOKEN} handling, variant {i}.\n",
+            encoding="utf-8",
+        )
+    if with_user_note:
+        # Deliberately the TOP hit: FTS weights the title column x10
+        # (bm25(notes_fts, 10, 1, 1)), so before the type filter worked this
+        # note was memory hit #1.
+        (vault / "user" / "prefs.md").write_text(
+            "---\n"
+            f"title: {_RECALL_TOKEN} user preference\n"
+            "type: user\n"
+            "scope: global\n"
+            f"gist: user note about {_RECALL_TOKEN}\n"
+            "tags: []\n"
+            "---\n\n## Body\n\n"
+            f"{_RECALL_TOKEN} {_RECALL_TOKEN} {_RECALL_TOKEN} personal preference.\n",
+            encoding="utf-8",
+        )
+
+
+def _isolated_env(tmp_path: Path, tmp_dir: Path) -> dict:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    return {
+        **os.environ,
+        "TMPDIR": str(tmp_dir),
+        "TEMP": str(tmp_dir),
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        "FASTEMBED_CACHE_PATH": _REAL_FASTEMBED_CACHE,
+    }
+
+
+def _run_envelope_recall(vault: Path, tmp_path: Path, tmp_dir: Path, *,
+                         session_id: str, limit: int,
+                         prompt: str = _RECALL_TOKEN) -> dict:
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(vault), "--prompt-from-stdin",
+         "--limit", str(limit), "--session-id", session_id],
+        input=json.dumps({"prompt": prompt}),
+        capture_output=True, text=True, timeout=180,
+        env=_isolated_env(tmp_path, tmp_dir),
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    out = json.loads(result.stdout)
+    assert isinstance(out, dict), out
+    return out
+
+
+def _recall_fixture(tmp_path: Path, **seed):
+    vault = _make_recall_vault(tmp_path)
+    _seed_recall_notes(vault, **seed)
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    return vault, tmp_dir
+
+
+def test_envelope_dedups_repeated_prompt_hits(tmp_path: Path):
+    """Same prompt twice in one session → the second turn must not re-inject
+    the notes the first turn already showed."""
+    vault, tmp_dir = _recall_fixture(tmp_path)
+
+    first = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                                 session_id="dedup-sess", limit=2)
+    second = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                                  session_id="dedup-sess", limit=2)
+
+    p1 = [h["path"] for h in first["memory_hits"]]
+    p2 = [h["path"] for h in second["memory_hits"]]
+    assert len(p1) == 2, first
+    assert not set(p1) & set(p2), (p1, p2)
+
+
+def test_envelope_backfills_to_limit_after_dedup(tmp_path: Path):
+    """Dedup must BACKFILL, not merely cut: run_recall over-fetches
+    (hit_limit*2) and refills the freed slots with fresh hits. A naive
+    'filter the already-cut page' implementation would return 0 on the
+    second call — this test is what tells the two apart."""
+    vault, tmp_dir = _recall_fixture(tmp_path)
+
+    first = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                                 session_id="backfill-sess", limit=3)
+    second = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                                  session_id="backfill-sess", limit=3)
+
+    p1 = [h["path"] for h in first["memory_hits"]]
+    p2 = [h["path"] for h in second["memory_hits"]]
+    assert len(p1) == 3, first
+    assert len(p2) == 3, second          # full page again, not a remainder
+    assert len(set(p1) | set(p2)) == 6, (p1, p2)
+
+
+def test_envelope_excludes_user_note_type(tmp_path: Path):
+    """`excluded_note_types` (default ["user"]) applies on the prompt path too."""
+    vault, tmp_dir = _recall_fixture(tmp_path, with_user_note=True)
+
+    out = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                               session_id="types-sess", limit=1)
+    paths = [h["path"] for h in out["memory_hits"]]
+    assert paths, out                     # recall still returns something
+    assert "user/prefs.md" not in paths, out
+
+
+def test_prompt_store_isolated_from_pre_action_store(tmp_path: Path):
+    """The prompt path gets its OWN seen-file prefix. Sharing
+    `brain-recall-seen-` with PreToolUse recall (hit_limit 3, TTL 120 s) would
+    make the two paths swallow each other's hits."""
+    vault, tmp_dir = _recall_fixture(tmp_path)
+
+    _run_envelope_recall(vault, tmp_path, tmp_dir, session_id="iso-sess", limit=2)
+
+    names = sorted(p.name for p in tmp_dir.glob("*.json"))
+    assert any(n.startswith("brain-prompt-recall-seen-") for n in names), names
+    assert not any(n.startswith("brain-recall-seen-") for n in names), names
+
+
+def test_envelope_fail_open_on_corrupt_seen_file(tmp_path: Path):
+    """Hottest hook path: a corrupt seen-file degrades to 'no dedup', never to
+    'no recall' and never to a non-zero exit."""
+    from symbiosis_brain.recall_dedup import _seen_path
+
+    vault, tmp_dir = _recall_fixture(tmp_path)
+    corrupt = _seen_path("corrupt-sess", tmp_dir, "brain-prompt-recall-seen-")
+    corrupt.write_text("{not json", encoding="utf-8")
+
+    out = _run_envelope_recall(vault, tmp_path, tmp_dir,
+                               session_id="corrupt-sess", limit=2)
+    assert len(out["memory_hits"]) == 2, out
+
+
+def test_legacy_bare_list_shape_unchanged(tmp_path: Path):
+    """The DEPLOYED hook copy parses the bare list. The legacy path (no
+    --envelope / --prompt-from-stdin) must stay byte-shape-identical: same four
+    keys, no dedup, no type filter, no seen-file written."""
+    vault, tmp_dir = _recall_fixture(tmp_path, with_user_note=True)
+    env = _isolated_env(tmp_path, tmp_dir)
+
+    def _legacy():
+        r = subprocess.run(
+            [sys.executable, "-m", "symbiosis_brain", "search-gist",
+             "--vault", str(vault), "--query", _RECALL_TOKEN,
+             "--limit", "2", "--session-id", "legacy-sess"],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
+        assert r.returncode == 0, f"stderr: {r.stderr}"
+        data = json.loads(r.stdout)
+        assert isinstance(data, list), data
+        return data
+
+    first = _legacy()
+    second = _legacy()
+
+    assert first, first
+    assert set(first[0]) == {"path", "title", "scope", "gist"}
+    # no dedup on the legacy path — identical answer twice
+    assert [h["path"] for h in first] == [h["path"] for h in second]
+    # no type filter either — the user note is still there
+    assert "user/prefs.md" in [h["path"] for h in first], first
+    # and nothing was written into the prompt seen store
+    assert not list(tmp_dir.glob("brain-prompt-recall-seen-*.json"))

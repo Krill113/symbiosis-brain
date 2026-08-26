@@ -110,7 +110,34 @@ fi
 
 if [ "$MODE" = "prompt-check" ]; then
   # ── Inputs ──────────────────────────────────────────────
-  PROMPT=$(echo "$INPUT" | grep -oE '"prompt": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
+  # Parse the payload as JSON: the regex below stopped at the first ESCAPED quote, so
+  # a prompt containing \" was silently truncated and every downstream gate
+  # (PROMPT_LEN → SKIP_RECALL, the slash-command case, ROUTE_GATE) judged the stub.
+  # Newlines collapse to spaces so the `case`/`grep` gates keep working on one line.
+  # ONE python start per turn: this same call also prints the CHARACTER length that
+  # :170 used to compute with a second interpreter start (bash ${#var} counts BYTES on
+  # git-bash/Windows). Line 1 = prompt, line 2 = its length.
+  # PYTHONIOENCODING=utf-8: Python's default stdin/stdout codec on Windows is cp1251.
+  SB_PROMPT_OUT=$(printf '%s' "$INPUT" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c 'import sys, json
+try:
+    p = json.load(sys.stdin).get("prompt") or ""
+except Exception:
+    p = ""
+p = p.replace("\r", " ").replace("\n", " ")
+sys.stdout.write(p + "\n" + str(len(p)) + "\n")' 2>/dev/null)
+  PROMPT=""; PROMPT_LEN=""
+  # IFS= on purpose: bare `read` strips leading/trailing spaces, which would make
+  # PROMPT_LEN (counted by python on the untrimmed text) disagree with PROMPT.
+  { IFS= read -r PROMPT; IFS= read -r PROMPT_LEN; } <<EOF
+$SB_PROMPT_OUT
+EOF
+  # Fail-open: no Python, or a payload that is not JSON — fall back to the old regex
+  # and to bash's byte-count. Both fallbacks are the pre-CP-7 behaviour, unchanged.
+  if [ -z "$PROMPT" ]; then
+    PROMPT=$(echo "$INPUT" | grep -oE '"prompt": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
+    PROMPT_LEN=${#PROMPT}
+  fi
+  case "$PROMPT_LEN" in ''|*[!0-9]*) PROMPT_LEN=${#PROMPT} ;; esac
   SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
 
   # ── Monotonic turn-counter (C5 §6.2) — UNCONDITIONAL, increment-only ──
@@ -165,9 +192,8 @@ if [ "$MODE" = "prompt-check" ]; then
   ROUTE_BLOCK=""
   SUPERSEDE_FIRED=0
   SKIP_RECALL=0
-  # bash ${#var} returns bytes on git-bash/Windows, not chars — use Python for char count.
-  # PYTHONIOENCODING=utf-8 needed because Python's default stdin encoding on Windows is cp1251.
-  PROMPT_LEN=$(printf '%s' "$PROMPT" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c 'import sys; print(len(sys.stdin.read()))' 2>/dev/null || echo "${#PROMPT}")
+  # PROMPT_LEN is computed once, above, alongside PROMPT itself (one Python start
+  # per turn instead of two).
   if [ "$RECALL_ENABLED" != "true" ]; then SKIP_RECALL=1; fi
   if [ "$PROMPT_LEN" -lt "$RECALL_SKIP_SHORT_CHARS" ]; then SKIP_RECALL=1; fi
   case "$PROMPT" in

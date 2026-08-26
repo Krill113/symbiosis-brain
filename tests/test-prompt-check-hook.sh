@@ -184,6 +184,34 @@ SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=false \
   run_hook "another long enough prompt after compact" >/dev/null
 if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "4" ]; then t "monotonic counter resumes after compact" PASS; else t "monotonic counter resumes after compact" FAIL; fi
 
+# Test 13 (C-N4): the prompt is JSON, not a regex slice. `"prompt": *"[^"]*"` stopped at
+# the first ESCAPED quote, so a prompt like `ok \"q\" ...` was seen as 4 characters —
+# below RECALL_SKIP_SHORT_CHARS — and recall was suppressed on a perfectly long prompt.
+cleanup
+echo "10" > "$PCT_FILE"
+TMPBIN="$(mktemp -d)"
+ARGS_FILE="$TMPBIN/args"
+cat > "$TMPBIN/uv" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
+echo '[]'
+EOF
+chmod +x "$TMPBIN/uv"
+esc_input="{\"session_id\":\"${SESSION_ID}\",\"prompt\":\"ok \\\"q\\\" and then a much longer tail that clears the guard\"}"
+echo "$esc_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
+  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
+  SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_RULES_ENABLED=false \
+  SB_TEST_ARGS_FILE="$ARGS_FILE" \
+  PATH="$TMPBIN:$PATH" \
+  bash "$HOOK" prompt-check >/dev/null 2>&1
+if [ -s "$ARGS_FILE" ] && ! grep -q -- '--skip-memory' "$ARGS_FILE"; then
+  t "escaped quote in prompt does not trip the short-prompt guard" PASS
+else
+  t "escaped quote in prompt does not trip the short-prompt guard" FAIL
+fi
+rm -rf "$TMPBIN"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

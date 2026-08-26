@@ -19,6 +19,7 @@ def test_setup_with_explicit_vault_creates_structure_and_settings(tmp_path, monk
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
     monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
     # Skip subprocess steps (MCP + copies) for this slice
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
     monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
@@ -40,6 +41,7 @@ def test_setup_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
     monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: None)
     monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
     monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
@@ -78,6 +80,7 @@ def test_setup_aborts_and_rolls_back_when_package_files_are_missing(
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
     monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
     monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: list(missing_skills))
     monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: list(missing_hooks))
 
@@ -191,6 +194,7 @@ def test_setup_rollback_restores_settings_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
     monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
 
     def explode(*a, **kw):
         raise RuntimeError("simulated MCP failure")
@@ -271,6 +275,45 @@ def _user_facing_strings(node):
                 for const in ast.walk(node.value):
                     if isinstance(const, ast.Constant) and isinstance(const.value, str):
                         yield const.value, const.lineno
+
+
+def test_copy_commands_installs_slash_command(tmp_path, monkeypatch):
+    """/brain-sync existed only on the owner's machine: the command file was never in
+    the package, so a fresh install had the manual sync documented and unavailable
+    (lens A, finding 1)."""
+    src = tmp_path / "src_commands"
+    src.mkdir()
+    for name in install_cli.COMMAND_FILES:
+        (src / name).write_text(f"# {name}\n", encoding="utf-8")
+    monkeypatch.setattr(install_cli, "_packaged_commands_dir", lambda: src)
+
+    target = tmp_path / "claude_commands"
+    assert install_cli._copy_commands(target) == []
+    for name in install_cli.COMMAND_FILES:
+        assert (target / name).read_text(encoding="utf-8") == f"# {name}\n"
+
+
+def test_copy_commands_reports_missing(tmp_path, monkeypatch):
+    src = tmp_path / "empty_commands"
+    src.mkdir()
+    monkeypatch.setattr(install_cli, "_packaged_commands_dir", lambda: src)
+    assert install_cli._copy_commands(tmp_path / "out") == list(install_cli.COMMAND_FILES)
+
+
+def test_brain_sync_command_is_packaged():
+    """The wheel must actually carry it (force-include in pyproject.toml)."""
+    src = install_cli._packaged_commands_dir() / "brain-sync.md"
+    assert src.exists(), f"missing packaged command: {src}"
+    assert "brain-sync.sh manual" in src.read_text(encoding="utf-8")
+
+
+def test_skill_names_covers_every_skill_dir():
+    """brain-backfill-gists shipped in the repo but was absent from SKILL_NAMES, so
+    --repair never refreshed it and the installed copy stayed pre-sanitisation for
+    months (lens A §A5)."""
+    src = install_cli._packaged_skills_dir()
+    on_disk = {p.name for p in src.iterdir() if p.is_dir() and (p / "SKILL.md").exists()}
+    assert on_disk == set(install_cli.SKILL_NAMES)
 
 
 def test_user_facing_output_has_no_cyrillic():

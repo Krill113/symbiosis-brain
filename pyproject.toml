@@ -52,10 +52,11 @@ packages = ["src/symbiosis_brain"]
 "src/symbiosis_brain/data/tool-routing.json" = "symbiosis_brain/data/tool-routing.json"
 "hooks" = "symbiosis_brain/hooks"
 "skills" = "symbiosis_brain/skills"
+"commands" = "symbiosis_brain/commands"
 "templates" = "symbiosis_brain/templates"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/symbiosis_brain", "hooks", "skills", "templates", "tests", "README.md", "LICENSE"]
+include = ["src/symbiosis_brain", "hooks", "skills", "commands", "templates", "tests", "README.md", "LICENSE"]
 
 [tool.hatch.version]
 path = "src/symbiosis_brain/__init__.py"

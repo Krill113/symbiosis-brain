@@ -15,13 +15,26 @@ from datetime import datetime
 from pathlib import Path
 
 
-def backup_file(path: Path) -> Path | None:
-    """Copy `path` to `path.parent/<name>.bak.<timestamp>`. Returns backup path or None if source missing."""
+def backup_file(path: Path, keep: int = 3) -> Path | None:
+    """Copy `path` to `path.parent/<name>.bak.<timestamp>`, keeping the `keep` newest.
+
+    Returns the backup path, or None when the source is missing. `--repair` is the
+    supported upgrade path and runs often, and every run used to leave one more .bak
+    behind forever (12 of them in a live ~/.claude/hooks by 2026-08). The timestamp
+    format sorts lexicographically, so "newest" is just the tail of a sorted glob.
+    """
     if not path.exists():
         return None
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.parent / f"{path.name}.bak.{ts}"
     shutil.copyfile(path, backup)
+    if keep > 0:
+        existing = sorted(path.parent.glob(f"{path.name}.bak.*"))
+        for stale in existing[:-keep]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass  # a backup we cannot delete is not worth failing an install over
     return backup
 
 

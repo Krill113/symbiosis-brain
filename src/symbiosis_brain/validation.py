@@ -8,11 +8,14 @@ Hard-block list (structural breakage):
 - missing_gist: frontmatter has no gist field
 - malformed_frontmatter: frontmatter is not a dict (None, list, scalar, etc.)
 - gist_over_hard_limit: gist >140 chars
-- broken_outgoing_ref: any [[X]] in body resolves broken (excludes [[forward:X]])
+- broken_outgoing_ref: any [[X]] in body resolves broken (excludes external refs:
+  [[forward:X]] always, plus [[ns:X]] whose ns is not a taxonomy scope)
 
 Soft-warn list (stylistic):
 - gist_too_long: gist >100 chars (recommended ceiling)
 - few_wiki_links: <2 outgoing wiki-links
+- gist_missing: no gist AND require_gist=False (brain_append / brain_patch have no
+  `gist` parameter — grandfathering, decision 2026-08-25 / triage B2)
 
 Type↔folder mismatch is NOT enforced here — it's already enforced by lint.py
 and the user can override via `allow_type_mismatch: true` in frontmatter.
@@ -26,6 +29,8 @@ from typing import TYPE_CHECKING
 from symbiosis_brain.markdown_parser import extract_wikilinks
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from symbiosis_brain.storage import Storage
 
 
@@ -48,23 +53,64 @@ class Warning_:
     message: str
 
 
+def _gist_text(frontmatter: dict) -> str:
+    """Frontmatter gist as text. YAML hands us a datetime.date for `gist: 2026-08-25`
+    and an int for `gist: 42` — str() first, so .strip()/len() never blow up with
+    AttributeError instead of a readable tool error (triage B-N1)."""
+    return str(frontmatter.get("gist") or "")
+
+
+def _valid_scopes_for(vault_path: Path | None) -> frozenset[str] | None:
+    """Scope whitelist for is_external_ref, or None when it is unavailable.
+
+    Never raises: a missing or malformed taxonomy must not block a write. None means
+    "only forward: is external" — i.e. the pre-B3 behaviour.
+    """
+    if vault_path is None:
+        return None
+    try:
+        from symbiosis_brain.taxonomy import load_valid_scopes_cached
+        return load_valid_scopes_cached(vault_path)
+    except Exception:
+        return None
+
+
 def _check_hard_blocks(
     path: str,
     body: str,
     frontmatter: dict,
     storage: Storage,
-) -> None:
-    """Raise ValidationError if any hard-block rule fires. Returns None on success."""
+    *,
+    valid_scopes: frozenset[str] | None,
+    require_gist: bool,
+    tool_name: str,
+) -> list[Warning_]:
+    """Raise ValidationError if any hard-block rule fires.
+
+    Returns the soft warnings produced by a downgraded gate — today only the
+    missing-gist gate on the brain_append / brain_patch path.
+    """
     if not isinstance(frontmatter, dict):
         raise ValidationError(
             f"frontmatter must be a dict, got {type(frontmatter).__name__}"
         )
 
-    gist_value = frontmatter.get("gist") or ""
+    warnings: list[Warning_] = []
+
+    gist_value = _gist_text(frontmatter)
     if not gist_value.strip():
-        raise ValidationError(
-            "gist field is required (1-line summary, ≤100 chars). "
-            "Add gist='...' to the brain_write call."
+        if require_gist:
+            raise ValidationError(
+                f"gist field is required (1-line summary, ≤{GIST_SOFT_LIMIT} chars). "
+                f"Add gist='...' to the {tool_name} call."
+            )
+        # brain_append / brain_patch have no `gist` parameter: blocking here left the
+        # user with impossible advice and pushed edits outside MCP (triage B2).
+        warnings.append(
+            Warning_(
+                rule="gist_missing",
+                message="note has no gist — add one via brain_write",
+            )
         )
     if len(gist_value) > GIST_HARD_LIMIT:
         raise ValidationError(
@@ -83,12 +129,13 @@ def _check_hard_blocks(
                 f"first; add the alias after the target is created."
             )
 
-    # Resolve every outgoing wiki-link; collect broken ones (skipping forward-refs).
-    from symbiosis_brain.resolver import resolve_target
+    # Resolve every outgoing wiki-link; collect broken ones (skipping external refs:
+    # forward: always, plus namespaces outside the scope-taxonomy whitelist).
+    from symbiosis_brain.resolver import is_external_ref, resolve_target
     broken: list[str] = []
     for link in extract_wikilinks(body):
         target = link["target"]
-        if target.startswith(FORWARD_REF_PREFIX):
+        if is_external_ref(target, valid_scopes):
             continue
         _canonical, is_broken = resolve_target(target, storage)
         if is_broken:
@@ -102,6 +149,8 @@ def _check_hard_blocks(
             f"explicit forward-refs."
         )
 
+    return warnings
+
 
 def _check_soft_warns(
     body: str,
@@ -110,7 +159,7 @@ def _check_soft_warns(
     """Return list of soft warnings. Empty list means no warnings."""
     warnings: list[Warning_] = []
 
-    gist = frontmatter.get("gist") or ""
+    gist = _gist_text(frontmatter)
     if len(gist) > GIST_SOFT_LIMIT:
         warnings.append(
             Warning_(
@@ -146,9 +195,20 @@ def validate_note(
     body: str,
     frontmatter: dict,
     storage: Storage,
+    vault_path: Path | None = None,
+    require_gist: bool = True,
+    tool_name: str = "brain_write",
 ) -> list[Warning_]:
     """Run all validation rules. Raises ValidationError on any hard-block
     failure. Returns a list of Warning_ for soft-warn rules.
+
+    require_gist=False (brain_append / brain_patch): a missing gist becomes a
+    soft warning instead of a hard block — those tools have no `gist` parameter,
+    so the block used to hand out impossible advice (triage B2).
+    tool_name is quoted in error messages so the advice names the tool actually
+    called.
+    vault_path feeds the scope whitelist for external-ref detection (triage B3);
+    None → only [[forward:X]] counts as external.
 
     Caller is responsible for:
     - parsing frontmatter from raw markdown (validate_note expects a dict)
@@ -157,5 +217,13 @@ def validate_note(
     The `path` and `title` parameters are unused today but reserved for
     future rules (e.g. type↔folder consistency) that need them.
     """
-    _check_hard_blocks(path=path, body=body, frontmatter=frontmatter, storage=storage)
-    return _check_soft_warns(body=body, frontmatter=frontmatter)
+    warnings = _check_hard_blocks(
+        path=path,
+        body=body,
+        frontmatter=frontmatter,
+        storage=storage,
+        valid_scopes=_valid_scopes_for(vault_path),
+        require_gist=require_gist,
+        tool_name=tool_name,
+    )
+    return warnings + _check_soft_warns(body=body, frontmatter=frontmatter)

@@ -280,3 +280,47 @@ class TestBrainPatch:
         })
         assert "Error" in msg
         assert "vault" in msg.lower()
+
+
+class TestPatchGistGrandfathering:
+    """B2: legacy-нота без gist патчится; битая ссылка при этом всё ещё блокируется."""
+
+    async def test_patch_note_without_gist_adding_link_succeeds(
+        self, initialized_server, tmp_vault_with_taxonomy: Path
+    ):
+        await _call("brain_write", {
+            "path": "wiki/target.md", "title": "Target",
+            "body": "# T\nplain body", "gist": "target note for patch tests",
+        })
+        legacy = tmp_vault_with_taxonomy / "reference" / "legacy.md"
+        legacy.write_text(
+            "---\ntitle: Legacy\ntype: wiki\nscope: global\n---\n\n"
+            "## Notes\n\nplaceholder line\n",
+            encoding="utf-8",
+        )
+        msg = await _call("brain_patch", {
+            "path": "reference/legacy.md",
+            "anchor": "placeholder line",
+            "replacement": "see [[wiki/target]]",
+        })
+        assert msg.startswith("Patched"), msg
+        assert "see [[wiki/target]]" in legacy.read_text(encoding="utf-8")
+
+    async def test_patch_broken_link_still_hard_blocks(
+        self, initialized_server, tmp_vault_with_taxonomy: Path
+    ):
+        legacy = tmp_vault_with_taxonomy / "reference" / "legacy2.md"
+        legacy.write_text(
+            "---\ntitle: Legacy Two\ntype: wiki\nscope: global\n---\n\n"
+            "## Notes\n\nplaceholder line\n",
+            encoding="utf-8",
+        )
+        msg = await _call("brain_patch", {
+            "path": "reference/legacy2.md",
+            "anchor": "placeholder line",
+            "replacement": "see [[wiki/does-not-exist]]",
+        })
+        assert msg.startswith("Error"), msg
+        assert "broken" in msg.lower()
+        # Файл не переписан.
+        assert "placeholder line" in legacy.read_text(encoding="utf-8")

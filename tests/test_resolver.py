@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from symbiosis_brain.resolver import resolve_target
+from symbiosis_brain.resolver import is_external_ref, resolve_target
 from symbiosis_brain.storage import Storage
 
 
@@ -194,3 +194,37 @@ class TestResolveTargetIndexed:
         resolve_target("alpha-seti", storage_with_notes, index=index)
         resolve_target("projects/alpha-seti", storage_with_notes, index=index)
         assert calls["n"] == 0
+
+
+# ---------- CP-1 / B3: предикат внешней ссылки ----------
+
+def test_is_external_ref_forward_prefix():
+    """forward: — внешняя ссылка ВСЕГДА, с whitelist и без него."""
+    assert is_external_ref("forward:wiki/planned") is True
+    assert is_external_ref("forward: wiki/planned") is True
+    assert is_external_ref("forward:wiki/planned", frozenset({"global"})) is True
+
+
+def test_is_external_ref_unknown_namespace():
+    """Неизвестный ns внешний ТОЛЬКО когда whitelist передан."""
+    scopes = frozenset({"global", "beta"})
+    assert is_external_ref("superpowers:writing-skills", scopes) is True
+    # valid_scopes=None → сегодняшнее поведение: внешним считается только forward:
+    assert is_external_ref("superpowers:writing-skills") is False
+
+
+def test_is_external_ref_known_scope_is_internal():
+    """Скоуп из таксономии — внутренняя ссылка: опечатка в пути обязана блокироваться."""
+    scopes = frozenset({"global", "beta"})
+    assert is_external_ref("beta: projects/typo", scopes) is False
+    assert is_external_ref("beta:projects/typo", scopes) is False
+
+
+def test_is_external_ref_plain_target_is_false():
+    """Таргет без '<слово>:'-префикса всегда внутренний; функция не бросает."""
+    scopes = frozenset({"global"})
+    assert is_external_ref("projects/global", scopes) is False
+    assert is_external_ref("", scopes) is False
+    assert is_external_ref("   ", scopes) is False
+    assert is_external_ref("notes:", scopes) is False       # после ':' пусто → не префикс
+    assert is_external_ref("Ghost Note", scopes) is False

@@ -36,6 +36,31 @@ def _strip_scope_prefix(p: str) -> str:
     return rest if rest else p
 
 
+_FORWARD_PREFIX_NAME = "forward"
+
+
+def is_external_ref(target: str, valid_scopes: frozenset[str] | None = None) -> bool:
+    """True when [[target]] points OUTSIDE the vault and need not resolve.
+
+    External refs are: (1) the `forward:` prefix — always; (2) `<ns>:...` where `ns`
+    is not in the scope-taxonomy whitelist (e.g. `[[superpowers:writing-skills]]` —
+    a skill name, not a note). valid_scopes=None → only `forward:` counts as external
+    (today's behaviour; that is how we call it when the taxonomy is unavailable).
+    A target with no `<word>:` prefix is always False, so a plain typo still blocks.
+    Never raises — both call-sites (validation.py, lint.py) are on hot write paths.
+    """
+    if not isinstance(target, str):
+        return False
+    stripped = target.strip()
+    m = _SCOPE_PREFIX_RE.match(stripped)
+    if not m:
+        return False
+    prefix = stripped[: m.end()].split(":", 1)[0].strip().lower()
+    if prefix == _FORWARD_PREFIX_NAME:
+        return True
+    return valid_scopes is not None and prefix not in valid_scopes
+
+
 def build_path_index(storage: Storage) -> dict:
     """Precompute path lookups so resolve_target avoids a full notes scan per call.
 

@@ -74,6 +74,17 @@ class TestExtractWikilinks:
             {"raw": "B", "target": "B", "alias": None},
         ]
 
+    def test_extract_wikilinks_does_not_span_newline(self):
+        """Незакрытая '[[' не должна съедать следующую строку (B1, второе звено).
+
+        Радиус проверен линзой B по всему vault: кросс-строчных [[…\n…]] — 3, и все
+        три внутри ноты бэклога, где этот баг цитируется. Легитимных нет.
+        """
+        text = "- item [[wiki/broken\n- other [[wiki/real]]\n"
+        links = extract_wikilinks(text)
+        assert [l["target"] for l in links] == ["wiki/real"]
+        assert all("\n" not in l["raw"] for l in links)
+
     def test_ignores_markdown_links(self):
         links = extract_wikilinks("Some [regular](link) and [[wiki]]")
         assert links == [{"raw": "wiki", "target": "wiki", "alias": None}]

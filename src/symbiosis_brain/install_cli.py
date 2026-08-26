@@ -78,16 +78,26 @@ def _hook_dir() -> Path:
     return Path.home() / ".claude" / "hooks"
 
 
+def _command_dir() -> Path:
+    return Path.home() / ".claude" / "commands"
+
+
 def _resolve_vault_path() -> Path | None:
     """Resolve vault path with fallback chain:
 
-    1. Parse `claude mcp list` output looking for symbiosis-brain registration.
-       Handles paths-with-spaces (quoted or unquoted-as-tail).
-    2. `SYMBIOSIS_BRAIN_VAULT` env var.
+    1. `SYMBIOSIS_BRAIN_VAULT` env var — set on every live install and free to read.
+    2. Parse `claude mcp list` output looking for symbiosis-brain registration.
+       Handles paths-with-spaces (quoted or unquoted-as-tail). Deliberately second:
+       the command health-checks every MCP server (~7-10s) and starts a second
+       `symbiosis-brain serve` against the live vault while doing it.
     3. `DEFAULT_VAULT` if it exists on disk.
     4. None.
     """
     import shlex
+
+    env_vault = os.environ.get("SYMBIOSIS_BRAIN_VAULT")
+    if env_vault:
+        return Path(env_vault).expanduser()
 
     try:
         proc = subprocess.run(
@@ -107,10 +117,6 @@ def _resolve_vault_path() -> Path | None:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    env_vault = os.environ.get("SYMBIOSIS_BRAIN_VAULT")
-    if env_vault:
-        return Path(env_vault).expanduser()
-
     if DEFAULT_VAULT.exists():
         return DEFAULT_VAULT
     return None
@@ -126,7 +132,8 @@ def _check_mcp_running() -> bool:
         return False
 
 
-SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init", "brain-welcome", "brain-tools")
+SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init",
+               "brain-welcome", "brain-tools", "brain-backfill-gists")
 
 # Bash is the single source of truth. All shipped hooks are .sh (the Python hook
 # shims were removed to kill dual-maintenance drift). brain-pre-action-trigger.sh
@@ -145,6 +152,11 @@ HOOK_FILES_SH = (
     "sb-base-statusline.sh",
 )
 
+# Slash commands shipped with the package. /brain-sync used to exist only on the
+# author's machine — hooks/README.md documented the manual sync mode and a fresh
+# install had no way to reach it.
+COMMAND_FILES = ("brain-sync.md",)
+
 
 def _packaged_skills_dir() -> Path:
     """Path to skills/ shipped with the package (wheel force-include or dev checkout)."""
@@ -156,15 +168,25 @@ def _packaged_hooks_dir() -> Path:
     return install_lib.packaged_dir(__file__, "hooks")
 
 
+def _packaged_commands_dir() -> Path:
+    """Path to commands/ shipped with the package (wheel force-include or dev checkout)."""
+    return install_lib.packaged_dir(__file__, "commands")
+
+
 def _register_mcp(vault_path: Path) -> None:
     """Run `claude mcp add -s user symbiosis-brain ...` if not already registered."""
     try:
         listing = subprocess.run(
-            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10,
+            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"WARN: `claude mcp list` failed ({e}). Skipping MCP registration — "
-              f"add it by hand: claude mcp add -s user symbiosis-brain -- "
+        # `claude mcp list` health-checks every registered server, so 10s was simply
+        # too tight and the scary wording made a harmless timeout look like a failed
+        # install. Nothing is lost: on an existing install the server is already there.
+        print(f"WARN: `claude mcp list` did not answer in time ({e}). "
+              f"MCP registration skipped (the server is most likely already "
+              f"registered). Verify with `claude mcp list`, or add it manually: "
+              f"claude mcp add -s user symbiosis-brain -- "
               f"symbiosis-brain serve --vault {vault_path}")
         return
 
@@ -226,6 +248,26 @@ def _copy_hooks(target_dir: Path) -> list[str]:
     return missing
 
 
+def _copy_commands(target_dir: Path) -> list[str]:
+    """Copy shipped slash commands into target_dir. Returns names missing from the package."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    src_root = _packaged_commands_dir()
+    missing: list[str] = []
+    for name in COMMAND_FILES:
+        src = src_root / name
+        if not src.exists():
+            print(f"WARN: command {name} missing in package, skipping")
+            missing.append(name)
+            continue
+        dst = target_dir / name
+        if dst.exists() and dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8"):
+            continue
+        if dst.exists():
+            install_lib.backup_file(dst)
+        shutil.copyfile(src, dst)
+    return missing
+
+
 def _ask_vault_path(default: Path) -> Path:
     try:
         answer = input(PROMPT_TEXT.format(default=default)).strip()
@@ -249,17 +291,32 @@ def _restore_latest_bak(target: Path) -> bool:
 
 
 def cmd_setup(args):
+    repair = getattr(args, "repair", False)
     if getattr(args, "vault", None):
         vault = Path(args.vault).expanduser()
-    elif getattr(args, "repair", False):
+    elif repair:
         vault = _resolve_vault_path() or DEFAULT_VAULT
     else:
         vault = _ask_vault_path(DEFAULT_VAULT)
+
+    # After the priority swap in _resolve_vault_path (env var before `claude mcp
+    # list`), an inherited SYMBIOSIS_BRAIN_VAULT silently steers the install to a
+    # different vault than the one already registered. Name the source so that
+    # is visible instead of a quiet surprise, and refuse a --repair that would
+    # otherwise scaffold a brand-new vault at a path the owner did not ask for.
+    origin = ("from SYMBIOSIS_BRAIN_VAULT"
+              if os.environ.get("SYMBIOSIS_BRAIN_VAULT") else "resolved")
+    print(f"Vault: {vault} ({origin})")
+    if repair and not vault.exists():
+        print(f"ERROR: --repair points at a vault that does not exist: {vault}. "
+              f"Run without --repair to create it, or unset SYMBIOSIS_BRAIN_VAULT.")
+        return 1
 
     settings = _settings_path()
     claude_md = _claude_md_path()
     skill_dir = _skill_dir()
     hook_dir = Path(_hook_dir_str().replace("~", str(Path.home())))
+    command_dir = _command_dir()
 
     settings_existed = settings.exists()
     claude_md_existed = claude_md.exists()
@@ -283,9 +340,11 @@ def cmd_setup(args):
         )
         install_lib.append_claude_md_block(claude_md)
 
-        # Track pre-existing skill/hook files BEFORE copying so we don't delete unrelated user files
+        # Track pre-existing skill/hook/command files BEFORE copying so we don't
+        # delete unrelated user files
         skills_pre_existing: set[Path] = set()
         hooks_pre_existing: set[Path] = set()
+        commands_pre_existing: set[Path] = set()
         for name in SKILL_NAMES:
             f = skill_dir / name / "SKILL.md"
             if f.exists():
@@ -294,9 +353,14 @@ def cmd_setup(args):
             f = hook_dir / name
             if f.exists():
                 hooks_pre_existing.add(f)
+        for name in COMMAND_FILES:
+            f = command_dir / name
+            if f.exists():
+                commands_pre_existing.add(f)
 
         missing_skills = _copy_skills(skill_dir)
         missing_hooks = _copy_hooks(hook_dir)
+        missing_commands = _copy_commands(command_dir)
 
         # After copy, anything new (not pre-existing) is ours to rollback
         for name in SKILL_NAMES:
@@ -307,8 +371,12 @@ def cmd_setup(args):
             f = hook_dir / name
             if f.exists() and f not in hooks_pre_existing:
                 created_files.append(f)
+        for name in COMMAND_FILES:
+            f = command_dir / name
+            if f.exists() and f not in commands_pre_existing:
+                created_files.append(f)
 
-        if missing_skills or missing_hooks:
+        if missing_skills or missing_hooks or missing_commands:
             # Пакет не довёз часть файлов (например баг сборки wheel). Бросаем
             # ДО регистрации MCP — сработает существующий except-блок ниже:
             # восстановит settings.json/CLAUDE.md из бэкапа, удалит уже
@@ -318,6 +386,8 @@ def cmd_setup(args):
                 parts.append(f"skills: {', '.join(missing_skills)}")
             if missing_hooks:
                 parts.append(f"hooks: {', '.join(missing_hooks)}")
+            if missing_commands:
+                parts.append(f"commands: {', '.join(missing_commands)}")
             raise RuntimeError(
                 "the package is missing part of the setup payload (" + "; ".join(parts) + "). "
                 "This looks like a build bug — reinstall the package and re-run "
@@ -409,7 +479,8 @@ def cmd_doctor(args) -> int:
     # 3. Hooks
     hook_dir = _hook_dir()
     required_hooks = ("brain-session-start.sh", "brain-save-trigger.sh",
-                      "brain-sync.sh", "sb-statusline.sh")
+                      "brain-sync.sh", "sb-statusline.sh",
+                      "sb-hooklib.sh", "sb-export.sh", "brain-save-marker.sh")
     missing_hooks = [h for h in required_hooks if not (hook_dir / h).exists()]
     if not missing_hooks:
         print(f"✓ Hooks          OK ({len(required_hooks)}/{len(required_hooks)} present)")
@@ -424,6 +495,15 @@ def cmd_doctor(args) -> int:
         print(f"✓ Skills         OK ({len(SKILL_NAMES)}/{len(SKILL_NAMES)} present)")
     else:
         print(f"✗ Skills         MISSING: {', '.join(missing_skills)}")
+        issues += 1
+
+    # 5. Slash commands
+    command_dir = _command_dir()
+    missing_commands = [c for c in COMMAND_FILES if not (command_dir / c).exists()]
+    if not missing_commands:
+        print(f"✓ Commands       OK ({len(COMMAND_FILES)}/{len(COMMAND_FILES)} present)")
+    else:
+        print(f"✗ Commands       MISSING: {', '.join(missing_commands)}")
         issues += 1
 
     # Resolved once and reused by both blocks below: _resolve_vault_path() may
@@ -534,6 +614,12 @@ def cmd_uninstall(args) -> int:
     # Remove our hooks (not sb-statusline.sh — others might depend on it; but spec says clean)
     for h in HOOK_FILES_SH:
         f = hook_dir / h
+        if f.exists():
+            f.unlink()
+
+    # Remove our slash commands
+    for c in COMMAND_FILES:
+        f = _command_dir() / c
         if f.exists():
             f.unlink()
 

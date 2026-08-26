@@ -399,6 +399,35 @@ def test_init_vault_keeps_user_gitattributes(tmp_path):
     assert "log.md merge=union" in ga
 
 
+def test_backup_file_prunes_old_baks(tmp_path):
+    """`--repair` runs on every upgrade and used to leave one .bak per run forever —
+    12 stale copies in a live ~/.claude/hooks by 2026-08 (finding C-N2). Keep the three
+    newest; the copy we just made is one of them."""
+    target = tmp_path / "settings.json"
+    target.write_text("v-new", encoding="utf-8")
+    for stamp in ("20200101-000001", "20200102-000002", "20200103-000003", "20200104-000004"):
+        (tmp_path / f"settings.json.bak.{stamp}").write_text("old", encoding="utf-8")
+
+    fresh = install_lib.backup_file(target)
+
+    backups = sorted(tmp_path.glob("settings.json.bak.*"))
+    assert len(backups) == 3
+    assert fresh in backups
+    assert fresh.read_text(encoding="utf-8") == "v-new"
+    # The oldest ones went first
+    assert not (tmp_path / "settings.json.bak.20200101-000001").exists()
+    assert not (tmp_path / "settings.json.bak.20200102-000002").exists()
+
+
+def test_backup_file_keep_is_tunable(tmp_path):
+    target = tmp_path / "hook.sh"
+    target.write_text("new", encoding="utf-8")
+    for stamp in ("20200101-000001", "20200102-000002"):
+        (tmp_path / f"hook.sh.bak.{stamp}").write_text("old", encoding="utf-8")
+    install_lib.backup_file(target, keep=1)
+    assert len(list(tmp_path.glob("hook.sh.bak.*"))) == 1
+
+
 def test_our_hook_scripts_covers_every_hook_command():
     """OUR_HOOK_SCRIPTS is the ownership test used by _merge_hook_event, so it must name
     every script the installer itself writes into settings.json. If a future event (or a

@@ -416,3 +416,39 @@ def test_agent_block_dedups_augment_within_session(tmp_path, monkeypatch):
 
     second = agent_route_block("spawn subagents", [aug, sup], **kw)
     assert second.splitlines() == ["[routes: 1 hints for subagent]", "- supersede hint"]
+
+
+def test_roster_skips_health_check_banner(tmp_path, monkeypatch):
+    """`claude mcp list` prints "Checking MCP server health…" and a blank line before
+    the servers. The whole line went into the roster set, so a gate like
+    `health-present` (and anything else matching a word in the banner) passed on a
+    server that does not exist (finding A-N2)."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    sid = "roster-filter"
+    (tmp_path / f"brain-mcp-roster-{sid}").write_text(
+        "Checking MCP server health…\n"
+        "\n"
+        "serena: serena start-mcp-server - ✔ Connected\n"
+        "duckduckgo: uvx ddgs mcp - ✔ Connected\n",
+        encoding="utf-8",
+    )
+
+    roster = tr._roster_set(sid)
+
+    assert roster is not None
+    assert len(roster) == 2
+    assert any(r.startswith("serena:") for r in roster)
+    assert not any("checking" in r for r in roster)
+
+
+def test_roster_none_when_only_banner(tmp_path, monkeypatch):
+    """A roster with nothing but the banner must read as 'undeterminable' (None), not
+    as an empty-but-known set — gates stay fail-closed and silent."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    sid = "roster-banner-only"
+    (tmp_path / f"brain-mcp-roster-{sid}").write_text(
+        "Checking MCP server health…\n\n", encoding="utf-8")
+
+    assert tr._roster_set(sid) is None

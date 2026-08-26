@@ -182,7 +182,10 @@ def _roster_set(session_id: str) -> Optional[set[str]]:
         txt = p.read_text(encoding="utf-8")
     except OSError:
         return None
-    names = {ln.strip().lower() for ln in txt.splitlines() if ln.strip()}
+    # `claude mcp list` prints "Checking MCP server health…" and a blank line before
+    # the servers; a server line is always "<name>: <command> - <status>". Keeping the
+    # banner made `<word>-present` gates pass on words that appear in it.
+    names = {ln.strip().lower() for ln in txt.splitlines() if ": " in ln}
     return names or None
 
 

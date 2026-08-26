@@ -55,9 +55,10 @@ jobs:
       # too (see the Run pytest step below), via an absolute, health-checked
       # bash path — brain-save-trigger.sh and brain-session-start.sh, so
       # this step is no longer the only Windows check for those two. It is
-      # still the only Windows check for the other six hooks (nothing else
-      # on Windows executes brain-pre-action-trigger.sh, brain-sync.sh,
-      # sb-base-statusline.sh, sb-line.sh, sb-statusline.sh, statusline.sh)
+      # still the only Windows check for the other hooks (nothing else on
+      # Windows executes brain-pre-action-trigger.sh, brain-sync.sh,
+      # brain-save-marker.sh, sb-base-statusline.sh, sb-export.sh,
+      # sb-hooklib.sh, sb-line.sh, sb-statusline.sh)
       # — do not delete it. `shell: bash` is Git Bash on Windows, and
       # `bash -n` only parses — nothing is executed.
       - name: Parse hooks (bash -n)

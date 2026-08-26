@@ -6,86 +6,17 @@ from symbiosis_brain import install_cli, install_lib
 
 
 def test_doctor_reports_all_ok(tmp_path, monkeypatch, capsys):
-    settings = tmp_path / "settings.json"
-    install_lib.atomic_write_json(settings, {
-        "hooks": {"SessionStart": [{"hooks": [{"command": "bash ~/.claude/hooks/brain-session-start.sh"}]}]},
-        "statusLine": {"command": "bash ~/.claude/hooks/sb-statusline.sh"},
-        "permissions": {"allow": [
-            "mcp__symbiosis-brain__brain_read",
-            "mcp__symbiosis-brain__brain_search",
-            "mcp__symbiosis-brain__brain_write",
-            "mcp__symbiosis-brain__brain_context",
-            "mcp__symbiosis-brain__brain_list",
-            "mcp__symbiosis-brain__brain_status",
-            "mcp__symbiosis-brain__brain_sync",
-        ]},
-    })
-    claude_md = tmp_path / "CLAUDE.md"
-    claude_md.write_text("foo\n<!-- symbiosis-brain v1: global -->\n", encoding="utf-8")
-    skills = tmp_path / "skills"
-    for s in install_cli.SKILL_NAMES:
-        (skills / s).mkdir(parents=True)
-        (skills / s / "SKILL.md").write_text("ok", encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    hooks.mkdir()
-    for h in ("brain-session-start.sh", "brain-save-trigger.sh", "brain-sync.sh", "sb-statusline.sh"):
-        (hooks / h).write_text("ok", encoding="utf-8")
-    vault = tmp_path / "vault"
-    install_lib.scaffold_vault(vault)
-
-    monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
-    monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_skill_dir", lambda: skills)
-    monkeypatch.setattr(install_cli, "_hook_dir", lambda: hooks)
-    monkeypatch.setattr(install_cli, "_resolve_vault_path", lambda: vault)
-    monkeypatch.setattr(install_cli, "_check_mcp_running", lambda: True)
-
-    args = type("A", (), {})()
-    rc = install_cli.cmd_doctor(args)
+    _green_install(tmp_path, monkeypatch)
+    rc = install_cli.cmd_doctor(_args())
     out = capsys.readouterr().out
     assert "✗" not in out
     assert rc == 0
 
 
 def test_doctor_reports_missing_hook(tmp_path, monkeypatch, capsys):
-    settings = tmp_path / "settings.json"
-    install_lib.atomic_write_json(settings, {
-        "hooks": {"SessionStart": [{"hooks": [{"command": "bash ~/.claude/hooks/brain-session-start.sh"}]}]},
-        "statusLine": {"command": "bash ~/.claude/hooks/sb-statusline.sh"},
-        "permissions": {"allow": [
-            "mcp__symbiosis-brain__brain_read",
-            "mcp__symbiosis-brain__brain_search",
-            "mcp__symbiosis-brain__brain_write",
-            "mcp__symbiosis-brain__brain_context",
-            "mcp__symbiosis-brain__brain_list",
-            "mcp__symbiosis-brain__brain_status",
-            "mcp__symbiosis-brain__brain_sync",
-        ]},
-    })
-    claude_md = tmp_path / "CLAUDE.md"
-    claude_md.write_text("<!-- symbiosis-brain v1: global -->\n", encoding="utf-8")
-    skills = tmp_path / "skills"
-    for s in install_cli.SKILL_NAMES:
-        (skills / s).mkdir(parents=True)
-        (skills / s / "SKILL.md").write_text("ok", encoding="utf-8")
-    hooks = tmp_path / "hooks"
-    hooks.mkdir()
-    # brain-save-trigger.sh missing
-    (hooks / "brain-session-start.sh").write_text("ok", encoding="utf-8")
-    (hooks / "brain-sync.sh").write_text("ok", encoding="utf-8")
-    (hooks / "sb-statusline.sh").write_text("ok", encoding="utf-8")
-    vault = tmp_path / "vault"
-    install_lib.scaffold_vault(vault)
-
-    monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
-    monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
-    monkeypatch.setattr(install_cli, "_skill_dir", lambda: skills)
-    monkeypatch.setattr(install_cli, "_hook_dir", lambda: hooks)
-    monkeypatch.setattr(install_cli, "_resolve_vault_path", lambda: vault)
-    monkeypatch.setattr(install_cli, "_check_mcp_running", lambda: True)
-
-    args = type("A", (), {})()
-    rc = install_cli.cmd_doctor(args)
+    _green_install(tmp_path, monkeypatch)
+    (tmp_path / "hooks" / "brain-save-trigger.sh").unlink()
+    rc = install_cli.cmd_doctor(_args())
     out = capsys.readouterr().out
     assert "✗" in out
     assert "brain-save-trigger.sh" in out
@@ -172,6 +103,11 @@ def _green_install(tmp_path, monkeypatch):
     for name in install_cli.HOOK_FILES_SH:
         (hooks / name).write_text("ok", encoding="utf-8")
 
+    commands = tmp_path / "commands"
+    commands.mkdir(exist_ok=True)
+    for c in install_cli.COMMAND_FILES:
+        (commands / c).write_text("ok", encoding="utf-8")
+
     vault = tmp_path / "vault"
     install_lib.scaffold_vault(vault)
 
@@ -179,6 +115,7 @@ def _green_install(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
     monkeypatch.setattr(install_cli, "_skill_dir", lambda: skills)
     monkeypatch.setattr(install_cli, "_hook_dir", lambda: hooks)
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: commands)
     monkeypatch.setattr(install_cli, "_resolve_vault_path", lambda: vault)
     monkeypatch.setattr(install_cli, "_check_mcp_running", lambda: True)
     return vault
@@ -263,3 +200,56 @@ def test_doctor_without_deep_skips_integrity_check(tmp_path, monkeypatch, capsys
     install_cli.cmd_doctor(_args())
 
     assert "integrity_check" not in capsys.readouterr().out
+
+
+def test_resolve_vault_prefers_env_over_cli(monkeypatch, tmp_path):
+    """SYMBIOSIS_BRAIN_VAULT is set on every live install and is free; `claude mcp list`
+    health-checks every MCP server (~7-10s, and it starts a second `symbiosis-brain
+    serve` against the live vault). Ask the env first."""
+    def explode(*a, **kw):
+        raise AssertionError("`claude mcp list` must not run when the env var is set")
+
+    monkeypatch.setattr(install_cli.subprocess, "run", explode)
+    monkeypatch.setattr(install_cli, "DEFAULT_VAULT", Path("/nonexistent"))
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_VAULT", str(tmp_path))
+
+    assert install_cli._resolve_vault_path() == tmp_path
+
+
+def test_register_mcp_warning_is_soft_and_english(tmp_path, monkeypatch, capsys):
+    """The old WARN ("Пропускаю MCP-регистрацию") read like a broken install; in fact
+    the server is simply already registered and the timeout was 10s (finding A4a)."""
+    import subprocess as sp
+
+    def fake_run(args, **kw):
+        assert kw.get("timeout") == 30, "the list call must allow 30s"
+        raise sp.TimeoutExpired(cmd="claude mcp list", timeout=30)
+
+    monkeypatch.setattr(install_cli.subprocess, "run", fake_run)
+    install_cli._register_mcp(Path("/tmp/v"))
+    out = capsys.readouterr().out
+    assert "MCP registration skipped" in out
+    assert not any("Ѐ" <= ch <= "ӿ" for ch in out)
+
+
+def test_doctor_requires_new_hooks(tmp_path, monkeypatch, capsys):
+    """Every event hook sources sb-hooklib.sh, the status line sources sb-export.sh and
+    PostToolUse runs brain-save-marker.sh — a missing one is a silent loss of function,
+    so doctor must name it."""
+    _green_install(tmp_path, monkeypatch)
+    (tmp_path / "hooks" / "sb-hooklib.sh").unlink()
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "sb-hooklib.sh" in out
+
+
+def test_doctor_requires_slash_command(tmp_path, monkeypatch, capsys):
+    _green_install(tmp_path, monkeypatch)
+    (tmp_path / "commands" / "brain-sync.md").unlink()
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "brain-sync.md" in out

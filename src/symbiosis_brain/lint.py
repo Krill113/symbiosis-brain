@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from symbiosis_brain.gist_limits import GIST_SOFT_LIMIT
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.resolver import (
     resolve_target,
@@ -7,6 +8,9 @@ from symbiosis_brain.resolver import (
     compute_linked_canonicals,
     is_external_ref,
 )
+# Reused, not re-derived: not_indexed only means anything if it scans the disk by
+# exactly the rules VaultSync ingests by. (No import cycle — sync does not import lint.)
+from symbiosis_brain.sync import MD_GLOB, SKIP_FILES
 from symbiosis_brain.taxonomy import load_valid_scopes, load_folder_type_map
 
 _TAXONOMY_PATH = "reference/scope-taxonomy.md"
@@ -19,8 +23,35 @@ class VaultLinter:
         self._storage = storage
         self._vault_path = vault_path
 
+    def _collect_not_indexed(self, db_paths: set[str]) -> list[dict]:
+        """Markdown files on disk that have no row in the notes table.
+
+        A note whose YAML does not parse never reaches the DB, and the linter reads
+        only the DB — so it could not see such a file at all, and the symptom
+        surfaced as an unexplained arithmetic gap instead of a filename (B5.2).
+        Mirrors VaultSync's disk scan exactly: same glob, same SKIP_FILES, same
+        "top-level dot-directory" rule. Never raises: an unreadable vault yields
+        whatever was collected so far — brain_lint must not die on a scan."""
+        out: list[dict] = []
+        try:
+            for md_file in self._vault_path.glob(MD_GLOB):
+                if md_file.name in SKIP_FILES:
+                    continue
+                rel = md_file.relative_to(self._vault_path).as_posix()
+                if rel.split("/")[0].startswith("."):
+                    continue
+                if rel not in db_paths:
+                    out.append({"path": rel})
+        except OSError:
+            # An unreadable directory must not take the whole report down; the
+            # other categories are still worth printing. (lint.py has no logger
+            # of its own — do not invent one here.)
+            pass
+        return sorted(out, key=lambda i: i["path"])
+
     def lint(self) -> dict:
         notes = self._storage.list_notes()
+        not_indexed = self._collect_not_indexed({n["path"] for n in notes})
         valid_scopes = load_valid_scopes(self._vault_path)
         folder_type_map = load_folder_type_map(self._vault_path)
         # Build the resolution index ONCE; both broken-link detection AND orphan
@@ -132,7 +163,7 @@ class VaultLinter:
                         "title": note["title"],
                     })
                 else:
-                    if len(gist_value) > 100:
+                    if len(gist_value) > GIST_SOFT_LIMIT:
                         gist_too_long.append({
                             "path": note["path"],
                             "title": note["title"],
@@ -148,6 +179,7 @@ class VaultLinter:
             "orphans": orphans,
             "weak_links": weak_links,
             "broken_links": broken_links,
+            "not_indexed": not_indexed,
             "forward_refs": forward_refs,
             "scope_warnings": scope_warnings,
             "type_drift": type_drift,
@@ -155,10 +187,14 @@ class VaultLinter:
             "gist_too_long": gist_too_long,
             "gist_equals_title": gist_equals_title,
             "summary": {
-                "total_notes": audited,
+                # total_notes == brain_status's note count. It used to be the
+                # audited count, i.e. permanently one short (B5.2).
+                "total_notes": len(notes),
+                "audited_notes": audited,
                 "orphan_count": len(orphans),
                 "weak_link_count": len(weak_links),
                 "broken_link_count": len(broken_links),
+                "not_indexed_count": len(not_indexed),
                 "forward_ref_count": len(forward_refs),
                 "scope_warning_count": len(scope_warnings),
                 "type_drift_count": len(type_drift),

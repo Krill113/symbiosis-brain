@@ -225,3 +225,54 @@ def test_sync_all_returns_paths_updated_and_removed(tmp_vault: Path, db_path: Pa
     assert result.updated == []
     assert result.removed == ["wiki/alpha.md"]
     s.close()
+
+
+# A single unquoted colon inside a YAML scalar is enough: PyYAML raises
+# ScannerError("mapping values are not allowed in this context"). This is the
+# exact shape that stalled the whole vault on 2026-08-07.
+BROKEN_YAML_NOTE = "---\ntitle: Broken\ngist: Open defect: criteria\n---\n\nbody\n"
+
+
+def test_broken_yaml_note_does_not_abort_sync(tmp_vault: Path, db_path: Path):
+    """One unparsable note used to kill sync_all for the WHOLE vault: parse_note
+    raised straight out of the loop (sync.py:73 had no guard), so every note the
+    glob had not reached yet stayed unindexed until a human noticed."""
+    (tmp_vault / "wiki" / "broken.md").write_text(BROKEN_YAML_NOTE, encoding="utf-8")
+    (tmp_vault / "wiki" / "healthy.md").write_text(
+        "---\ntitle: Healthy\ntype: wiki\nscope: global\ntags: []\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    s = Storage(db_path)
+    result = VaultSync(tmp_vault, s).sync_all()
+
+    assert s.get_note("wiki/healthy.md") is not None, \
+        "a healthy note must be indexed even when another note's YAML is broken"
+    assert s.get_note("wiki/broken.md") is None
+    assert result["failed"] == 1
+    s.close()
+
+
+def test_failed_notes_are_reported_with_path(tmp_vault: Path, db_path: Path):
+    """The failure must NAME the file. The old mode was a vault-wide stall plus a
+    traceback that never said which note broke — see
+    mistakes/brain-sync-blocked-vault-wide-by-one-unquoted-colon-in-gist."""
+    (tmp_vault / "research" / "bad.md").write_text(BROKEN_YAML_NOTE, encoding="utf-8")
+    s = Storage(db_path)
+    result = VaultSync(tmp_vault, s).sync_all()
+
+    assert [p for p, _ in result.failed] == ["research/bad.md"]
+    assert result.failed[0][1], "the failure entry must carry a non-empty reason"
+    s.close()
+
+
+def test_memory_md_is_not_indexed(tmp_vault: Path, db_path: Path):
+    """MEMORY.md is the auto-memory bootstrap file, not a vault note. Indexing it
+    parked a permanent entry in brain_lint's gist_missing list (B-N5)."""
+    (tmp_vault / "MEMORY.md").write_text(
+        "# Auto memory\n\nbootstrap text\n", encoding="utf-8")
+    s = Storage(db_path)
+    result = VaultSync(tmp_vault, s).sync_all()
+
+    assert s.get_note("MEMORY.md") is None
+    assert "MEMORY.md" not in result.added
+    s.close()

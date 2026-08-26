@@ -360,3 +360,37 @@ def test_error_message_names_calling_tool(tmp_path):
     msg = str(exc.value)
     assert "brain_append" in msg
     assert "brain_write" not in msg
+
+
+def test_gist_limits_come_from_single_module():
+    """Four length constants used to live in three modules plus a bare literal
+    `100` in lint.py:124 (B-N4/B-N6), so a threshold could be changed in one
+    place and silently disagree with the other three. gist_limits is now the only
+    file where such a number is written down."""
+    import inspect
+
+    import symbiosis_brain.gist_limits as gl
+    import symbiosis_brain.lint as lint_mod
+    import symbiosis_brain.rotation as rotation_mod
+    import symbiosis_brain.validation as validation_mod
+
+    assert gl.GIST_SOFT_LIMIT == 100
+    assert gl.GIST_HARD_LIMIT == 140
+    assert gl.GIST_ARCHIVE_MAX == 140
+    assert gl.GIST_INDEX_ONELINER_MAX == 100
+
+    # validation keeps re-exporting both names for backward compatibility.
+    assert validation_mod.GIST_SOFT_LIMIT == gl.GIST_SOFT_LIMIT
+    assert validation_mod.GIST_HARD_LIMIT == gl.GIST_HARD_LIMIT
+
+    # rotation no longer owns its own copies.
+    assert not hasattr(rotation_mod, "GIST_MAX")
+    assert not hasattr(rotation_mod, "INDEX_ONELINER_MAX")
+
+    for mod in (validation_mod, rotation_mod, lint_mod):
+        src = inspect.getsource(mod)
+        assert "from symbiosis_brain.gist_limits import" in src, \
+            f"{mod.__name__} must import its limits, not restate them"
+
+    assert "> GIST_SOFT_LIMIT" in inspect.getsource(lint_mod), \
+        "lint.py must compare against GIST_SOFT_LIMIT, not the literal 100"

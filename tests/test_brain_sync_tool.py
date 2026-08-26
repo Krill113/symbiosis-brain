@@ -102,3 +102,17 @@ async def test_targeted_index_goes_through_single_helper(initialized_server, mon
 
     assert len(calls) == 1, "brain_sync must call the shared helper exactly once"
     assert calls[0][0] == ["wiki/fresh.md"], f"helper got the wrong diff: {calls[0]}"
+
+
+async def test_sync_response_names_failed_paths(initialized_server):
+    """A note sync could not parse must be named in the tool response. "0 added,
+    no error" with a silently missing note cost a full debugging session once."""
+    (server_mod._vault_path / "wiki" / "bad.md").write_text(
+        "---\ntitle: Bad\ngist: Open defect: criteria\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    text = await _call("brain_sync", {})
+    payload = json.loads(text.split("Sync complete: ", 1)[1])
+
+    assert [entry[0] for entry in payload["failed"]] == ["wiki/bad.md"]
+    assert payload["failed"][0][1], "the response must carry a reason, not just a path"

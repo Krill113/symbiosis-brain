@@ -2,6 +2,10 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# PyYAML is a hard dependency of python-frontmatter, which is what actually
+# raises here — parse_note -> frontmatter.loads -> yaml.
+import yaml
+
 from symbiosis_brain.markdown_parser import extract_wikilinks, parse_note
 from symbiosis_brain.storage import Storage
 
@@ -12,12 +16,15 @@ class SyncResult:
     updated: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     skipped: int = 0
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    """(rel_path, error) for notes sync could not read or parse. One bad note is
+    now skipped and NAMED instead of aborting the whole vault (B5.1)."""
 
     def __getitem__(self, key: str) -> int:
         """Backward-compat: stats["added"] returns count, mirroring the
         legacy dict-shaped return. Use the dataclass attributes (e.g.
         result.added) for the path lists."""
-        if key in ("added", "updated", "removed"):
+        if key in ("added", "updated", "removed", "failed"):
             return len(getattr(self, key))
         if key == "skipped":
             return self.skipped
@@ -25,7 +32,10 @@ class SyncResult:
 
 VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference", "archive"]
 MD_GLOB = "**/*.md"  # md-only by design: .json (incl. tool-routing.local.json) stays out of the index
-SKIP_FILES = {"CLAUDE.md", "README.md", "log.md"}
+# MEMORY.md is the auto-memory bootstrap/fallback file, not a vault note — it has
+# no gist and never will, so indexing it parked a permanent gist_missing entry in
+# every lint report (B-N5).
+SKIP_FILES = {"CLAUDE.md", "README.md", "log.md", "MEMORY.md"}
 
 
 class VaultSync:
@@ -62,30 +72,39 @@ class VaultSync:
         changed_notes: list[tuple[str, str, str]] = []  # (path, title, body)
 
         for rel_path, file_path in disk_files.items():
-            content = file_path.read_text(encoding="utf-8")
-            content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+            # One unreadable or unparsable note must cost exactly that note. Before
+            # this guard a single unquoted colon in a gist raised out of the loop
+            # and left the ENTIRE vault unsynced, with a traceback that never named
+            # the file (B5.1). The caller reports `failed` with paths; brain_lint's
+            # not_indexed category then shows the same file by name.
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
 
-            existing = db_notes.get(rel_path)
-            if existing and existing.get("content_hash") == content_hash:
-                result.skipped += 1
+                existing = db_notes.get(rel_path)
+                if existing and existing.get("content_hash") == content_hash:
+                    result.skipped += 1
+                    continue
+
+                parsed = parse_note(content)
+                self.storage.upsert_note(
+                    path=rel_path,
+                    title=parsed["title"],
+                    content=parsed["body"],
+                    note_type=parsed["type"],
+                    scope=parsed["scope"],
+                    tags=parsed["tags"],
+                    frontmatter=parsed["extra"],
+                    valid_from=parsed["valid_from"],
+                    valid_to=parsed["valid_to"],
+                )
+                self.storage._conn.execute(
+                    "UPDATE notes SET content_hash=? WHERE path=?", (content_hash, rel_path)
+                )
+                self.storage._conn.commit()
+            except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError) as e:
+                result.failed.append((rel_path, f"{type(e).__name__}: {e}"))
                 continue
-
-            parsed = parse_note(content)
-            self.storage.upsert_note(
-                path=rel_path,
-                title=parsed["title"],
-                content=parsed["body"],
-                note_type=parsed["type"],
-                scope=parsed["scope"],
-                tags=parsed["tags"],
-                frontmatter=parsed["extra"],
-                valid_from=parsed["valid_from"],
-                valid_to=parsed["valid_to"],
-            )
-            self.storage._conn.execute(
-                "UPDATE notes SET content_hash=? WHERE path=?", (content_hash, rel_path)
-            )
-            self.storage._conn.commit()
 
             changed_notes.append((rel_path, parsed["title"], parsed["body"]))
 

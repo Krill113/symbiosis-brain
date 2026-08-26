@@ -4,6 +4,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from symbiosis_brain.retrieval_log import RETRIEVAL_LOG_STATEMENTS
+
 _BUSY_TIMEOUT_MS = 30_000
 
 
@@ -102,6 +104,7 @@ class Storage:
         self._conn.commit()
         self._migrate_wikilink_normalization()
         self._migrate_phase8_resolver_reindex()
+        self._migrate_retrieval_log()
         # Partial index on broken=1 — must come after _migrate_wikilink_normalization
         # because `broken` is added by that migration on fresh DBs (it is not in
         # the base CREATE TABLE above).  CREATE INDEX IF NOT EXISTS is idempotent.
@@ -142,6 +145,35 @@ class Storage:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
                     ("phase8_resolver_reindex", 1),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _migrate_retrieval_log(self):
+        """Stage 2: retrieval_event + retrieval_hit. Empty tables, no reindex.
+
+        Same shape as the two migrations above: BEGIN IMMEDIATE serializes
+        parallel migrators, the version key makes the step a no-op afterwards.
+        NOT executescript — it does an implicit COMMIT and tears the
+        transaction apart (measured, §2.3); the real guarantee here is the
+        idempotent DDL, and the transaction only keeps two cold-starting
+        processes from interleaving halfway.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT version FROM schema_version WHERE key=?", ("retrieval_log",)
+            ).fetchone()
+            current = row["version"] if row else 0
+
+            if current < 1:
+                for stmt in RETRIEVAL_LOG_STATEMENTS:
+                    self._conn.execute(stmt)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
+                    ("retrieval_log", 1),
                 )
             self._conn.commit()
         except Exception:

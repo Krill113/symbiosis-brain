@@ -6,13 +6,15 @@ import logging.handlers
 import os
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from symbiosis_brain import provenance
+from symbiosis_brain import retrieval_log
 from symbiosis_brain.graph import GraphTraverser
 from symbiosis_brain.search import SearchEngine, _reindex_lock
 from symbiosis_brain.storage import Storage
@@ -95,6 +97,42 @@ def _apply_targeted_index(sync_result: SyncResult) -> None:
         _search.index_note(path, f"{note['title']}\n{note['content']}")
 
 
+def _rotate_retrieval_log(db_path: Path) -> None:
+    """Daily gate + the `retrieval_log_rotated_at` stamp (I-11).
+
+    Both live HERE, not in retrieval_log.rotate: the rotator has one job (two
+    DELETEs on its own connection) and knows nothing about Storage. Once per
+    process start, at most once per day.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    last = _storage.get_schema_version(retrieval_log.ROTATED_AT_KEY)
+    if last is not None and str(last) == today:
+        return
+    deleted = retrieval_log.rotate(db_path, days=retrieval_log.RETENTION_DAYS)
+    _storage.set_schema_version(retrieval_log.ROTATED_AT_KEY, today)
+    if deleted:
+        logger.info("Retrieval log rotated: %d events older than %d days deleted",
+                    deleted, retrieval_log.RETENTION_DAYS)
+
+
+def _log_ctx(source: str) -> "retrieval_log.LogContext | None":
+    """LogContext for a serve-side retrieval, or None when the log is off (I-5).
+
+    session_id stays NULL and origin stays 'unknown' on purpose: an stdio MCP
+    session carries neither ([отчёт 02, P5], §2.5), and a subagent hands the
+    hook its PARENT's session id anyway ([отчёт 01, F13]). Inventing 'main'
+    here would put a guess into the data the report is built from.
+    `client` is the self-reported clientInfo (§3.3), never a literal.
+    """
+    if _storage is None or not retrieval_log.is_enabled():
+        return None
+    return retrieval_log.LogContext(
+        source=source,
+        db_path=_storage.db_path,
+        client=provenance.client_id(app),
+    )
+
+
 def _init(vault_path: Path):
     global _storage, _search, _sync, _graph, _temporal, _vault_path, _linter
     _vault_path = vault_path
@@ -121,6 +159,17 @@ def _init(vault_path: Path):
                 len(sync_result.failed))
     for rel_path, reason in sync_result.failed:
         logger.warning("Vault sync skipped %s: %s", rel_path, reason)
+
+    # Retrieval-log rotation (I-11). Placement is deliberate: right after
+    # sync_all and BEFORE the embedding-model block, which returns early on
+    # two of its three branches (server.py:146,153). try/except is on the CALL
+    # SITE because an exception out of _init is caught by _background_init
+    # (server.py:976-984), logged into serve.log that nobody reads, and the
+    # rest of _init — the whole vec-index maintenance — is skipped (§2.6).
+    try:
+        _rotate_retrieval_log(db_path)
+    except Exception:
+        logger.debug("retrieval log rotation skipped", exc_info=True)
 
     current_model = _search._model_name
     stored_model = _storage.get_schema_version("embedding_model")
@@ -523,6 +572,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             scope=arguments.get("scope"),
             limit=arguments.get("limit", 5),
             mode=mode,
+            log_ctx=_log_ctx("mcp_search"),
         )
         output_parts = []
         if mode == "gist":
@@ -551,7 +601,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text="\n\n---\n\n".join(output_parts))]
 
     elif name == "brain_read":
+        _read_t0 = time.perf_counter()
         note = _storage.get_note(arguments["path"])
+        _read_ms = int((time.perf_counter() - _read_t0) * 1000)
+        _ctx = _log_ctx("mcp_read")
+        if _ctx is not None:
+            if note:
+                retrieval_log.record_read(
+                    _ctx, note_path=arguments["path"], latency_ms=_read_ms)
+            else:
+                # A miss is not a read of a note, so it cannot go through
+                # record_read (which always writes one hit row, I-4). It is
+                # still an event: the early exit is logged with n_returned=0
+                # and no hit rows, otherwise "searched and found nothing" is
+                # indistinguishable from "did not search" (I-4).
+                retrieval_log.record(
+                    _ctx, query=arguments["path"], scope=None, mode="read",
+                    fts_mode=None, hits=[], latency_ms=_read_ms,
+                    vec_enabled=False,
+                )
         if not note:
             return [TextContent(type="text", text=f"Note not found: {arguments['path']}")]
         warning = _temporal.staleness_warning(note)
@@ -733,12 +801,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=msg)]
 
     elif name == "brain_context":
+        _ctx_t0 = time.perf_counter()
         result = _graph.traverse(
             start=arguments["entity"],
             max_depth=min(arguments.get("depth", 2), 3),
             hub_threshold=arguments.get("hub_threshold", 20),
             include_hubs=arguments.get("include_hubs", False),
         )
+        _ctx_ms = int((time.perf_counter() - _ctx_t0) * 1000)
+        # One call covers both outcomes: n_returned carries the neighbour
+        # count, so the early exit below is logged as 0 without a second
+        # branch (I-4, server.py:742-743). No hit rows at all — brain_context
+        # returns a graph, not notes (§2.1, row 3).
+        _ctx = _log_ctx("mcp_context")
+        if _ctx is not None:
+            retrieval_log.record_context(
+                _ctx, entity=arguments["entity"],
+                n_returned=len(result["neighbors"]), latency_ms=_ctx_ms,
+            )
         if not result["neighbors"]:
             return [TextContent(type="text", text=f"No connections found for '{arguments['entity']}'")]
         lines = [f"## Graph context for: {result['start']}\n"]

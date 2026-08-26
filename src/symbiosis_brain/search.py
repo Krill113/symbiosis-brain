@@ -15,6 +15,9 @@ import numpy as np
 if TYPE_CHECKING:
     from symbiosis_brain.storage import Storage
 
+from symbiosis_brain import retrieval_log
+from symbiosis_brain.retrieval_log import LogContext
+
 logger = logging.getLogger("symbiosis-brain.search")
 
 _MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -456,12 +459,28 @@ class SearchEngine:
         return results
 
     def search(self, query: str, scope: str | None = None, limit: int = 10,
-               mode: str = "preview") -> list[dict]:
+               mode: str = "preview", *,
+               log_ctx: "LogContext | None" = None,
+               stats: dict | None = None) -> list[dict]:
         """Hybrid search: FTS5 + vector with Reciprocal Rank Fusion.
 
         mode='preview' (default) — returns notes with full content for legacy callers.
         mode='gist' — adds 'gist' key (frontmatter['gist'] or fallback 80-char paragraph).
+
+        log_ctx (I-7): when given, this call IS the surfacing point and the
+        retrieval log is written here, after _score/_in_both are attached and
+        before the return. Used by `mcp_search` and `legacy_gist` only — the
+        hook paths pass log_ctx=None and log from `run_recall` instead, because
+        what the agent sees there is the list AFTER type filtering, SeenStore
+        and the cap (§2.9). Default None keeps today's behaviour: nobody logs.
+
+        stats (I-7): a write-only back channel for whoever logs from outside.
+        Filled with EXACTLY two keys before every return, including an empty
+        result — those are the cases the metric exists for. `fts_mode` is the
+        EFFECTIVE mode, `vec_enabled` is the only legal source of the NOT NULL
+        column of the same name on the hook paths (§2.9, I-8).
         """
+        t0 = time.perf_counter()
         fts_results = self.search_fts(query, scope=scope, limit=limit * 2)
         vec_results = self.search_vector(query, scope=scope, limit=limit * 2)
 
@@ -503,5 +522,26 @@ class SearchEngine:
                 if not gist:
                     gist = _extract_fallback_gist(note["content"], max_chars=80)
                 note["gist"] = gist
+
+        # CP-2 (Р1): the lexical half is AND by construction — _sanitize_fts_query
+        # glues quoted tokens with a space (search.py:398-412) — so the effective
+        # mode literally is 'all'. CP-1 widens the set to any|all|fallback_any and
+        # replaces this literal with the computed value; 'all_then_any' is a
+        # REQUEST and must never reach the column (§2.9, I-19).
+        effective_fts_mode = "all"
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+
+        # This is the single return of search(). If a future change adds an
+        # early one, it MUST fill `stats` and log first — that is the contract,
+        # not a courtesy (I-7).
+        if stats is not None:
+            stats["fts_mode"] = effective_fts_mode
+            stats["vec_enabled"] = bool(self._vec_enabled)
+        if log_ctx is not None:
+            retrieval_log.record(
+                log_ctx, query=query, scope=scope, mode=mode,
+                fts_mode=effective_fts_mode, hits=results,
+                latency_ms=latency_ms, vec_enabled=bool(self._vec_enabled),
+            )
 
         return results

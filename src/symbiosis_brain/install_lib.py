@@ -105,7 +105,7 @@ def scaffold_vault(vault_path: Path) -> None:
             # Монтирования без POSIX-метаданных (CIFS, drvfs, часть FUSE/NFS) или
             # чужой владелец каталога — тогда права не наш вопрос, а установка
             # не должна из-за этого падать. Симметрично chmod хуков в install_cli.
-            print(f"WARN: не удалось выставить 0700 на {vault_path}: {e}")
+            print(f"WARN: could not set 0700 on {vault_path}: {e}")
     for folder in VAULT_FOLDERS:
         (vault_path / folder).mkdir(exist_ok=True)
 

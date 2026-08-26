@@ -180,6 +180,7 @@ Pull requests welcome. A few rules:
 - **No personal data in tracked files.** No local absolute paths (`C:\Users\...`), usernames, emails, or private project names — use `sys.executable`, env vars, relative paths, and generic placeholders.
 - The private vault lives **outside this repo** (sibling directory, git-ignored) — never `git add` vault content.
 - Dev install: `uv tool install --editable .` then `symbiosis-brain setup claude-code`.
+- Push guard: `git config core.hooksPath tools/hooks` enables `tools/hooks/pre-push`, which runs the private-marker auditor pointed at by `$SB_PUBLISH_AUDIT`. With the variable unset it prints one line and lets the push through — the patterns are deliberately not published here.
 - Tests: `uv run pytest` (plus the bash hook tests under `tests/`).
 
 ## Release process (maintainer notes)

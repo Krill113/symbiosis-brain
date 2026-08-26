@@ -57,6 +57,11 @@ run_sync() {  # $1 = vault dir, $2 = mode (default auto) -> RC
   RC=$?
 }
 
+run_sync_out() {  # same, but keeps stdout in $OUT (manual mode talks)
+  OUT=$(SYMBIOSIS_BRAIN_VAULT="$1" bash "$SYNC" "${2:-auto}" 2>/dev/null)
+  RC=$?
+}
+
 # ── (1) clean push ────────────────────────────────────────────────────────────
 setup_pair p1
 rm -f "$MARKER"
@@ -178,6 +183,66 @@ if [ "$RC" = "0" ] && [ -f "$MARKER" ] && \
   t "failed commit + diverged remote leaves a clean tree, an alarm and the stash" PASS
 else
   t "failed commit + diverged remote leaves a clean tree, an alarm and the stash (rc=$RC)" FAIL
+fi
+
+# ── (9) first push into a remote that has no branches at all ──────────────────
+# Every case above starts from setup_pair, which does the `push -u` itself, so the
+# very first sync of a brand-new vault was never covered: `git pull --rebase` fails
+# with "couldn't find remote ref", the marker says stage=pull and the push is skipped
+# — the vault could never reach an empty GitHub repository.
+rm -f "$MARKER"
+git init -q --bare "$WORK/p9.git"
+git -C "$WORK/p9.git" symbolic-ref HEAD refs/heads/main
+git init -q "$WORK/p9-A"
+git -C "$WORK/p9-A" symbolic-ref HEAD refs/heads/main
+git_id "$WORK/p9-A"
+git -C "$WORK/p9-A" remote add origin "$WORK/p9.git"
+printf 'first note\n' > "$WORK/p9-A/a9.md"
+run_sync "$WORK/p9-A"
+remote_heads=$(git -C "$WORK/p9.git" for-each-ref --format='%(refname)' refs/heads)
+remote_files=$(git -C "$WORK/p9.git" ls-tree -r --name-only main 2>/dev/null)
+if [ "$RC" = "0" ] && [ ! -f "$MARKER" ] && [ -n "$remote_heads" ] &&
+   [[ "$remote_files" == *"a9.md"* ]]; then
+  t "empty remote -> first push creates the branch, no alarm" PASS
+else
+  t "empty remote -> first push creates the branch, no alarm (rc=$RC heads='$remote_heads')" FAIL
+fi
+
+# ── (10) an unfinished merge that is NOT ours is left strictly alone ───────────
+# The not-ours guard has to run before `git add -A`. Staging an unmerged tree
+# resolves it with the `<<<<<<<` markers still in the files, and the commit that
+# follows then finishes the merge of the owner behind their back — measured: two
+# commits in the vault became four and MERGE_HEAD was gone.
+rm -f "$MARKER"
+setup_pair p10
+git -C "$WORK/p10-A" checkout -q -b side
+printf 'l1 from the side branch\n' > "$WORK/p10-A/log.md"
+git -C "$WORK/p10-A" commit -q -am "side"
+git -C "$WORK/p10-A" checkout -q main
+printf 'l1 from main\n' > "$WORK/p10-A/log.md"
+git -C "$WORK/p10-A" commit -q -am "main"
+git -C "$WORK/p10-A" merge side >/dev/null 2>&1     # leaves UU + MERGE_HEAD
+commits_before=$(git -C "$WORK/p10-A" rev-list --count HEAD)
+run_sync "$WORK/p10-A"
+ok=1
+[ "$RC" = "0" ] || { ok=0; echo "  rc=$RC (must be 0)"; }
+grep -q '^stage=conflict' "$MARKER" 2>/dev/null || { ok=0; echo "  marker missing or wrong stage"; }
+git -C "$WORK/p10-A" rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1 || { ok=0; echo "  MERGE_HEAD gone — the merge was finished for the owner"; }
+[ "$commits_before" = "$(git -C "$WORK/p10-A" rev-list --count HEAD)" ] || { ok=0; echo "  history grew during a foreign merge"; }
+grep -q '<<<<<<<' "$WORK/p10-A/log.md" 2>/dev/null || { ok=0; echo "  conflict markers were resolved away"; }
+if [ "$ok" = "1" ]; then t "foreign unfinished merge -> alarm only, index untouched" PASS; else t "foreign unfinished merge -> alarm only, index untouched" FAIL; fi
+
+# ── (11) manual mode says out loud what auto mode only writes to the marker ────
+# The hook branches on $MODE in two places; every case above runs the auto arm.
+rm -f "$MARKER" "$ERRLOG"
+setup_pair p11
+push_from_b p11 log.md "l1 from B"
+printf 'l1 from A\n' > "$WORK/p11-A/log.md"
+run_sync_out "$WORK/p11-A" manual
+if [ "$RC" = "0" ] && [[ "$OUT" == *"brain-sync: conflict failed"* ]]; then
+  t "manual mode reports the conflict on stdout, rc 0" PASS
+else
+  t "manual mode reports the conflict on stdout, rc 0 (rc=$RC out='$OUT')" FAIL
 fi
 
 rm -rf "$WORK"

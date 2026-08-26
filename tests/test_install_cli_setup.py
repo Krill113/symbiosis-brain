@@ -56,20 +56,20 @@ def test_setup_idempotent(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "missing_skills, missing_hooks",
-    [(["brain-init"], []), ([], ["sb-statusline.sh"])],
-    ids=["missing-skill", "missing-hook"],
+    "missing_skills, missing_hooks, missing_commands",
+    [(["brain-init"], [], []), ([], ["sb-statusline.sh"], []), ([], [], ["brain-sync.md"])],
+    ids=["missing-skill", "missing-hook", "missing-command"],
 )
 def test_setup_aborts_and_rolls_back_when_package_files_are_missing(
-    tmp_path, monkeypatch, missing_skills, missing_hooks
+    tmp_path, monkeypatch, missing_skills, missing_hooks, missing_commands
 ):
-    """A package that did not ship its skills/hooks must abort BEFORE the MCP server
-    is registered, so the rollback restores settings.json and CLAUDE.md instead of a
-    final "done" being printed over a half-installed state.
+    """A package that did not ship its skills/hooks/commands must abort BEFORE the MCP
+    server is registered, so the rollback restores settings.json and CLAUDE.md instead
+    of a final "done" being printed over a half-installed state.
 
-    Both halves of the guard are exercised: with only the skills case, mutating
-    `missing_skills or missing_hooks` down to `missing_skills` kept the whole suite
-    green, so the hooks half was pinned by nothing."""
+    All three arms of the guard are exercised: with only the skills case, mutating
+    `missing_skills or missing_hooks or missing_commands` down to `missing_skills` kept
+    the whole suite green, so the other two arms were pinned by nothing."""
     vault = tmp_path / "vault"
     settings = tmp_path / "settings.json"
     claude_md = tmp_path / "CLAUDE.md"
@@ -83,6 +83,7 @@ def test_setup_aborts_and_rolls_back_when_package_files_are_missing(
     monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
     monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: list(missing_skills))
     monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: list(missing_hooks))
+    monkeypatch.setattr(install_cli, "_copy_commands", lambda *a, **kw: list(missing_commands))
 
     registered: list[int] = []
     monkeypatch.setattr(install_cli, "_register_mcp", lambda *a, **kw: registered.append(1))
@@ -414,3 +415,74 @@ def test_brain_save_step0_guards_the_optional_pass():
     assert critique_lines, "Step 0 lost the optional pass entirely"
     for line in critique_lines:
         assert "is installed" in line, line
+
+
+def test_setup_rollback_removes_skill_reference_files(tmp_path, monkeypatch):
+    """Rollback tracked `<skill>/SKILL.md` and nothing else, so a failed setup left
+    ~/.claude/skills/brain-autolearn/references/*.md behind — files the user never had
+    and now cannot tell from their own."""
+    vault = tmp_path / "vault"
+    settings = tmp_path / "settings.json"
+    claude_md = tmp_path / "CLAUDE.md"
+    skill_dir = tmp_path / "skills"
+
+    monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
+    monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
+    monkeypatch.setattr(install_cli, "_skill_dir", lambda: skill_dir)
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
+    monkeypatch.setattr(install_cli, "SKILL_NAMES", ("brain-autolearn",))
+
+    def fake_copy_skills(target_dir, *a, **kw):
+        refs = target_dir / "brain-autolearn" / "references"
+        refs.mkdir(parents=True, exist_ok=True)
+        (target_dir / "brain-autolearn" / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (refs / "action-rule-recipe.md").write_text("A\n", encoding="utf-8")
+        (refs / "automation-recipe.md").write_text("B\n", encoding="utf-8")
+        return []
+
+    monkeypatch.setattr(install_cli, "_copy_skills", fake_copy_skills)
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_commands", lambda *a, **kw: [])
+
+    def explode(*a, **kw):
+        raise RuntimeError("simulated MCP failure")
+    monkeypatch.setattr(install_cli, "_register_mcp", explode)
+
+    args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
+    with pytest.raises(SystemExit):
+        install_cli.cmd_setup(args)
+
+    leftovers = [p for p in (skill_dir / "brain-autolearn").rglob("*") if p.is_file()]
+    assert leftovers == [], f"rollback left files behind: {leftovers}"
+
+
+def test_setup_rollback_keeps_pre_existing_reference_files(tmp_path, monkeypatch):
+    """The flip side: a reference file the user already had is NOT ours to delete."""
+    vault = tmp_path / "vault"
+    settings = tmp_path / "settings.json"
+    claude_md = tmp_path / "CLAUDE.md"
+    skill_dir = tmp_path / "skills"
+    mine = skill_dir / "brain-autolearn" / "references" / "mine.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("user content\n", encoding="utf-8")
+
+    monkeypatch.setattr(install_cli, "_settings_path", lambda: settings)
+    monkeypatch.setattr(install_cli, "_claude_md_path", lambda: claude_md)
+    monkeypatch.setattr(install_cli, "_hook_dir_str", lambda: str(tmp_path / "hooks"))
+    monkeypatch.setattr(install_cli, "_skill_dir", lambda: skill_dir)
+    monkeypatch.setattr(install_cli, "_command_dir", lambda: tmp_path / "commands")
+    monkeypatch.setattr(install_cli, "SKILL_NAMES", ("brain-autolearn",))
+    monkeypatch.setattr(install_cli, "_copy_skills", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_hooks", lambda *a, **kw: [])
+    monkeypatch.setattr(install_cli, "_copy_commands", lambda *a, **kw: [])
+
+    def explode(*a, **kw):
+        raise RuntimeError("simulated MCP failure")
+    monkeypatch.setattr(install_cli, "_register_mcp", explode)
+
+    args = type("A", (), {"vault": str(vault), "repair": False, "target": "claude-code"})()
+    with pytest.raises(SystemExit):
+        install_cli.cmd_setup(args)
+
+    assert mine.read_text(encoding="utf-8") == "user content\n"

@@ -64,3 +64,14 @@ path = "src/symbiosis_brain/__init__.py"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+filterwarnings = [
+    # A DeprecationWarning in our own code is a scheduled outage, not noise: the
+    # sqlite3 date-adapter one sat in a green log as "6 warnings" for months
+    # (D-N2). Silence third-party noise with a targeted ignore below, never by
+    # relaxing this line.
+    "error::DeprecationWarning",
+    # python-frontmatter's load() still opens files through codecs.open(),
+    # deprecated in 3.14 (site-packages/frontmatter/__init__.py:161). Upstream's
+    # line, not ours — drop this entry once python-frontmatter stops using it.
+    "ignore::DeprecationWarning:frontmatter",
+]

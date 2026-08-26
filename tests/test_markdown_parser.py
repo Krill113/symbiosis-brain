@@ -26,6 +26,28 @@ class TestParseNote:
         note = parse_note(sample_note_content)
         assert note["valid_from"] == "2025-03-15"
 
+    def test_unquoted_date_frontmatter_normalized_to_str(self):
+        """YAML turns an unquoted `valid_from: 2026-08-25` into datetime.date;
+        sqlite3 then binds it through the DEFAULT DATE ADAPTER, deprecated since
+        3.12 and scheduled for removal — at which point every note with an
+        unquoted date fails its write with InterfaceError. brain_rotate_handoffs
+        emits exactly this shape (rotation.py:238), so it is not a hypothetical.
+        parse_note must hand storage a plain ISO string."""
+        content = (
+            "---\ntitle: Dated\ntype: wiki\nscope: global\n"
+            "valid_from: 2026-08-25\n"
+            "valid_to: 2026-09-01\n"
+            "created_at: 2026-08-25 10:00:00\n"
+            "---\n\nBody\n"
+        )
+        note = parse_note(content)
+        assert isinstance(note["valid_from"], str)
+        assert note["valid_from"] == "2026-08-25"
+        assert isinstance(note["valid_to"], str)
+        assert note["valid_to"] == "2026-09-01"
+        assert isinstance(note["created_at"], str)
+        assert note["created_at"].startswith("2026-08-25T10:00:00")
+
 
 class TestExtractWikilinks:
     def test_extracts_simple_link(self):

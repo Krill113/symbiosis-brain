@@ -22,6 +22,12 @@ def _isolated_tmpdir(tmp_path, monkeypatch):
     # has triggered false-alarm "prewarm race" investigations.
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("TEMP", str(tmp_path))
+    # The session-wide _isolate_hook_artifacts fixture (conftest.py) pins
+    # SYMBIOSIS_BRAIN_DEBUG_LOG for the whole run; it would otherwise win over
+    # the TMPDIR override above (_debug_log_path() checks the env var first),
+    # sending this file's subprocess-produced log somewhere this test never
+    # looks. Clear it so this file's own TMPDIR-based isolation is what governs.
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_DEBUG_LOG", raising=False)
 
 
 def _run_prewarm(vault_arg: str, env: dict | None = None) -> subprocess.CompletedProcess:

@@ -1,7 +1,8 @@
 """Config loader for pre-action recall hook (B1).
 
 Loads `~/.claude/symbiosis-brain-pre-action.json` with fall-back to defaults.
-Missing or malformed file → defaults + log to /tmp/brain-hook-debug.log.
+Missing or malformed file → defaults + log to the path _debug_log_path() picks
+(SYMBIOSIS_BRAIN_DEBUG_LOG, else <TMPDIR>/brain-hook-debug.log).
 """
 from __future__ import annotations
 
@@ -24,7 +25,23 @@ def _tmp_dir() -> Path:
     return Path(base)
 
 
+DEBUG_LOG_ENV = "SYMBIOSIS_BRAIN_DEBUG_LOG"
+
+
 def _debug_log_path() -> Path:
+    """Where hook-side debug lines land.
+
+    `SYMBIOSIS_BRAIN_DEBUG_LOG` (an ABSOLUTE path to a file) wins; otherwise
+    `_tmp_dir()/brain-hook-debug.log`, exactly as before. The override exists so
+    the test suite stops appending to the live user log (A-N3): TMPDIR alone does
+    not cover subprocesses that rebuild their environment from scratch.
+    A relative value is ignored — a relative debug path would follow whatever cwd
+    a hook happened to inherit."""
+    override = os.environ.get(DEBUG_LOG_ENV, "").strip()
+    if override:
+        p = Path(override)
+        if p.is_absolute():
+            return p
     return _tmp_dir() / "brain-hook-debug.log"
 
 

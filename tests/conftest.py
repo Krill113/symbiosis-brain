@@ -70,3 +70,35 @@ Chose [[Dapper]] over [[EF Core]] for the [[beta]] project.
 - See also [[Database Architecture]] for connection pooling setup
 - Contradicts earlier preference for [[EF Core]] in smaller projects
 """
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_hook_artifacts(tmp_path_factory):
+    """Keep the test suite out of the developer's live hook artifacts (A-N3).
+
+    Hook-side code derives its temp dir from TMPDIR/TEMP (pre_action_config
+    ._tmp_dir) and its debug log from SYMBIOSIS_BRAIN_DEBUG_LOG, so without this
+    a plain `pytest` run appends progress bars and pytest-of-* paths straight
+    into the user's $TMP/brain-hook-debug.log and drops seen-store files next to
+    the live ones. Subprocess-spawning tests inherit these variables through
+    os.environ.copy(), so the isolation reaches them too.
+
+    ORDER MATTERS: mktemp() runs FIRST so pytest resolves its own basetemp under
+    the real system temp before we move TMPDIR. Setting TMPDIR earlier would nest
+    every tmp_path inside this directory and blow past Windows' 260-char limit.
+    Per-test monkeypatch.setenv("TMPDIR", ...) still wins over this fixture —
+    the existing tests that isolate themselves keep working unchanged.
+    """
+    real_tmp = tempfile.gettempdir()          # ДО подмены TMPDIR — см. ниже
+    base = tmp_path_factory.mktemp("sb-hook-tmp")
+    mp = pytest.MonkeyPatch()
+    mp.setenv("TMPDIR", str(base))
+    mp.setenv("TEMP", str(base))
+    mp.setenv("SYMBIOSIS_BRAIN_DEBUG_LOG", str(base / "brain-hook-debug.log"))
+    # fastembed caches its ONNX model under <tempdir>/fastembed_cache
+    # (fastembed/common/utils.py:53-54). With TMPDIR moved above, every subprocess
+    # that runs `search-gist` without --skip-memory would re-download ~130 MB into a
+    # throwaway dir: 4 tests today, 13 after CP-5. Pin the cache to the REAL temp dir.
+    mp.setenv("FASTEMBED_CACHE_PATH", str(Path(real_tmp) / "fastembed_cache"))
+    yield base
+    mp.undo()

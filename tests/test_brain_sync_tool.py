@@ -3,6 +3,7 @@ full=true triggering a full re-embed. Uses the canonical server-test pattern
 (see test_server_refactor_tools.py) — `server_mod._init(...)` + `await
 server_mod.call_tool(name, args)` + teardown reset.
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -75,3 +76,29 @@ async def test_brain_sync_full_true_calls_index_all_once(initialized_server):
         SearchEngine.index_all = orig_index_all
 
     assert call_count["n"] == 1, "full=true must trigger exactly one index_all"
+
+
+async def test_targeted_index_goes_through_single_helper(initialized_server, monkeypatch):
+    """brain_sync must reuse server._apply_targeted_index instead of carrying its
+    own copy of the delete_vec/index_note loop. The two copies (server.py:134-141
+    in _init and server.py:709-715 in brain_sync) were identical by convention
+    only — nothing kept them that way. RED before the helper exists:
+    monkeypatch.setattr raises AttributeError."""
+    calls = []
+    real = server_mod._apply_targeted_index
+
+    def counting(sync_result):
+        calls.append((list(sync_result.added), list(sync_result.updated),
+                      list(sync_result.removed)))
+        return real(sync_result)
+
+    monkeypatch.setattr(server_mod, "_apply_targeted_index", counting)
+
+    (server_mod._vault_path / "wiki" / "fresh.md").write_text(
+        "---\ntitle: Fresh\ntype: wiki\nscope: global\ntags: []\n---\n\nbody.\n",
+        encoding="utf-8",
+    )
+    await _call("brain_sync", {})
+
+    assert len(calls) == 1, "brain_sync must call the shared helper exactly once"
+    assert calls[0][0] == ["wiki/fresh.md"], f"helper got the wrong diff: {calls[0]}"

@@ -1,4 +1,5 @@
 import re
+from datetime import date as _date, datetime as _datetime
 from typing import Any
 
 import frontmatter
@@ -108,6 +109,22 @@ def _mask_code_regions(text: str) -> str:
     return "\n".join(out)
 
 
+def _as_iso(v: Any) -> Any:
+    """datetime.date / datetime.datetime -> ISO-8601 string; anything else is
+    returned untouched.
+
+    YAML parses an unquoted `valid_from: 2026-08-25` into a datetime.date, which
+    sqlite3 binds through its default date adapter — deprecated since Python 3.12
+    and slated for removal, after which such a write fails with InterfaceError.
+    Normalizing here rather than via sqlite3.register_adapter keeps datetime.date
+    from leaking out of the parsing layer at all; storage.py stays untouched
+    (its columns are already TEXT — storage.py:52).
+    """
+    if isinstance(v, (_datetime, _date)):
+        return v.isoformat()
+    return v
+
+
 def parse_note(content: str) -> dict[str, Any]:
     """Parse markdown with optional YAML frontmatter into structured dict."""
     post = frontmatter.loads(content)
@@ -125,9 +142,9 @@ def parse_note(content: str) -> dict[str, Any]:
         "type": meta.pop("type", "wiki"),
         "scope": meta.pop("scope", "global"),
         "tags": meta.pop("tags", []),
-        "valid_from": meta.pop("valid_from", None),
-        "valid_to": meta.pop("valid_to", None),
-        "created_at": meta.pop("created_at", None),
+        "valid_from": _as_iso(meta.pop("valid_from", None)),
+        "valid_to": _as_iso(meta.pop("valid_to", None)),
+        "created_at": _as_iso(meta.pop("created_at", None)),
         "extra": meta,
     }
 

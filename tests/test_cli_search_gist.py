@@ -465,7 +465,7 @@ def test_event_log_concurrent_appends_multiprocess(tmp_path):
 #
 # TMPDIR isolation on EVERY subprocess call is mandatory: the child would
 # otherwise write seen-files into the developer's real temp dir and read the
-# real ones back — see [[mistakes/test-subprocess-inherits-system-tmpdir]].
+# real ones back — see the note on subprocesses inheriting the system TMPDIR.
 # HOME/USERPROFILE are redirected too, so the developer's own
 # ~/.claude/symbiosis-brain-pre-action.json can never change the answer.
 

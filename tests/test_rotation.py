@@ -529,18 +529,18 @@ def test_index_entry_never_emits_unbalanced_brackets():
     """Гист со ссылкой, попадающей на границу обрезки, не должен оставлять '[['.
 
     Репро линзы B (02-server-mcp-tools.md §B1): 110-символьный гист, обрезка по 100
-    символам разрывает [[reference/uv-tool-update-policy]] на '[[reference/uv-tool-updat'.
+    символам разрывает [[reference/widget-updates-policy]] на '[[reference/widget-update'.
     """
     from symbiosis_brain.rotation import render_archive_index_entry
     s = _section(Date(2026, 7, 30))
     gist = ("full audit of the MCP configuration and the follow-up cleanup, "
-            "snapshot in [[reference/uv-tool-update-policy]]")
+            "snapshot in [[reference/widget-updates-policy]]")
     assert len(gist) > 100  # иначе тест ничего не проверяет
     line = render_archive_index_entry(s, scope="demo", slug="mcp-audit", gist=gist)
     # Ровно одна пара скобок — та, что рендерит сама функция (ссылка на архивную ноту).
     assert line.count("[[") == 1
     assert line.count("]]") == 1
-    assert "uv-tool-upd" not in line  # ссылка вырезана целиком, а не обрезана
+    assert "widget-upd" not in line  # ссылка вырезана целиком, а не обрезана
 
 
 def test_index_entry_cuts_on_word_boundary():
@@ -562,7 +562,7 @@ def test_index_entry_cuts_on_word_boundary():
 def test_extract_gist_snippet_strips_wikilinks():
     """extract_gist отдаёт чистую строку: во frontmatter архивной ноты нет '[['."""
     body = ("## Handoff 2026-07-30\n"
-            "**Shipped:** cleanup landed, see [[reference/uv-tool-update-policy]] for details\n")
+            "**Shipped:** cleanup landed, see [[reference/widget-updates-policy]] for details\n")
     g = extract_gist(body)
     assert "[[" not in g and "]]" not in g
     assert "cleanup landed, see" in g

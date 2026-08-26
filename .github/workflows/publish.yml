@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
 
+# Least privilege by default; the two jobs that need more raise it themselves
+# (`publish` needs id-token: write for Trusted Publishing, `release` needs
+# contents: write to create the GitHub Release).
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build distribution
@@ -91,3 +97,28 @@ jobs:
           done
           echo "::error::Failed to install symbiosis-brain==${TAG_VERSION} from PyPI after 6 attempts"
           exit 1
+
+  release:
+    name: Create GitHub Release
+    # `needs: verify` on purpose: no Release appears unless the package really
+    # installs from PyPI. A failure here cannot un-publish the package — it only
+    # paints the workflow red, which is the correct trade-off.
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build release notes
+        run: python3 tools/changelog_section.py "${GITHUB_REF_NAME#v}" > notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

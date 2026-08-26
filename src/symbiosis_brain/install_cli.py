@@ -133,8 +133,10 @@ SKILL_NAMES = ("brain-init", "brain-recall", "brain-save", "brain-project-init",
 # also runs from the tools repo via $SYMBIOSIS_BRAIN_TOOLS, but we ship it too so a
 # fresh install has it locally; brain-sync.sh backs the SessionEnd vault sync.
 HOOK_FILES_SH = (
+    "sb-hooklib.sh",
     "brain-session-start.sh",
     "brain-save-trigger.sh",
+    "brain-save-marker.sh",
     "brain-pre-action-trigger.sh",
     "brain-sync.sh",
     "sb-statusline.sh",

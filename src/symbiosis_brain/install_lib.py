@@ -151,20 +151,31 @@ def _hooks_block(hook_dir: str) -> dict:
     """Return hooks block structure for settings.json.
 
     Bash is the single source of truth (matches the live ~/.claude install).
-    Six events: SessionStart (startup+compact), Stop, PreCompact,
-    UserPromptSubmit, PreToolUse (proactive recall), SessionEnd (vault sync).
+    Seven events: SessionStart (startup+resume+clear+compact), Stop, PreCompact,
+    UserPromptSubmit, PreToolUse (proactive recall), PostToolUse (save marker),
+    SessionEnd (vault sync).
     PreToolUse runs the recall hook from the tools repo via $SYMBIOSIS_BRAIN_TOOLS.
+
+    SessionStart sources are an enum in the harness — startup / resume / clear /
+    compact / fork. Only startup+compact used to be registered, so a --resume,
+    --continue or /clear session got no scope export, no CRITICAL_FACTS, no roster
+    priming and no refreshed session bridge. `fork` stays out on purpose (owner
+    decision 2026-08-25).
+
+    PostToolUse writes brain-last-save-pct-<sid> on any memory write: the hook reads
+    session_id from its own payload, which is correct even when CLAUDE_SESSION_ID is
+    empty (resume/fork) or points at another window.
+
+    SessionEnd is budgeted at 40s: brain-sync.sh runs pull --rebase and push, each
+    capped at SYMBIOSIS_BRAIN_SYNC_GIT_TIMEOUT (15s by default), plus add/commit.
     """
     return {
         "SessionStart": [
-            {"matcher": "startup",
+            {"matcher": m,
              "hooks": [{"type": "command",
                         "command": f"bash {hook_dir}/brain-session-start.sh",
-                        "timeout": 5}]},
-            {"matcher": "compact",
-             "hooks": [{"type": "command",
-                        "command": f"bash {hook_dir}/brain-session-start.sh",
-                        "timeout": 5}]},
+                        "timeout": 5}]}
+            for m in ("startup", "resume", "clear", "compact")
         ],
         "Stop": [
             {"hooks": [{"type": "command",
@@ -183,12 +194,62 @@ def _hooks_block(hook_dir: str) -> dict:
              "hooks": [{"type": "command",
                         "command": 'bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/brain-pre-action-trigger.sh"'}]},
         ],
+        "PostToolUse": [
+            {"matcher": ("mcp__symbiosis-brain__brain_write|"
+                         "mcp__symbiosis-brain__brain_append|"
+                         "mcp__symbiosis-brain__brain_patch"),
+             "hooks": [{"type": "command",
+                        "command": f"bash {hook_dir}/brain-save-marker.sh",
+                        "timeout": 5}]},
+        ],
         "SessionEnd": [
             {"hooks": [{"type": "command",
                         "command": f"bash {hook_dir}/brain-sync.sh auto",
-                        "timeout": 35}]},
+                        "timeout": 40}]},
         ],
     }
+
+
+# Basenames of every script this installer writes into a hooks.<Event> entry. This set
+# — not the install directory — is the ownership test used by _merge_hook_event: the
+# same hook is referenced by three different prefixes in the wild (~/.claude/hooks/...,
+# "$SYMBIOSIS_BRAIN_TOOLS/hooks/...", and an absolute path left by an older install),
+# and all three are ours. Kept in sync with _hooks_block by
+# test_our_hook_scripts_covers_every_hook_command.
+OUR_HOOK_SCRIPTS = frozenset({
+    "brain-session-start.sh",
+    "brain-save-trigger.sh",
+    "brain-save-marker.sh",
+    "brain-pre-action-trigger.sh",
+    "brain-sync.sh",
+})
+
+
+def _merge_hook_event(base: list, ours: list) -> list:
+    """Merge one hooks.<Event> list: drop OUR stale entries, keep everyone else's.
+
+    An entry is ours when any of its commands names one of OUR_HOOK_SCRIPTS, whatever
+    path prefix that name carries. Foreign entries keep their original order and come
+    first; ours are appended fresh, so N repairs leave exactly one of ours per event.
+
+    Why not "the command contains hook_dir": our PreToolUse entry resolves through
+    $SYMBIOSIS_BRAIN_TOOLS and never mentions hook_dir, so that rule would read our own
+    entry as foreign, keep it, and append a duplicate on every --repair.
+
+    Why not `list_extend_keys |= {"PostToolUse", ...}`: that path de-duplicates by
+    element equality, so a --repair after the hook dir moved, or after any command
+    string or timeout changed, would keep the old entry AND add the new one — the
+    settings file would grow a new dead hook on every upgrade.
+    """
+    def is_ours(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        return any(
+            any(name in ((h or {}).get("command") or "") for name in OUR_HOOK_SCRIPTS)
+            for h in entry.get("hooks", []) if isinstance(h, dict)
+        )
+
+    return [e for e in (base or []) if not is_ours(e)] + list(ours)
 
 
 SB_STATUSLINE_MARKER = "sb-statusline"
@@ -245,9 +306,15 @@ def merge_settings_json(settings_path: Path,
     cur_env = settings.get("env") or {}
     seed_env = {k: v for k, v in env_defaults.items() if k not in cur_env}
 
+    ours_hooks = _hooks_block(hook_dir)
+    cur_hooks = settings.get("hooks") or {}
+    merged_hooks = dict(cur_hooks)
+    for event, entries in ours_hooks.items():
+        merged_hooks[event] = _merge_hook_event(cur_hooks.get(event), entries)
+
     overlay = {
         "env": seed_env,
-        "hooks": _hooks_block(hook_dir),
+        "hooks": merged_hooks,
         "statusLine": {"type": "command", "command": statusline_cmd, "refreshInterval": 10},
         "permissions": {"allow": list(permissions)},
     }

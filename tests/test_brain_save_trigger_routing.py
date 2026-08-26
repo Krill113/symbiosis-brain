@@ -40,8 +40,18 @@ def test_counter_increments_across_gates():
 
 def test_route_turn_excluded_from_sessionstart_rm():
     sb = tempfile.mkdtemp()
+    stub = tempfile.mkdtemp()
     try:
+        # SessionStart primes the MCP roster in the background via `claude mcp list`,
+        # which health-checks every server — including a SECOND `symbiosis-brain serve`
+        # against the live vault. A no-op stub keeps `command -v claude` true (the code
+        # path stays covered) without spawning anything real during the test run.
+        stub_claude = pathlib.Path(stub) / 'claude'
+        stub_claude.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        stub_claude.chmod(0o755)
+
         env = dict(os.environ); env['TMPDIR'] = sb; env['TEMP'] = sb
+        env['PATH'] = stub + os.pathsep + env.get('PATH', '')
         env['SYMBIOSIS_BRAIN_RULES_ENABLED'] = 'false'; env.pop('SYMBIOSIS_BRAIN_VAULT', None)
         p = json.dumps({'session_id': 'sX', 'prompt': 'a normal length prompt'})
         subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
@@ -53,6 +63,7 @@ def test_route_turn_excluded_from_sessionstart_rm():
         assert ctr.read_text().strip() == '2'
     finally:
         shutil.rmtree(sb, ignore_errors=True)
+        shutil.rmtree(stub, ignore_errors=True)
 
 ORIGINAL = ('Перед grep по коду — проверь `.claude/docs/catalog/` (если есть) и brain_search.\n'
             'Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena (find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).\n'

@@ -28,9 +28,18 @@ normalize_scope() {
 # When sourced for tests, only define functions and exit.
 if [ "$1" = "--source-only-normalize" ]; then return 0 2>/dev/null || exit 0; fi
 
+# One session-id parser for every hook (hooks/sb-hooklib.sh): the inline greps used
+# to disagree about whitespace after the colon, so half of the payloads the harness
+# sends parsed as an empty session id. Fail-open: without the library the hook goes
+# silent instead of guessing.
+DIR=${BASH_SOURCE[0]%/*}
+[ "$DIR" = "${BASH_SOURCE[0]}" ] && DIR=.
+. "$DIR/sb-hooklib.sh" 2>/dev/null || exit 0
+
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/.*":"//;s/"$//')
-SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
+sb_session_id "$INPUT"
+SESSION_ID="$SB_SESSION_ID"
+sb_tmp_dir
 
 VAULT="${SYMBIOSIS_BRAIN_VAULT:-$HOME/symbiosis-brain-vault}"
 TOOLS="${SYMBIOSIS_BRAIN_TOOLS}"
@@ -87,9 +96,18 @@ fi
 # blows the 5s SessionStart timeout, so it MUST be detached like the prewarm above.
 # Atomic publish (write tmp + mv) so a concurrent UPS reader never sees a partial
 # file. Fail-open: no cache → MCP `*-present` gates read 'undeterminable' (silent).
-if [ -n "$SESSION_ID" ] && command -v claude >/dev/null 2>&1; then
+# Skip the prime when a fresh roster for THIS session already exists. A1a widens
+# SessionStart from 2 matchers to 4, so `claude mcp list` would now detach on every
+# resume/clear as well — and it health-checks every server, which starts a SECOND
+# `symbiosis-brain serve` against the live vault. That start is not read-only
+# (server.py:114-152 runs index_all()/repair_index() on drift), and this build of
+# SQLite (3.50.4) still carries the WAL-Reset race we deliberately parked.
+# 60 min matches the GC threshold for the same file below, so "stale -> swept ->
+# re-primed" is one cycle, not two competing numbers.
+_roster="$SB_TMP/brain-mcp-roster-${SESSION_ID}"
+if [ -n "$SESSION_ID" ] && command -v claude >/dev/null 2>&1 && \
+   { [ ! -f "$_roster" ] || [ -n "$(find "$_roster" -mmin +60 2>/dev/null)" ]; }; then
   (
-    _roster="$SB_TMP/brain-mcp-roster-${SESSION_ID}"
     if claude mcp list >"$_roster.tmp" 2>/dev/null; then
       mv -f "$_roster.tmp" "$_roster" 2>/dev/null || rm -f "$_roster.tmp" 2>/dev/null
     else
@@ -103,7 +121,6 @@ if [ -n "$SESSION_ID" ]; then
   rm -f "$SB_TMP/brain-triggered-${SESSION_ID}" \
         "$SB_TMP/brain-precompact-${SESSION_ID}" \
         "$SB_TMP/brain-precompact-pending-${SESSION_ID}" \
-        "$SB_TMP/brain-last-save-pct-${SESSION_ID}" \
         "$SB_TMP/brain-save-later-${SESSION_ID}" \
         "$SB_TMP/brain-rules-shown-${SESSION_ID}" \
         "$SB_TMP/brain-rules-turn-counter-${SESSION_ID}" \
@@ -111,12 +128,18 @@ if [ -n "$SESSION_ID" ]; then
   # NOTE: brain-route-turn-${SESSION_ID} is DELIBERATELY excluded here —
   # the monotonic routing counter must survive compact (SessionStart runs
   # on compact). See stage4 design §6.2. Orphan-GC reaps it by mtime only.
+  # NOTE: brain-last-save-pct-${SESSION_ID} is DELIBERATELY excluded too —
+  # SessionStart also runs on compact, and wiping the marker there reset the
+  # Stop-hook delta-guard to zero, so the next threshold fired unconditionally
+  # after every compaction. On a fresh startup the session id is new and there
+  # is nothing to wipe anyway.
   echo "$SESSION_ID" > "$SB_TMP/brain-current-session"
 fi
 
 # Opportunistic GC of orphaned recall dedup files from dead/idle sessions
 if command -v find >/dev/null 2>&1; then
   find "$SB_TMP" -maxdepth 1 -name 'brain-recall-seen-*.json' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-prompt-recall-seen-*.json' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-events-*.jsonl' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-seen-*.json' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-turn-*' -mmin +60 -delete 2>/dev/null || true

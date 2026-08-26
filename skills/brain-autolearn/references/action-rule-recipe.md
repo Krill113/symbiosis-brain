@@ -42,7 +42,7 @@ The hook uses `grep -E`. That means:
 ```json
 {"id": "kebab-case-class-level", "class": "action", "priority": 50,
  "command_triggers": {"bash": [{"re": "..."}], "powershell": [{"re": "..."}]},
- "hint": "Императив, 1–2 строки, что проверить/сделать иначе. [[mistakes/source-note]]",
+ "hint": "Imperative, 1-2 lines: what to check or do differently. [[mistakes/source-note]]",
  "test_match":   {"bash": ["dangerous variant", "another idiom"], "powershell": ["..."]},
  "test_nomatch": {"bash": ["innocent lookalike", "grep for the note text", "echo mention"], "powershell": ["..."]}}
 ```
@@ -83,5 +83,5 @@ an innocent command prints nothing. Hits are logged to
 
 ## 6. Report
 
-`сделано правило <id> для <ошибка> (источник [[mistakes/…]]), ловит <bash/powershell>,
-скомпилировано N/N` — one line to the owner.
+`made rule <id> for <mistake> (source [[mistakes/…]]), catches <bash/powershell>,
+compiled N/N` — one line to the owner.

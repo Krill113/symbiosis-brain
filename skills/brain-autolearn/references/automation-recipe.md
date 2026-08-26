@@ -24,7 +24,7 @@ use» is a skill; a skill whose body is one command is a script.
   `expected_tool: null`, `hint` names the script and when to reach for it) **and** a
   `pattern` note in the vault linking the file. Without the route it will be
   rewritten by hand again.
-- Report: `сделано <script> для <повтор>, лежит <path>, триггер <route id>`.
+- Report: `made <script> for <repetition>, lives at <path>, trigger <route id>`.
 
 ## 3. Skill (tier 2)
 

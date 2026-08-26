@@ -64,3 +64,30 @@ def load_folder_type_map(vault_path: Path) -> dict[str, str]:
     if not mapping:
         raise ValueError("Folder ↔ type convention section contained no rows")
     return mapping
+
+
+# (resolved taxonomy path) -> ((st_mtime_ns, st_size), scopes)
+_SCOPES_CACHE: dict[str, tuple[tuple[int, int], frozenset[str]]] = {}
+
+
+def load_valid_scopes_cached(vault_path: Path) -> frozenset[str]:
+    """load_valid_scopes with a cache keyed by (resolved path, st_mtime_ns, st_size).
+
+    B3 made every vault write read the taxonomy (brain_write / brain_append /
+    brain_patch), so an uncached read is one file parse per write. Raises exactly
+    what load_valid_scopes raises — the call-site catches and passes None.
+    """
+    file_path = vault_path / _TAXONOMY_REL
+    try:
+        st = file_path.stat()
+    except OSError:
+        # Missing/unreadable: let load_valid_scopes raise its canonical message.
+        return load_valid_scopes(vault_path)
+    key = str(file_path.resolve())
+    stamp = (st.st_mtime_ns, st.st_size)
+    cached = _SCOPES_CACHE.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    scopes = load_valid_scopes(vault_path)
+    _SCOPES_CACHE[key] = (stamp, scopes)
+    return scopes

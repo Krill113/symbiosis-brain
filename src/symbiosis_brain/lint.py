@@ -5,6 +5,7 @@ from symbiosis_brain.resolver import (
     resolve_target,
     build_path_index,
     compute_linked_canonicals,
+    is_external_ref,
 )
 from symbiosis_brain.taxonomy import load_valid_scopes, load_folder_type_map
 
@@ -35,6 +36,7 @@ class VaultLinter:
         orphans: list[dict] = []
         weak_links: list[dict] = []
         broken_links: list[dict] = []
+        forward_refs: list[dict] = []
         scope_warnings: list[dict] = []
         type_drift: list[dict] = []
         gist_missing: list[dict] = []
@@ -82,12 +84,21 @@ class VaultLinter:
                     target = tn[len("broken:"):] if tn.startswith("broken:") else tn
                 if not target:
                     continue
+                # raw_target holds the original link text; fall back to to_name.
+                reported_target = rel.get("raw_target") or rel["to_name"]
+                # forward-refs and links into a foreign namespace point OUTSIDE the
+                # vault: they are informational, not breakage (triage B3/B4). Storage
+                # persists them broken=True by design — hence the live re-check here.
+                if is_external_ref(target, valid_scopes):
+                    forward_refs.append({
+                        "source": note["path"],
+                        "target": reported_target,
+                    })
+                    continue
                 _canonical, is_broken = resolve_target(
                     target, self._storage, index=path_index
                 )
                 if is_broken:
-                    # raw_target holds the original link text; fall back to to_name.
-                    reported_target = rel.get("raw_target") or rel["to_name"]
                     broken_links.append({
                         "source": note["path"],
                         "target": reported_target,
@@ -137,6 +148,7 @@ class VaultLinter:
             "orphans": orphans,
             "weak_links": weak_links,
             "broken_links": broken_links,
+            "forward_refs": forward_refs,
             "scope_warnings": scope_warnings,
             "type_drift": type_drift,
             "gist_missing": gist_missing,
@@ -147,6 +159,7 @@ class VaultLinter:
                 "orphan_count": len(orphans),
                 "weak_link_count": len(weak_links),
                 "broken_link_count": len(broken_links),
+                "forward_ref_count": len(forward_refs),
                 "scope_warning_count": len(scope_warnings),
                 "type_drift_count": len(type_drift),
                 "gist_missing_count": len(gist_missing),

@@ -5,6 +5,8 @@ Soft-warn:  gist_too_long, few_wiki_links.
 """
 import pytest
 
+from pathlib import Path
+
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.validation import (
     ValidationError,
@@ -277,3 +279,84 @@ def test_gist_at_hard_limit_passes(tmp_path):
     # In soft zone (>100) — warning fires, but no ValidationError.
     rules = [w.rule for w in warnings]
     assert "gist_too_long" in rules
+
+
+# ---------- CP-1 / B3 + B2 + B-N1 ----------
+
+def test_namespaced_skill_link_passes(tmp_vault_with_taxonomy: Path):
+    """[[superpowers:writing-skills]] — ссылка ВНЕ vault, блокировать её нечем."""
+    storage = _storage_with_note(tmp_vault_with_taxonomy)
+    warnings = validate_note(
+        path="wiki/new.md",
+        title="New",
+        body="# H\nSee [[superpowers:writing-skills]] and [[wiki/existing]].",
+        frontmatter={"gist": "x"},
+        storage=storage,
+        vault_path=tmp_vault_with_taxonomy,
+    )
+    assert isinstance(warnings, list)
+
+
+def test_known_scope_typo_still_blocks(tmp_vault_with_taxonomy: Path):
+    """Скоуп ИЗ whitelist ('beta') + несуществующий путь = по-прежнему hard-block."""
+    storage = _storage_with_note(tmp_vault_with_taxonomy)
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md",
+            title="New",
+            body="# H\n[[beta: projects/typo]] [[wiki/existing]]",
+            frontmatter={"gist": "x"},
+            storage=storage,
+            vault_path=tmp_vault_with_taxonomy,
+        )
+    assert "beta: projects/typo" in str(exc.value)
+
+
+def test_gist_date_value_does_not_crash(tmp_path):
+    """`gist: 2026-08-25` парсится YAML в datetime.date — .strip() падал AttributeError."""
+    from datetime import date
+    storage = _storage_with_note(tmp_path)
+    warnings = validate_note(
+        path="wiki/new.md",
+        title="New",
+        body="# H\n[[wiki/existing]] [[wiki/existing]]",
+        frontmatter={"gist": date(2026, 8, 25)},
+        storage=storage,
+    )
+    assert isinstance(warnings, list)
+    assert "gist_missing" not in [w.rule for w in warnings]
+
+
+def test_missing_gist_soft_warns_when_require_gist_false(tmp_path):
+    """Грандфазеринг B2: у patch/append нет параметра gist → отсутствие gist не блок."""
+    storage = _storage_with_note(tmp_path)
+    warnings = validate_note(
+        path="reference/legacy.md",
+        title="Legacy",
+        body="# H\n[[wiki/existing]] [[wiki/existing]]",
+        frontmatter={},
+        storage=storage,
+        require_gist=False,
+        tool_name="brain_patch",
+    )
+    rules = [w.rule for w in warnings]
+    assert "gist_missing" in rules
+    msg = next(w.message for w in warnings if w.rule == "gist_missing")
+    assert "brain_write" in msg  # единственный тул, который умеет проставить gist
+
+
+def test_error_message_names_calling_tool(tmp_path):
+    """Совет в ошибке обязан называть вызванный тул, а не всегда brain_write."""
+    storage = _storage_with_note(tmp_path)
+    with pytest.raises(ValidationError) as exc:
+        validate_note(
+            path="wiki/new.md",
+            title="New",
+            body="# H\n[[wiki/existing]]",
+            frontmatter={},
+            storage=storage,
+            tool_name="brain_append",
+        )
+    msg = str(exc.value)
+    assert "brain_append" in msg
+    assert "brain_write" not in msg

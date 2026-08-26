@@ -521,3 +521,50 @@ def test_auto_discovery_skips_archive_folder(tmp_path):
     ))
     report = rotate_handoffs(vault=vault, scope=None, inline_days=2)
     assert report.cards_processed == 1  # only projects/demo.md
+
+
+# ---------- CP-1 / B1 + B-N3: сниппет архивного индекса ----------
+
+def test_index_entry_never_emits_unbalanced_brackets():
+    """Гист со ссылкой, попадающей на границу обрезки, не должен оставлять '[['.
+
+    Репро линзы B (02-server-mcp-tools.md §B1): 110-символьный гист, обрезка по 100
+    символам разрывает [[reference/uv-tool-update-policy]] на '[[reference/uv-tool-updat'.
+    """
+    from symbiosis_brain.rotation import render_archive_index_entry
+    s = _section(Date(2026, 7, 30))
+    gist = ("full audit of the MCP configuration and the follow-up cleanup, "
+            "snapshot in [[reference/uv-tool-update-policy]]")
+    assert len(gist) > 100  # иначе тест ничего не проверяет
+    line = render_archive_index_entry(s, scope="demo", slug="mcp-audit", gist=gist)
+    # Ровно одна пара скобок — та, что рендерит сама функция (ссылка на архивную ноту).
+    assert line.count("[[") == 1
+    assert line.count("]]") == 1
+    assert "uv-tool-upd" not in line  # ссылка вырезана целиком, а не обрезана
+
+
+def test_index_entry_cuts_on_word_boundary():
+    """Обрезка длинного гиста идёт по границе слова и помечается многоточием."""
+    from symbiosis_brain.rotation import render_archive_index_entry
+    s = _section(Date(2026, 7, 30))
+    gist = ("alpha bravo charlie delta echo foxtrot golf hotel india juliett "
+            "kilo lima mike november oscar papa quebec")
+    assert len(gist) > 100
+    line = render_archive_index_entry(s, scope="demo", slug=None, gist=gist)
+    oneliner = line.split(" — ", 1)[1]
+    assert oneliner.endswith("…")
+    body = oneliner[:-1]
+    assert gist.startswith(body)                 # это префикс исходного гиста
+    assert body.split()[-1] in gist.split()      # последнее слово — целое
+    assert body == body.strip()                  # без хвостового пробела
+
+
+def test_extract_gist_snippet_strips_wikilinks():
+    """extract_gist отдаёт чистую строку: во frontmatter архивной ноты нет '[['."""
+    body = ("## Handoff 2026-07-30\n"
+            "**Shipped:** cleanup landed, see [[reference/uv-tool-update-policy]] for details\n")
+    g = extract_gist(body)
+    assert "[[" not in g and "]]" not in g
+    assert "cleanup landed, see" in g
+    assert "for details" in g
+    assert "  " not in g  # пробелы схлопнуты

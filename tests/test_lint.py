@@ -264,6 +264,45 @@ class TestVaultLinter:
             f"B has incoming edge from A, should NOT be orphan. Got: {orphan_paths}"
         )
 
+    def test_forward_ref_not_reported_broken(
+        self, tmp_vault_with_taxonomy: Path, db_path: Path
+    ):
+        """B4: [[forward:X]] — отдельная категория, в broken_links его нет."""
+        (tmp_vault_with_taxonomy / "wiki" / "planner.md").write_text(
+            "---\ntitle: Planner\ntype: wiki\nscope: global\ngist: plans ahead\n---\n\n"
+            "Later: [[forward:wiki/not-yet]].\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+
+        assert report["summary"]["broken_link_count"] == 0, report["broken_links"]
+        assert report["summary"]["forward_ref_count"] == 1
+        assert report["forward_refs"] == [
+            {"source": "wiki/planner.md", "target": "forward:wiki/not-yet"}
+        ]
+
+    def test_external_namespace_not_reported_broken(
+        self, tmp_vault_with_taxonomy: Path, db_path: Path
+    ):
+        """B3 на пути линтера: ns вне whitelist — внешняя ссылка, ns из whitelist — нет."""
+        (tmp_vault_with_taxonomy / "wiki" / "refs.md").write_text(
+            "---\ntitle: Refs\ntype: wiki\nscope: global\ngist: mixed refs\n---\n\n"
+            "See [[superpowers:writing-skills]] and [[beta: projects/typo]].\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+
+        forward_targets = [i["target"] for i in report["forward_refs"]]
+        broken_targets = [i["target"] for i in report["broken_links"]]
+        assert "superpowers:writing-skills" in forward_targets
+        assert "beta: projects/typo" in broken_targets   # 'beta' в whitelist → проверяем
+
 
 class TestLintBrokenViaLiveResolve:
     def _seed_src_and_foo(self, storage: Storage) -> None:

@@ -96,6 +96,35 @@ def parse_handoff_sections(text: str) -> list[HandoffSection]:
     return sections
 
 
+_WIKILINK_SPAN_RE = re.compile(r"\[\[[^\]\n]*\]\]")
+
+
+def _plain_snippet(text: str, limit: int) -> str:
+    """One-line snippet that is safe to paste into a card.
+
+    Cuts whole [[wiki-links]] out (alias included), collapses whitespace, truncates
+    on a word boundary and appends '…' only when something was actually cut.
+    Guarantee: the result contains neither '[[' nor ']]'. A half-eaten link in a
+    card's '## Archive' index makes the card unpatchable (broken outgoing wiki-link)
+    and used to swallow the next index line as well.
+    """
+    plain = _WIKILINK_SPAN_RE.sub(" ", text)
+    # Belt and braces: an unbalanced '[[' (or ']]') survives the span regex.
+    plain = plain.replace("[[", " ").replace("]]", " ")
+    plain = re.sub(r"\s+", " ", plain).strip()
+    plain = re.sub(r" ([,.;:!?])", r"\1", plain)
+    if limit <= 0:
+        return ""
+    if len(plain) <= limit:
+        return plain
+    head = plain[: limit - 1]
+    space = head.rfind(" ")
+    cut = head[:space].rstrip(" ,;:") if space > 0 else head
+    if not cut:                      # одно длинное слово без пробелов
+        cut = head
+    return cut + "…"
+
+
 def extract_gist(section_body: str) -> str:
     """Extract gist: first phrase of '**Shipped:**', then first non-heading line, then literal."""
     m = SHIPPED_RE.search(section_body)
@@ -111,9 +140,10 @@ def extract_gist(section_body: str) -> str:
         return "Handoff"
     # First sentence — stop at . ; or : (followed by space or end)
     first = re.split(r"[.;:](?:\s|$)", raw, maxsplit=1)[0].strip()
-    if len(first) <= GIST_MAX:
-        return first
-    return first[: GIST_MAX - 1] + "…"
+    # Single truncation point for the archive note's frontmatter gist (B-N3): the
+    # index one-liner truncates again at INDEX_ONELINER_MAX, and both go through
+    # _plain_snippet, so neither cut can tear a wiki-link.
+    return _plain_snippet(first, GIST_MAX)
 
 
 STOP_WORDS = {
@@ -253,7 +283,7 @@ def render_archive_index_entry(
     date_str = section.date.isoformat()
     slug_part = f"-{slug}" if slug else ""
     link = f"archive/handoffs/{scope}-{date_str}{slug_part}"
-    oneliner = gist[:INDEX_ONELINER_MAX].rstrip()
+    oneliner = _plain_snippet(gist, INDEX_ONELINER_MAX)
     return f"- {date_str}: [[{link}]] — {oneliner}"
 
 

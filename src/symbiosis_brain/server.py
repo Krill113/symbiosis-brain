@@ -249,7 +249,7 @@ async def list_tools() -> list[Tool]:
                 "note_type": {"type": "string", "enum": ["project", "wiki", "research", "decision", "user", "pattern", "mistake", "feedback", "reference"], "default": "wiki"},
                 "scope": {"type": "string", "default": "global"},
                 "tags": {"type": "array", "items": {"type": "string"}},
-                "gist": {"type": "string", "description": "1-line summary (≤80 chars), used by mid-conversation recall. Optional but warned-if-missing."},
+                "gist": {"type": "string", "description": "1-line summary (≤100 chars recommended, hard limit 140). Required: a note without gist is rejected."},
                 "valid_from": {"type": "string", "description": "ISO date when this became true"},
                 "valid_to": {"type": "string", "description": "ISO date when this stopped being true (for superseded notes)"},
             },
@@ -465,6 +465,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "tags": arguments.get("tags") or [],
                 },
                 storage=_storage,
+                vault_path=_vault_path,
+                require_gist=True,
+                tool_name="brain_write",
             )
         except ValidationError as e:
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -536,6 +539,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         body=new_body,
                         frontmatter=dict(post.metadata),
                         storage=_storage,
+                        vault_path=_vault_path,
+                        require_gist=False,
+                        tool_name="brain_append",
                     )
                 except ValidationError as e:
                     return [TextContent(type="text", text=f"Error: {e}")]
@@ -588,6 +594,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         body=new_body,
                         frontmatter=dict(post.metadata),
                         storage=_storage,
+                        vault_path=_vault_path,
+                        require_gist=False,
+                        tool_name="brain_patch",
                     )
                 except ValidationError as e:
                     return [TextContent(type="text", text=f"Error: {e}")]
@@ -743,6 +752,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             f"Orphans: {s['orphan_count']}  |  "
             f"Weak links: {s['weak_link_count']}  |  "
             f"Broken links: {s['broken_link_count']}  |  "
+            f"Forward refs: {s['forward_ref_count']}  |  "
             f"Scope warnings: {s['scope_warning_count']}  |  "
             f"Type drift: {s['type_drift_count']}  |  "
             f"Gist missing: {s.get('gist_missing_count', 0)}  |  "
@@ -761,6 +771,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             lines.append(f"\n## Broken Links — {s['broken_link_count']}")
             for i in report["broken_links"]:
                 lines.append(f"- `{i['source']}` → [[{i['target']}]] (no matching note)")
+        if report.get("forward_refs"):
+            lines.append(f"\n## Forward Refs — {s['forward_ref_count']}")
+            for i in report["forward_refs"]:
+                lines.append(f"- `{i['source']}` → [[{i['target']}]] (external or not created yet)")
         if report["scope_warnings"]:
             lines.append(f"\n## Scope Warnings (scope not in whitelist) — {s['scope_warning_count']}")
             for i in report["scope_warnings"]:
@@ -786,6 +800,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 lines.append(f"- `{i['path']}` — {i['title']}")
         if (not report["orphans"] and not report["weak_links"]
                 and not report["broken_links"] and not report["scope_warnings"]
+                and not report.get("forward_refs")
                 and not report.get("type_drift")
                 and not report.get("gist_missing")
                 and not report.get("gist_too_long")

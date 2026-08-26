@@ -3,7 +3,10 @@ from typing import Any
 
 import frontmatter
 
-WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+# `[^\]\n]` — без \n намеренно: незакрытая '[[' иначе жадно матчится через перенос
+# строки до ближайшего ']]' и съедает следующую строку (B1, рецидивы 28.07/07.08/10.08).
+# Многострочных wiki-ссылок в vault нет — проверено сканом 1449 нот.
+WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
 _FENCE_CHARS = "`~"

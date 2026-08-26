@@ -6,6 +6,7 @@ cross-platform compatibility (mandatory on Windows).
 from __future__ import annotations
 
 import multiprocessing as mp
+import sqlite3
 import time
 from pathlib import Path
 
@@ -483,3 +484,168 @@ def test_lock_cleanup_does_not_mask_original_exception(tmp_path, monkeypatch):
     finally:
         if _os.path.exists(lockfile):
             _os.remove(lockfile)
+
+
+# ---------- CP-2 / §11.3: the retrieval log under real contention ----------
+
+def _hold_write_lock(db_str: str, hold_ms: int, ready: "mp.Queue") -> None:
+    """Third process: holds BEGIN IMMEDIATE for `hold_ms` (measured case
+    [отчёт 01, F22] — an insert waited 338.8 ms behind a 300 ms holder, so
+    busy_timeout=2000 does not always save the day)."""
+    import sqlite3
+    import time as _t
+    conn = sqlite3.connect(db_str, isolation_level=None)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version (key, version) VALUES ('holder_probe', 1)"
+    )
+    ready.put("held")
+    _t.sleep(hold_ms / 1000)
+    conn.execute("COMMIT")
+    conn.close()
+
+
+def _log_events_in_subprocess(db_str: str, n: int, queue: "mp.Queue") -> None:
+    """Child writer: n events, then close() in `finally` — that is flush point
+    (в) of §2.4 п. 4, without which a skip on the LAST event never reaches the
+    database and the parent's disjunction falls apart for no fault of the code."""
+    from pathlib import Path
+
+    from symbiosis_brain import retrieval_log
+    from symbiosis_brain.storage import Storage
+
+    db = Path(db_str)
+    storage = Storage(db)
+    error = ""
+    try:
+        ctx = retrieval_log.LogContext(
+            source="mcp_search", db_path=db, client="testclient/9.9.9")
+        for i in range(n):
+            retrieval_log.record(
+                ctx, query=f"query {i}", scope=None, mode="gist", fts_mode="all",
+                hits=[{"path": f"wiki/note-{i}.md", "_score": 0.01, "_in_both": False}],
+                latency_ms=1, vec_enabled=False,
+            )
+    except Exception as e:                      # record() must never raise
+        error = f"{type(e).__name__}: {e}"
+    finally:
+        disabled = retrieval_log._disabled
+        retrieval_log.close()
+        storage.close()
+        queue.put({"error": error, "disabled": disabled})
+
+
+def test_retrieval_log_under_a_300ms_lock_holder(tmp_vault, db_path):
+    """§11.3, case 3a. The assertion is a DISJUNCTION on purpose: either
+    nothing was lost, or the number lost is EXACTLY the persistent counter.
+    Reading skipped_count() here is forbidden — those counters live in the two
+    child processes' memory, and the spec introduces no way to ship them back;
+    that is precisely why the counter is persisted (§2.4 п. 4).
+    """
+    from symbiosis_brain import retrieval_log
+
+    storage = Storage(db_path)                  # runs the migration once
+    storage.close()
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Queue()
+    results = ctx.Queue()
+    holder = ctx.Process(target=_hold_write_lock, args=(str(db_path), 300, ready))
+    holder.start()
+    assert ready.get(timeout=30) == "held"
+
+    writers = [
+        ctx.Process(target=_log_events_in_subprocess, args=(str(db_path), 50, results)),
+        ctx.Process(target=_log_events_in_subprocess, args=(str(db_path), 50, results)),
+    ]
+    for p in writers:
+        p.start()
+    reports = [results.get(timeout=120) for _ in writers]
+    for p in writers:
+        p.join(timeout=120)
+    holder.join(timeout=120)
+
+    assert [r["error"] for r in reports] == ["", ""]      # nothing escaped
+    assert [r["disabled"] for r in reports] == [False, False]  # busy != structural
+
+    storage = Storage(db_path)
+    try:
+        written = storage._conn.execute(
+            "SELECT COUNT(*) AS c FROM retrieval_event").fetchone()["c"]
+        skipped_total = storage.get_schema_version(
+            retrieval_log.SKIPPED_TOTAL_KEY) or 0
+    finally:
+        storage.close()
+
+    lost = 100 - written
+    assert lost >= 0
+    assert lost == 0 or lost == skipped_total, (
+        f"lost={lost} skipped_total={skipped_total}: an event vanished without "
+        f"being counted — §2.4 п. 4 broken"
+    )
+    hits = 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        hits = conn.execute("SELECT COUNT(*) FROM retrieval_hit").fetchone()[0]
+    finally:
+        conn.close()
+    assert hits == written                      # one hit per surviving event
+
+
+def _open_storage_in_subprocess(db_str: str, queue: "mp.Queue", barrier) -> None:
+    """`barrier` — стартовая синхронизация (как очередь-стартер в 3a выше). Без
+    неё первый процесс успевает завершить миграцию до того, как второй её начнёт,
+    и «гонка» ни разу не пересекается: тест зелен, а проверяет он тогда ровно
+    ничего. Барьер отпускает оба процесса в один момент, ПЕРЕД открытием Storage."""
+    from pathlib import Path
+
+    from symbiosis_brain.storage import Storage
+    try:
+        barrier.wait(timeout=60)
+        s = Storage(Path(db_str))
+        payload = {
+            "error": "",
+            "tables": sorted(t for t in s.list_tables() if t.startswith("retrieval")),
+            "version": s.get_schema_version("retrieval_log"),
+            "notes": len(s.list_notes()),
+        }
+        s.close()
+    except Exception as e:
+        payload = {"error": f"{type(e).__name__}: {e}", "tables": [],
+                   "version": None, "notes": -1}
+    queue.put(payload)
+
+
+def test_retrieval_log_migration_race_on_a_populated_db(tmp_vault, db_path):
+    """§11.3, case 3b. On an EMPTY database the step is too fast to overlap, so
+    the race is staged on a db that already has notes and older schema_version
+    rows — and the retrieval_log step rolled back to 'not yet applied'."""
+    _seed_vault(tmp_vault, n=5)
+    storage = Storage(db_path)
+    VaultSync(tmp_vault, storage).sync_all()
+    storage._conn.execute("DROP TABLE IF EXISTS retrieval_hit")
+    storage._conn.execute("DROP TABLE IF EXISTS retrieval_event")
+    storage._conn.execute("DELETE FROM schema_version WHERE key='retrieval_log'")
+    notes_before = len(storage.list_notes())
+    assert notes_before == 5
+    assert storage.get_schema_version("retrieval_log") is None
+    storage.close()
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    start = ctx.Barrier(2)          # оба мигратора стартуют из одной точки
+    procs = [ctx.Process(target=_open_storage_in_subprocess,
+                         args=(str(db_path), q, start))
+             for _ in range(2)]
+    for p in procs:
+        p.start()
+    reports = [q.get(timeout=120) for _ in procs]
+    for p in procs:
+        p.join(timeout=120)
+
+    assert [r["error"] for r in reports] == ["", ""]
+    for r in reports:
+        assert r["tables"] == ["retrieval_event", "retrieval_hit"]
+        assert r["version"] == 1
+        assert r["notes"] == notes_before        # older data survived intact

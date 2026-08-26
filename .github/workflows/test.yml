@@ -113,6 +113,7 @@ jobs:
           for t in tests/test-brain-session-start.sh \
                    tests/test-pre-action-trigger.sh \
                    tests/test-prompt-check-hook.sh \
+                   tests/test-save-marker-hook.sh \
                    tests/test-sb-statusline.sh \
                    tests/test-stop-hook.sh \
                    tests/test_packaging.sh; do

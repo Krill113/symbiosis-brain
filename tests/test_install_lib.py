@@ -236,3 +236,154 @@ def test_scaffold_vault_gitignores_local_override(tmp_path):
     scaffold_vault(vault)
     gi2 = (vault / ".gitignore").read_text(encoding="utf-8")
     assert gi2.count("tool-routing.local.json") == 1
+
+
+def test_hooks_block_session_start_has_four_matchers():
+    """The harness fires SessionStart with source ∈ {startup, resume, clear, compact, fork}
+    (enum extracted from claude.exe, lens A §A1). Registering only startup+compact left
+    every --resume / --continue / /clear session without CLAUDE_SESSION_ID,
+    SYMBIOSIS_BRAIN_SCOPE, CRITICAL_FACTS and a fresh session bridge — the real root of
+    the "save marker is never written" reports. `fork` is deliberately absent (owner
+    decision 2026-08-25 §1)."""
+    block = install_lib._hooks_block("~/.claude/hooks")
+    matchers = [e["matcher"] for e in block["SessionStart"]]
+    assert matchers == ["startup", "resume", "clear", "compact"]
+    for entry in block["SessionStart"]:
+        hook = entry["hooks"][0]
+        assert hook["command"] == "bash ~/.claude/hooks/brain-session-start.sh"
+        assert hook["timeout"] == 5
+
+
+def test_hooks_block_has_post_tool_use_save_marker():
+    """The last-save marker is written by a hook, not by the brain-save skill: the hook
+    gets session_id from its own stdin payload, so it is correct in resumed / forked /
+    two-window sessions where CLAUDE_SESSION_ID is empty (owner decision §1)."""
+    block = install_lib._hooks_block("~/.claude/hooks")
+    entries = block["PostToolUse"]
+    assert len(entries) == 1
+    tools = entries[0]["matcher"].split("|")
+    assert tools == [
+        "mcp__symbiosis-brain__brain_write",
+        "mcp__symbiosis-brain__brain_append",
+        "mcp__symbiosis-brain__brain_patch",
+    ]
+    hook = entries[0]["hooks"][0]
+    assert hook["command"] == "bash ~/.claude/hooks/brain-save-marker.sh"
+    assert hook["timeout"] == 5
+
+
+def test_hooks_block_session_end_timeout_fits_git_timeouts():
+    """brain-sync.sh now runs two network steps (pull --rebase, push), each capped at
+    SYMBIOSIS_BRAIN_SYNC_GIT_TIMEOUT (15s), plus add/commit of a large vault. At the old
+    35s budget the hook was killed mid-push on a slow network (lens A, finding 5).
+    Pinned exactly, not as `>= 15 + 15 + 5`: that bound is satisfied by the old 35s
+    too, so the test would have been green before the fix."""
+    entry = install_lib._hooks_block("~/.claude/hooks")["SessionEnd"][0]["hooks"][0]
+    assert entry["command"] == "bash ~/.claude/hooks/brain-sync.sh auto"
+    assert entry["timeout"] == 40
+
+
+def test_merge_keeps_foreign_post_tool_use_hooks(tmp_path):
+    """--repair must not delete hooks it does not own.
+
+    deep_merge only concatenates lists whose key is in list_extend_keys, and
+    merge_settings_json passes list_extend_keys={"allow"} — so for every hook EVENT the
+    overlay list simply replaces the user's list. Today that already silently drops a
+    third-party entry on our six events; adding PostToolUse (the save marker) extends
+    the blast radius to the busiest event in the ecosystem — formatters, linters and
+    audit hooks all live on PostToolUse.
+    """
+    settings = tmp_path / "settings.json"
+    foreign_post = {"matcher": "Edit|Write",
+                    "hooks": [{"type": "command", "command": "bash ~/.mytools/format.sh"}]}
+    foreign_stop = {"hooks": [{"type": "command", "command": "notify-send done"}]}
+    settings.write_text(json.dumps({"hooks": {"PostToolUse": [foreign_post],
+                                              "Stop": [foreign_stop]}}), encoding="utf-8")
+
+    install_lib.merge_settings_json(settings, "~/.claude/hooks", "bash ~/.claude/hooks/sb-statusline.sh", [])
+    hooks = json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+
+    assert foreign_post in hooks["PostToolUse"], "foreign PostToolUse hook was dropped"
+    assert foreign_stop in hooks["Stop"], "foreign Stop hook was dropped"
+    assert any("brain-save-marker.sh" in h["command"]
+               for e in hooks["PostToolUse"] for h in e["hooks"])
+
+
+def test_merge_replaces_our_own_stale_hook_entries(tmp_path):
+    """Our own entries must be REPLACED, not accumulated: a --repair after the hook dir
+    moved (or after a command string changed) has to leave exactly one of ours per
+    event. Both stale entries below are ours under a path that is NOT the hook_dir we
+    install to — that is why ownership is decided by the SCRIPT NAME and not by the
+    install directory. It is also why the fix is a custom merge and not
+    `list_extend_keys |= {...}`: that de-duplicates by equality, so every changed
+    command string would pile up forever.
+
+    No timeout assertion here on purpose — SessionEnd's budget is pinned by
+    test_hooks_block_session_end_timeout_fits_git_timeouts. This case must be green
+    BEFORE the fix (today's wholesale list replacement gives the same result) and green
+    after it, so that it works as a guard against a wrong fix instead of as a red phase.
+    """
+    settings = tmp_path / "settings.json"
+    stale_moved = {"hooks": [{"type": "command",
+                              "command": "bash /old/path/.claude/hooks/brain-sync.sh auto",
+                              "timeout": 35}]}
+    stale_abs = {"hooks": [{"type": "command",
+                            "command": "bash /home/u/.claude/hooks/brain-sync.sh auto"}]}
+    settings.write_text(json.dumps({"hooks": {"SessionEnd": [stale_moved, stale_abs]}}),
+                        encoding="utf-8")
+
+    install_lib.merge_settings_json(settings, "~/.claude/hooks",
+                                    "bash ~/.claude/hooks/sb-statusline.sh", [])
+    entries = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["SessionEnd"]
+
+    assert len(entries) == 1, entries
+    assert entries[0]["hooks"][0]["command"] == "bash ~/.claude/hooks/brain-sync.sh auto"
+
+
+def test_merge_is_idempotent_across_repairs(tmp_path):
+    """N x --repair leaves exactly one of our entries per event.
+
+    The trap is PreToolUse: its command is
+    `bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/brain-pre-action-trigger.sh"` — the path comes
+    from an env var, not from hook_dir. An ownership test based on the install
+    directory would read our OWN entry as foreign, keep it, and append a fresh copy on
+    every repair (measured: 1 -> 2 -> 3 -> 4 entries after three repairs). Two live
+    copies of the recall hook mean a double recall/hint injection on every
+    Edit/Write/Bash/Task and doubled rows in .index/action-rule-hits.jsonl — a silent
+    breach of the CP-4, CP-5 and CP-6 acceptance criteria.
+
+    The base below is the LIVE shape of that entry, verbatim from a real install.
+    """
+    settings = tmp_path / "settings.json"
+    live_pre = {"matcher": "Task|Agent|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+                "hooks": [{"type": "command",
+                           "command": 'bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/'
+                                      'brain-pre-action-trigger.sh"'}]}
+    settings.write_text(json.dumps({"hooks": {"PreToolUse": [live_pre]}}), encoding="utf-8")
+    args = (settings, "~/.claude/hooks", "bash ~/.claude/hooks/sb-statusline.sh", [])
+
+    install_lib.merge_settings_json(*args)
+    first = json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+    install_lib.merge_settings_json(*args)
+    install_lib.merge_settings_json(*args)
+    third = json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+
+    assert len(third["PreToolUse"]) == 1, "our own PreToolUse entry was duplicated by --repair"
+    assert third == first, "settings.json grew across repairs"
+    assert {event: len(v) for event, v in third.items()} == {
+        "SessionStart": 4, "Stop": 1, "PreCompact": 1, "UserPromptSubmit": 1,
+        "PreToolUse": 1, "PostToolUse": 1, "SessionEnd": 1}
+
+
+def test_our_hook_scripts_covers_every_hook_command():
+    """OUR_HOOK_SCRIPTS is the ownership test used by _merge_hook_event, so it must name
+    every script the installer itself writes into settings.json. If a future event (or a
+    renamed script) lands in _hooks_block and not in the set, --repair stops recognising
+    that entry as ours and starts duplicating it — this test fails the moment the two
+    drift apart."""
+    block = install_lib._hooks_block("~/.claude/hooks")
+    for event, entries in block.items():
+        for entry in entries:
+            for hook in entry["hooks"]:
+                assert any(name in hook["command"] for name in install_lib.OUR_HOOK_SCRIPTS), \
+                    f"{event}: {hook['command']} matches no name in OUR_HOOK_SCRIPTS"

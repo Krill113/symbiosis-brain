@@ -31,7 +31,7 @@ Trigger proactively (don't wait for the user to ask) when:
 If triggered at session end or after a multi-step task — do a quick self-scan before Step 1:
 
 - **Dead ends / wasted effort?** Wrong path tried, unnecessary retries → save as `mistake`
-- **Then two separate passes, in this order, after the scan above:** (1) invoke skill `brain-autolearn` — repeated mistakes and repeated actions → action rules / scripts / skills / proposals, owner kept in the loop; (2) invoke skill `brain-self-critique` — how Symbiosis Brain itself served this session (noisy or missed recall, `brain_*` friction, workarounds, hook misfires). Each records its own findings through its own procedure — keep them out of this retrospective. On a clean session each must end in seconds with "nothing".
+- **Then two separate passes, in this order, after the scan above:** (1) invoke skill `brain-autolearn` — repeated mistakes and repeated actions → action rules / scripts / skills / proposals, owner kept in the loop; (2) **if the skill `brain-self-critique` is installed**, invoke it — how Symbiosis Brain itself served this session (noisy or missed recall, `brain_*` friction, workarounds, hook misfires); skip (2) silently when it is not. Each records its own findings through its own procedure — keep them out of this retrospective. On a clean session each must end in seconds with "nothing".
 - **Workflow improvement?** Subagent strategy that worked, better tool usage → save as `pattern`
 - **Implicit user signals missed?** User rephrased, showed frustration, had to redirect → save as `user`
 - **Tool/API surprise?** Unexpected behavior worth remembering → save as `pattern`
@@ -121,22 +121,6 @@ Output 1 line: what was saved and where. Example: "Saved: decision about X → d
 **If this save replaces or supersedes an existing note:**
 - Set `valid_to` on the old note via `brain_patch` (closes the bi-temporal lifecycle).
 - If you need to RENAME or DELETE an existing note (not just supersede via valid_to), use `brain_rename` or `brain_delete` MCP tools — never raw Edit on the file. Direct file edits leave inbound `[[old]]` references stale, which is the dominant source of vault broken-links. `brain_rename` rewrites inbound refs atomically; `brain_delete` (mode=safe) refuses if inbound refs exist, so you don't accidentally orphan callers.
-
-### Step 8: Signal the save to the Stop-hook delta-guard
-
-After a successful save, record the current context % as "last saved" so the
-proactive Stop-hook's delta-guard doesn't re-nag until enough *new* context
-accrues. Without this the guard always reads 0 and over-fires. Run (Bash):
-
-```bash
-SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
-SID="${CLAUDE_SESSION_ID:-$(cat "$SB_TMP/brain-current-session" 2>/dev/null)}"
-[ -n "$SID" ] && cp "$SB_TMP/brain-context-pct-$SID" "$SB_TMP/brain-last-save-pct-$SID" 2>/dev/null
-```
-
-Fail-open: if the context-pct marker isn't present yet, the copy silently
-no-ops and the guard just falls back to 0 (no harm). The `SB_TMP` chain matches
-the bash hooks, so the marker lands exactly where `brain-save-trigger.sh` reads it.
 
 ### MCP fallback
 

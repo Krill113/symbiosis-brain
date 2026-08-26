@@ -4,15 +4,19 @@
 
 set -u
 
-# Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} matches the /tmp paths
-# used below (Linux CI often presets TMPDIR to a non-/tmp dir).
-export TMPDIR=/tmp TEMP=/tmp
+# Own temp dir: the hook resolves SB_TMP=${TMPDIR:-${TEMP:-/tmp}}, and on Git-Bash for
+# Windows /tmp IS the live %LOCALAPPDATA%\Temp — the same dir the running sessions use.
+# Pinning /tmp here made the suite rewrite the live brain-current-session and let the
+# hook's opportunistic GC delete live brain-mcp-roster-* / brain-route-* files.
+SB_TEST_TMP=$(mktemp -d)
+export TMPDIR="$SB_TEST_TMP" TEMP="$SB_TEST_TMP"
+trap 'rm -rf "$SB_TEST_TMP"' EXIT
 
 HOOK="$HOME/.claude/hooks/brain-session-start.sh"
 # Repo source-of-truth (used for sourcing normalize_scope helper in tests).
 HOOK_SOURCE="${HOOK_SOURCE:-hooks/brain-session-start.sh}"
-VAULT="/tmp/sb-test-vault-$$"
-FAKE_ROOT="/tmp/sb-test-cwd-$$"
+VAULT="$SB_TEST_TMP/sb-test-vault-$$"
+FAKE_ROOT="$SB_TEST_TMP/sb-test-cwd-$$"
 FAILED=0
 
 if [ ! -f "$HOOK" ]; then
@@ -108,7 +112,7 @@ setup_fake_dirs
 
 # === Core infrastructure: CRITICAL_FACTS always injected ===
 setup_vault
-OUT=$(run_hook "/tmp")
+OUT=$(run_hook "$TMPDIR")
 assert_contains "core: Symbiosis Brain marker present"  "$OUT" '=== Symbiosis Brain ==='
 assert_contains "core: CRITICAL_FACTS content"          "$OUT" 'User: test-user'
 
@@ -188,8 +192,8 @@ rm -f "$ENV_FILE"
 # === A-plan additions: rules flag cleanup + tool roster ===
 test_session_start_cleans_rules_flags() {
   local sid="cleanup-$$"
-  local shown="/tmp/brain-rules-shown-${sid}"
-  local turns="/tmp/brain-rules-turn-counter-${sid}"
+  local shown="$TMPDIR/brain-rules-shown-${sid}"
+  local turns="$TMPDIR/brain-rules-turn-counter-${sid}"
   echo "30" > "$shown"
   echo "5" > "$turns"
 
@@ -231,7 +235,7 @@ test_session_start_emits_tool_roster
 test_session_start_primes_roster_cache() {
   setup_vault
   local sid="roster-prime-$$"
-  local roster="/tmp/brain-mcp-roster-${sid}"
+  local roster="$TMPDIR/brain-mcp-roster-${sid}"
   rm -f "$roster"
   local stub_bin
   stub_bin="$(mktemp -d)"
@@ -269,7 +273,7 @@ EOF
 test_route_turn_counter_survives_session_start() {
   setup_vault
   local sid="counter-survive-$$"
-  local counter="/tmp/brain-route-turn-${sid}"
+  local counter="$TMPDIR/brain-route-turn-${sid}"
   echo "7" > "$counter"
 
   echo "{\"session_id\":\"${sid}\",\"source\":\"compact\"}" | \
@@ -289,11 +293,11 @@ test_route_turn_counter_survives_session_start() {
 test_route_files_gc_when_stale() {
   setup_vault
   local sid="gc-$$"
-  local stale_events="/tmp/brain-route-events-stale-${sid}.jsonl"
-  local stale_seen="/tmp/brain-route-seen-stale-${sid}.json"
-  local stale_turn="/tmp/brain-route-turn-stale-${sid}"
-  local stale_roster="/tmp/brain-mcp-roster-stale-${sid}"
-  local fresh_turn="/tmp/brain-route-turn-${sid}"
+  local stale_events="$TMPDIR/brain-route-events-stale-${sid}.jsonl"
+  local stale_seen="$TMPDIR/brain-route-seen-stale-${sid}.json"
+  local stale_turn="$TMPDIR/brain-route-turn-stale-${sid}"
+  local stale_roster="$TMPDIR/brain-mcp-roster-stale-${sid}"
+  local fresh_turn="$TMPDIR/brain-route-turn-${sid}"
   for f in "$stale_events" "$stale_seen" "$stale_turn" "$stale_roster"; do
     echo "x" > "$f"
     touch -d "120 minutes ago" "$f" 2>/dev/null || touch -t "$(date -d '120 minutes ago' +%Y%m%d%H%M 2>/dev/null)" "$f" 2>/dev/null
@@ -344,6 +348,109 @@ test_session_start_primes_roster_cache
 test_route_turn_counter_survives_session_start
 test_route_files_gc_when_stale
 test_route_turn_excluded_from_sessionstart_rm
+
+# (5) The payload parser must accept whitespace after the colon. json.dumps (used by
+# the harness and by tests/test_brain_save_trigger_routing.py) emits
+# {"session_id": "x"}; the old grep matched only {"session_id":"x"}, so those
+# sessions silently got SESSION_ID="" — no env export, no bridge, no flag cleanup.
+test_session_id_parsed_with_space_after_colon() {
+  setup_vault
+  local sid="space-sid-$$"
+  local env_file
+  env_file=$(mktemp)
+  echo "{\"session_id\": \"${sid}\", \"source\": \"resume\"}" | \
+    SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="$env_file" bash "$HOOK" >/dev/null 2>&1
+  if grep -q "export CLAUDE_SESSION_ID=\"${sid}\"" "$env_file" && \
+     [ "$(cat "$TMPDIR/brain-current-session" 2>/dev/null)" = "$sid" ]; then
+    echo "PASS: session_id_parsed_with_space_after_colon"
+  else
+    echo "FAIL: session_id_parsed_with_space_after_colon — env export or bridge missing"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -f "$env_file"
+}
+
+# (6) The last-save marker MUST survive compaction: SessionStart also runs on
+# `compact`, and wiping the marker there made the delta-guard count from zero after
+# every compact, so the very next threshold fired unconditionally (lens A, finding 4).
+test_last_save_marker_survives_compact() {
+  setup_vault
+  local sid="compact-marker-$$"
+  local marker="$TMPDIR/brain-last-save-pct-${sid}"
+  local triggered="$TMPDIR/brain-triggered-${sid}"
+  echo "31" > "$marker"
+  echo "25" > "$triggered"
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"compact\"}" | \
+    SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" >/dev/null 2>&1
+
+  local ok=1
+  [ "$(cat "$marker" 2>/dev/null)" = "31" ] || { ok=0; echo "  marker wiped: $marker"; }
+  [ -f "$triggered" ] && { ok=0; echo "  trigger flags NOT cleaned: $triggered"; }
+  if [ "$ok" = "1" ]; then
+    echo "PASS: last_save_marker_survives_compact"
+  else
+    echo "FAIL: last_save_marker_survives_compact"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -f "$marker" "$triggered"
+}
+
+# (7) Prompt-recall dedup files (CP-5, prefix brain-prompt-recall-seen-) must be
+# swept by the same opportunistic GC as the other per-session temp files.
+test_prompt_recall_seen_files_gc_when_stale() {
+  setup_vault
+  local sid="gc-prompt-$$"
+  local stale="$TMPDIR/brain-prompt-recall-seen-stale-${sid}.json"
+  echo "{}" > "$stale"
+  touch -d "120 minutes ago" "$stale" 2>/dev/null || \
+    touch -t "$(date -d '120 minutes ago' +%Y%m%d%H%M 2>/dev/null)" "$stale" 2>/dev/null
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"startup\"}" | \
+    SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" >/dev/null 2>&1
+
+  if [ ! -f "$stale" ]; then
+    echo "PASS: prompt_recall_seen_files_gc_when_stale"
+  else
+    echo "FAIL: prompt_recall_seen_files_gc_when_stale — stale dedup file survived"
+    FAILED=$((FAILED + 1))
+    rm -f "$stale"
+  fi
+}
+
+# (9) The roster prime must not re-run when a fresh roster for this session exists:
+# `claude mcp list` health-checks every server and starts a second serve against the
+# live vault. A1a made SessionStart fire on resume/clear too, so without this gate the
+# extra starts multiply.
+test_roster_prime_skipped_when_roster_is_fresh() {
+  setup_vault
+  local sid="roster-gate-$$"
+  local roster="$TMPDIR/brain-mcp-roster-${sid}"
+  local stub_dir="$TMPDIR/stub-$$"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/bash\necho called >> "%s/claude-calls"\n' "$TMPDIR" > "$stub_dir/claude"
+  chmod +x "$stub_dir/claude"
+  rm -f "$TMPDIR/claude-calls"
+  printf 'symbiosis-brain: ok\n' > "$roster"      # fresh by construction
+
+  echo "{\"session_id\":\"${sid}\",\"source\":\"resume\"}" | \
+    PATH="$stub_dir:$PATH" SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" \
+    bash "$HOOK" >/dev/null 2>&1
+  sleep 1                                          # the prime, if any, is detached
+
+  if [ ! -f "$TMPDIR/claude-calls" ]; then
+    echo "PASS: roster_prime_skipped_when_roster_is_fresh"
+  else
+    echo "FAIL: roster_prime_skipped_when_roster_is_fresh — claude mcp list ran anyway"
+    FAILED=$((FAILED + 1))
+  fi
+  rm -rf "$stub_dir" "$roster" "$TMPDIR/claude-calls"
+}
+
+test_session_id_parsed_with_space_after_colon
+test_last_save_marker_survives_compact
+test_prompt_recall_seen_files_gc_when_stale
+test_roster_prime_skipped_when_roster_is_fresh
 
 # Cleanup
 rm -rf "$VAULT" "$FAKE_ROOT"

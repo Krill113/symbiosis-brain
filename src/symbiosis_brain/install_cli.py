@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -26,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
         except (AttributeError, OSError):
             pass
 
-from symbiosis_brain import install_lib
+from symbiosis_brain import install_lib, sqlite_health
 
 DEFAULT_VAULT = Path.home() / "symbiosis-brain-vault"
 
@@ -422,15 +423,54 @@ def cmd_doctor(args) -> int:
         print(f"✗ Skills         MISSING: {', '.join(missing_skills)}")
         issues += 1
 
-    # 5. Vault
+    # Resolved once and reused by both blocks below: _resolve_vault_path() may
+    # shell out to `claude mcp list`, which is the most expensive thing doctor does.
     vault = _resolve_vault_path()
+
+    # 5. SQLite engine (WAL-Reset detector — report only, never patch: the fix
+    # ships with CPython 3.15, and patching the interpreter's sqlite3.dll or
+    # swapping in APSW was rejected deliberately).
+    sqlite_version = sqlite3.sqlite_version
+    sqlite_note = sqlite_health.sqlite_warning(sqlite_version)
+    if sqlite_note is None:
+        print(f"✓ SQLite         {sqlite_version} (WAL-Reset fix present)")
+    else:
+        # A warning, NOT an issue: the parking is a decision, not a defect to fix here.
+        print(f"⚠ SQLite         {sqlite_note}")
+
+    # quick_check runs ALWAYS — owner decision 3 names it as part of what doctor does.
+    # Measured 1.87 s on the live 24 MB vault, against the ~10 s `claude mcp list`
+    # doctor already pays for above. Guarded on db_path.exists(): a fresh install that
+    # has never run `serve` has no brain.db yet, and that is not corruption to report —
+    # it is the same "nothing to check yet" case as vault being unconfigured below.
+    if vault is not None:
+        db_path = vault / ".index" / "brain.db"
+        if db_path.exists():
+            ok, detail = sqlite_health.quick_check(db_path)
+            if ok:
+                print("✓ quick_check    ok")
+            else:
+                print(f"✗ quick_check    {detail}")
+                issues += 1
+
+            # --deep adds the expensive one: integrity_check also walks index-vs-table
+            # cross-references, which quick_check skips.
+            if getattr(args, "deep", False):
+                ok, detail = sqlite_health.integrity_check(db_path)
+                if ok:
+                    print("✓ integrity_check ok")
+                else:
+                    print(f"✗ integrity_check {detail}")
+                    issues += 1
+
+    # 6. Vault
     if vault and vault.exists() and (vault / "reference" / "scope-taxonomy.md").exists():
         print(f"✓ Vault          OK ({vault})")
     else:
         print(f"✗ Vault          FAIL ({vault or 'not configured'})")
         issues += 1
 
-    # 6. CLAUDE.md
+    # 7. CLAUDE.md
     cm = _claude_md_path()
     if install_lib.has_marker(cm, install_lib.CLAUDE_MD_MARKER):
         print("✓ CLAUDE.md      OK (Symbiosis Brain block present)")
@@ -438,7 +478,7 @@ def cmd_doctor(args) -> int:
         print("✗ CLAUDE.md      FAIL (block missing)")
         issues += 1
 
-    # 7. Action-recall matcher — only meaningful once our PreToolUse hook is
+    # 8. Action-recall matcher — only meaningful once our PreToolUse hook is
     # actually installed. `setup claude-code` widened the matcher to include
     # PowerShell, but merge_settings_json only runs from `setup`; an install
     # that predates that change keeps its old Bash-only matcher forever
@@ -530,6 +570,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.set_defaults(func=cmd_setup)
 
     p_doctor = sub.add_parser("doctor", help="Health check")
+    p_doctor.add_argument("--deep", action="store_true",
+                          help="also run PRAGMA integrity_check on the vault database")
     p_doctor.set_defaults(func=cmd_doctor)
 
     p_uninstall = sub.add_parser("uninstall", help="Remove Symbiosis Brain")

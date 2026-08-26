@@ -5,4 +5,27 @@ rm -rf dist
 uv build --wheel >/dev/null 2>&1 || python -m build --wheel >/dev/null 2>&1
 WHL=$(ls dist/*.whl | head -1)
 python -c "import zipfile,sys; z=zipfile.ZipFile('$WHL'); names=z.namelist(); assert any(n.endswith('symbiosis_brain/data/tool-routing.json') for n in names), names"
+
+python - "$WHL" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+from symbiosis_brain import install_cli
+
+names = zipfile.ZipFile(sys.argv[1]).namelist()
+registered = set(install_cli.SKILL_NAMES)
+on_disk = {p.name for p in Path("skills").iterdir() if p.is_dir() and (p / "SKILL.md").exists()}
+assert on_disk == registered, f"skills/ dirs {sorted(on_disk)} != SKILL_NAMES {sorted(registered)}"
+
+def shipped(key):
+    assert any(n.endswith(key) for n in names), f"missing in wheel: {key}"
+
+for name in sorted(registered):
+    shipped(f"symbiosis_brain/skills/{name}/SKILL.md")
+for ref in ("action-rule-recipe.md", "automation-recipe.md"):
+    shipped(f"symbiosis_brain/skills/brain-autolearn/references/{ref}")
+print("skills OK")
+PY
+
 echo OK

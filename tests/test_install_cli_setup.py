@@ -330,3 +330,87 @@ def test_user_facing_output_has_no_cyrillic():
                 if cyrillic.search(text):
                     offenders.append(f"{source_path.name}:{lineno}: {text[:60]!r}")
     assert not offenders, "Cyrillic in user-facing output:\n" + "\n".join(offenders)
+
+
+def test_brain_autolearn_ships_with_its_references():
+    """D4: the repetition\u2192artifact skill was the owner's personal one, so a fresh
+    install got a brain-save Step 0 pointing at nothing. It ships now \u2014 and it is
+    the first skill with reference files, which the copier used to drop."""
+    src = install_cli._packaged_skills_dir() / "brain-autolearn"
+    assert (src / "SKILL.md").exists(), f"missing packaged skill: {src}"
+    assert "brain-autolearn" in install_cli.SKILL_NAMES
+    head = (src / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
+    assert re.search(r"^name:\s*brain-autolearn\s*$", head, re.M)
+    for ref in ("action-rule-recipe.md", "automation-recipe.md"):
+        assert (src / "references" / ref).exists(), f"missing reference: {ref}"
+
+
+def test_copy_skills_copies_references_recursively(tmp_path, monkeypatch):
+    """_copy_skills copied SKILL.md only; a skill with references/ arrived crippled."""
+    src = tmp_path / "src_skills"
+    (src / "brain-autolearn" / "references").mkdir(parents=True)
+    (src / "brain-autolearn" / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+    (src / "brain-autolearn" / "references" / "a.md").write_text("A\n", encoding="utf-8")
+    (src / "brain-autolearn" / "references" / "b.md").write_text("B\n", encoding="utf-8")
+    monkeypatch.setattr(install_cli, "_packaged_skills_dir", lambda: src)
+    monkeypatch.setattr(install_cli, "SKILL_NAMES", ("brain-autolearn",))
+
+    target = tmp_path / "claude_skills"
+    assert install_cli._copy_skills(target) == []
+
+    assert (target / "brain-autolearn" / "SKILL.md").read_text(encoding="utf-8") == "# skill\n"
+    assert (target / "brain-autolearn" / "references" / "a.md").read_text(encoding="utf-8") == "A\n"
+    assert (target / "brain-autolearn" / "references" / "b.md").read_text(encoding="utf-8") == "B\n"
+
+
+def test_copy_skills_skips_evals_dir(tmp_path, monkeypatch):
+    """evals/ holds real session digests \u2014 synthetic-fixtures rule (CLAUDE.md) keeps
+    them out of the repo, and nothing must ever push them into a user's ~/.claude."""
+    src = tmp_path / "src_skills"
+    (src / "brain-autolearn" / "evals").mkdir(parents=True)
+    (src / "brain-autolearn" / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+    (src / "brain-autolearn" / "evals" / "digest.md").write_text("private\n", encoding="utf-8")
+    monkeypatch.setattr(install_cli, "_packaged_skills_dir", lambda: src)
+    monkeypatch.setattr(install_cli, "SKILL_NAMES", ("brain-autolearn",))
+
+    target = tmp_path / "claude_skills"
+    install_cli._copy_skills(target)
+
+    assert (target / "brain-autolearn" / "SKILL.md").exists()
+    assert not (target / "brain-autolearn" / "evals").exists()
+    assert "evals" in install_cli.SKILL_COPY_EXCLUDE_DIRS
+
+
+def test_copy_skills_backs_up_modified_user_file(tmp_path, monkeypatch):
+    """Per-file semantics survive the recursive rewrite: identical file \u2014 untouched,
+    modified file \u2014 .bak then overwrite. A user's edited reference is not silently lost."""
+    src = tmp_path / "src_skills"
+    (src / "brain-autolearn" / "references").mkdir(parents=True)
+    (src / "brain-autolearn" / "SKILL.md").write_text("SAME\n", encoding="utf-8")
+    (src / "brain-autolearn" / "references" / "a.md").write_text("NEW\n", encoding="utf-8")
+    monkeypatch.setattr(install_cli, "_packaged_skills_dir", lambda: src)
+    monkeypatch.setattr(install_cli, "SKILL_NAMES", ("brain-autolearn",))
+
+    target = tmp_path / "claude_skills"
+    (target / "brain-autolearn" / "references").mkdir(parents=True)
+    (target / "brain-autolearn" / "SKILL.md").write_text("SAME\n", encoding="utf-8")
+    (target / "brain-autolearn" / "references" / "a.md").write_text("OLD\n", encoding="utf-8")
+
+    install_cli._copy_skills(target)
+
+    assert (target / "brain-autolearn" / "references" / "a.md").read_text(encoding="utf-8") == "NEW\n"
+    baks = list((target / "brain-autolearn" / "references").glob("a.md.bak.*"))
+    assert len(baks) == 1
+    assert baks[0].read_text(encoding="utf-8") == "OLD\n"
+    # identical file must NOT produce a backup
+    assert not list((target / "brain-autolearn").glob("SKILL.md.bak.*"))
+
+
+def test_brain_save_step0_guards_the_optional_pass():
+    """Decision 2: brain-self-critique stays personal, so Step 0 must be able to skip it."""
+    text = (install_cli._packaged_skills_dir() / "brain-save" / "SKILL.md").read_text(encoding="utf-8")
+    assert "brain-autolearn" in text
+    critique_lines = [ln for ln in text.splitlines() if "brain-self-critique" in ln]
+    assert critique_lines, "Step 0 lost the optional pass entirely"
+    for line in critique_lines:
+        assert "is installed" in line, line

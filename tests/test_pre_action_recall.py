@@ -124,6 +124,24 @@ def test_note_type_returns_none_when_frontmatter_is_none():
     assert _note_type({"frontmatter": None}) is None
 
 
+def test_note_type_reads_column_from_real_row():
+    """A REAL SearchEngine row carries the type in the `note_type` COLUMN, not
+    under `frontmatter`: parse_note pops `type` out of the frontmatter into its
+    own field, so `frontmatter` only holds the leftover `extra` keys (a note
+    with a gist gives {"gist": "..."}). Reading only `frontmatter["type"]` made
+    excluded_note_types a no-op on EVERY path — the four tests above never
+    caught it because hand-built dicts do not look like DB rows."""
+    row = {
+        "path": "user/prefs.md",
+        "title": "Prefs",
+        "scope": "global",
+        "note_type": "user",
+        "frontmatter": {"gist": "user note"},
+        "gist": "user note",
+    }
+    assert _note_type(row) == "user"
+
+
 # ---------- format_recall_block ----------
 
 def test_format_with_hits():

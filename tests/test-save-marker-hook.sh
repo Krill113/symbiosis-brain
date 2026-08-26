@@ -101,6 +101,44 @@ else
 fi
 if [ ! -f "$LAST.tmp" ]; then t "no .tmp left behind" PASS; else t "no .tmp left behind" FAIL; fi
 
+# (7) a REFUSED write is not a save either. The server never raises: all sixteen
+# refusals in server.py come back as a plain, non-error TextContent whose text starts
+# with `Error: `. Before this arm a rejected brain_write stamped the marker and reset
+# the Stop-hook delta-guard, so the 25/35 zones went quiet for another 10% of context.
+rm -f "$PCT" "$LAST"
+echo "50" > "$PCT"
+run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: gist required for this note type\"}]}}"
+if [ "$RC" = "0" ] && [ ! -f "$LAST" ]; then
+  t "server refusal (Error: ...) does not write a marker" PASS
+else
+  t "server refusal (Error: ...) does not write a marker" FAIL
+fi
+
+# (7b) the same with a space after the colon, the way a pretty-printed payload reads.
+rm -f "$PCT" "$LAST"
+echo "50" > "$PCT"
+run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"content\":[{\"type\": \"text\", \"text\": \"Error: path must be within vault\"}]}}"
+if [ "$RC" = "0" ] && [ ! -f "$LAST" ]; then
+  t "server refusal with spaced JSON does not write a marker" PASS
+else
+  t "server refusal with spaced JSON does not write a marker" FAIL
+fi
+
+# (8) parser contract: the cut lands on the LAST `"tool_response"` in the payload,
+# never the first (`##`, not `#`). Inside a JSON *string* the key can only appear
+# escaped, so 4b above passes either way; an unescaped one needs a nested object, and
+# then `#` would hand the case below the tool_input — with a `"is_error":true` in it
+# a perfectly successful write would be dropped. Pinning the contract keeps the
+# comment above the expansion honest.
+rm -f "$PCT" "$LAST"
+echo "50" > "$PCT"
+run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_input\":{\"payload\":{\"tool_response\":{\"is_error\":true}}},\"tool_response\":{\"ok\":true}}"
+if [ "$(cat "$LAST" 2>/dev/null)" = "50" ]; then
+  t "cut uses the last tool_response key, not the first" PASS
+else
+  t "cut uses the last tool_response key, not the first" FAIL
+fi
+
 rm -rf "$WORK"
 
 echo ""

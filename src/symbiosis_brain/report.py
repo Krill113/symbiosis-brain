@@ -504,8 +504,20 @@ def render_report(report: dict, *, full: bool = False,
         blocks.append(_archive_block(report))
     if not s["zero_day"]:
         blocks.append(_surfaced_block(report))
-    blocks.append(_cuts_block(report))
-    blocks.append(_routing_block(report))
+
+    # §6.2/I-31: "Разрезы" and "Здоровье роутинга" are the only surface for
+    # prompt_route_warnings and must not disappear just because the list
+    # sections ahead of them (hot / archive / surfaced-not-read, all capped by
+    # `top`, not by line count) filled the whole budget first. Both tail blocks
+    # have a FIXED length regardless of vault size — one joined line per cut
+    # dimension, one summary line for routing health — so reserving their
+    # combined length up front costs the list sections a small, bounded number
+    # of rows and buys the tail an unconditional place in the default render
+    # (A3). They are appended after the loop, never through it, so they are
+    # never the block that eats the truncation notice.
+    tail_blocks = [_cuts_block(report), _routing_block(report)]
+    tail_lines = sum(len(b) for b in tail_blocks)
+    body_budget = max(0, max_lines - tail_lines)
 
     lines: list[str] = []
     for block in blocks:
@@ -514,7 +526,7 @@ def render_report(report: dict, *, full: bool = False,
         if full:
             lines.extend(block)
             continue
-        room = max_lines - len(lines)
+        room = body_budget - len(lines)
         if room <= 0:
             break
         if len(block) <= room:
@@ -523,4 +535,7 @@ def render_report(report: dict, *, full: bool = False,
         lines.extend(block[:max(0, room - 1)])
         lines.append(TRUNCATED_FMT.format(n=max_lines))
         break
+
+    for block in tail_blocks:
+        lines.extend(block)
     return "\n".join(lines)

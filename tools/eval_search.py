@@ -63,6 +63,33 @@ DEFAULT_CONFIGS = (
 """The six cheap configurations of spec 7.3 — no download, no reindex, no network.
 The four paid ones are the same ids run again under --model (CP-8b, owner's go)."""
 
+RERANK_MODEL = "BAAI/bge-reranker-base"
+"""The only multilingual cross-encoder in fastembed 0.8.0 with a permissive
+licence (mit, 1.04 GB). The Jina rerankers are cc-by-nc-4.0 and therefore
+unusable in an Apache-2.0 package — see the non-goals in spec 7.3."""
+
+RERANK_OVERFETCH = 4
+"""The rerank configuration fuses k * RERANK_OVERFETCH hybrid hits and lets the
+cross-encoder pick k of them. Reranking the k that fusion already chose would
+measure nothing: the set it reorders would be the answer itself."""
+
+E5_PREFIX_MODELS = ("intfloat/multilingual-e5-large",)
+"""Models that need "query: " / "passage: " prefixes to perform as published.
+index_all builds its document text inside search.py (search.py:287) and this
+checkpoint does not touch search.py, so documents go in UNPREFIXED unless
+--doc-prefix/--query-prefix are given explicitly (E2, lead directive §3).
+Without them the number for such a model is a LOWER BOUND — say so in the
+report; do not quietly compare it with the others as if it were the same
+measurement."""
+
+_cross_encoder_singleton = None
+_rerank_model_name = RERANK_MODEL
+"""Process-lifetime choice of rerank model (E1, lead directive §3):
+_cross_encoder() takes no argument — the spec's own test suite monkeypatches
+it as a zero-arg callable — so the chosen model travels through this module
+global instead, exactly like sb_search._MODEL_NAME travels the embedder
+choice. run_eval sets it once, before any rerank config runs."""
+
 CAVEATS = (
     "1. The label set favours the LIVE configuration (spec 4.3). read_after was collected from "
     "transcripts in which hybrid-all did the showing, so every other configuration is punished for "
@@ -120,6 +147,9 @@ def configs() -> dict[str, Config]:
         "hybrid-any": Config("hybrid-any", "hybrid", sb_search.FTS_MODE_ANY),
         "hybrid-all-then-any": Config(
             "hybrid-all-then-any", "hybrid", sb_search.FTS_MODE_ALL_THEN_ANY),
+        # Paid, CP-8b: current embedder + a cross-encoder over an over-fetched pool.
+        # Not in DEFAULT_CONFIGS — it downloads 1.04 GB on first use.
+        "hybrid-any+rerank": Config("hybrid-any+rerank", "rerank", sb_search.FTS_MODE_ANY),
     }
 
 
@@ -258,8 +288,41 @@ def _vec_count(storage) -> int:
     return int(row[0]) if row else 0
 
 
-def open_engine(work_db: Path, *, model: str | None):
-    """Open the COPY and return (engine, storage). The caller closes storage."""
+def _install_prefix_wrappers(sb_search_module, query_prefix: str | None,
+                             doc_prefix: str | None) -> None:
+    """E2 (lead directive §3): wrap _embed / _embed_one so a document/query
+    text carries the model's published prefix, without touching search.py.
+    Called by open_engine BEFORE rebuild_vector_index, so index_all's documents
+    pick up doc_prefix too; run_eval restores the originals in `finally`.
+
+    index_note (search.py:459) also calls _embed_one and would pick up
+    query_prefix too — this harness never calls index_note after a rebuild
+    (only reads follow one), so that is acceptable HERE and would NOT be in
+    the product.
+    """
+    orig_embed = sb_search_module._embed
+    dp = doc_prefix or ""
+    qp = query_prefix or ""
+
+    def wrapped_embed(texts):
+        return orig_embed([dp + t for t in texts])
+
+    def wrapped_embed_one(text):
+        return orig_embed([qp + text])[0]
+
+    sb_search_module._embed = wrapped_embed
+    sb_search_module._embed_one = wrapped_embed_one
+
+
+def open_engine(work_db: Path, *, model: str | None,
+                query_prefix: str | None = None, doc_prefix: str | None = None):
+    """Open the COPY and return (engine, storage). The caller closes storage.
+
+    query_prefix/doc_prefix are installed here, before rebuild_vector_index,
+    and stay live after this function returns — the wrapped _embed_one is
+    what every later search_vector() call goes through too. This function
+    never restores them; run_eval owns that, in `finally`.
+    """
     from symbiosis_brain import search as sb_search
     from symbiosis_brain.storage import Storage
 
@@ -267,6 +330,8 @@ def open_engine(work_db: Path, *, model: str | None):
     try:
         engine = sb_search.SearchEngine(storage)
         if model:
+            if query_prefix or doc_prefix:
+                _install_prefix_wrappers(sb_search, query_prefix, doc_prefix)
             rebuild_vector_index(engine, storage, model=model)
         elif engine._vec_enabled and storage.count_notes() and _vec_count(storage) == 0:
             # A database built from markdown (the synthetic set) has no vectors yet.
@@ -398,6 +463,26 @@ def _metrics(runs: list[Run], k: int) -> dict[str, Any]:
 
 # ------------------------------------------------------------ retrieval -----
 
+def _cross_encoder():
+    """Lazily built, once per process. Downloads _rerank_model_name on first use."""
+    global _cross_encoder_singleton
+    if _cross_encoder_singleton is None:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        _cross_encoder_singleton = TextCrossEncoder(model_name=_rerank_model_name)
+    return _cross_encoder_singleton
+
+
+def _rerank(query: str, hits: list[dict[str, Any]], k: int) -> list[dict[str, Any]]:
+    """Reorder an over-fetched pool with the cross-encoder. Higher score first."""
+    if not hits:
+        return []
+    documents = [f"{hit.get('title', '')}\n{(hit.get('content') or '')[:512]}"
+                 for hit in hits]
+    scores = list(_cross_encoder().rerank(query, documents))
+    order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
+    return [hits[i] for i in order[:k]]
+
+
 def _run_one(engine, cfg: Config, row: dict[str, Any], k: int) -> Run:
     query = row["query"]
     scope = row.get("scope") or None
@@ -407,6 +492,10 @@ def _run_one(engine, cfg: Config, row: dict[str, Any], k: int) -> Run:
         hits = engine.search_fts(query, scope=scope, limit=k, mode=cfg.fts_mode)
     elif cfg.kind == "vector":
         hits = engine.search_vector(query, scope=scope, limit=k)
+    elif cfg.kind == "rerank":
+        pool = engine.search(query, scope=scope, limit=k * RERANK_OVERFETCH,
+                             fts_mode=cfg.fts_mode, stats=stats)
+        hits = _rerank(query, pool, k)
     else:
         hits = engine.search(query, scope=scope, limit=k, fts_mode=cfg.fts_mode, stats=stats)
     latency_ms = (time.perf_counter() - started) * 1000.0
@@ -459,9 +548,72 @@ def _model_slug(model: str) -> str:
     return model.rsplit("/", 1)[-1].strip().lower()
 
 
+def peak_rss_bytes() -> int | None:
+    """Peak resident set size of THIS process, or None where it cannot be read.
+
+    Never raises. Spec 7.5 makes this number mandatory for a reindex measurement
+    because of the reindex-storm incident (11 GB ONNX arena at batch 256,
+    search.py:21-25) — a candidate that ranks well and eats 11 GB is not a
+    candidate. psutil is not a dependency of this project, so: Windows goes
+    through GetProcessMemoryInfo (same ctypes shape as parent_watchdog.py:67),
+    POSIX reads ru_maxrss, which is KiB on Linux and bytes on macOS.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+            ok = psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+            return int(counters.PeakWorkingSetSize) if ok else None
+        except Exception:
+            return None
+
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (OSError, ValueError):
+        return None
+    # Linux reports KiB, macOS bytes.
+    return int(peak) if sys.platform == "darwin" else int(peak) * 1024
+
+
+def _gib(value: int) -> str:
+    return f"{value / (1024 ** 3):.2f} GiB"
+
+
 def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[str],
-             k: int = K_DEFAULT, model: str | None = None) -> dict[str, Any]:
+             k: int = K_DEFAULT, model: str | None = None,
+             rerank_model: str | None = None,
+             query_prefix: str | None = None, doc_prefix: str | None = None) -> dict[str, Any]:
     from symbiosis_brain import search as sb_search
+
+    if (query_prefix or doc_prefix) and not model:
+        raise EvalError(
+            "--query-prefix/--doc-prefix need --model: they wrap the embedder that "
+            "--model swaps in, and without --model there is nothing swapped in to wrap")
 
     known = configs()
     unknown = [name for name in config_names if name not in known]
@@ -473,45 +625,79 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
     if not rows:
         raise EvalError(f"{queries} has no usable rows")
 
-    work_db = prepare_work_dir(vault, work_dir)
-    engine, storage = open_engine(work_db, model=model)
-    try:
-        lexical = lexical_zero_hit_rate(engine, rows, k)
-        results: list[dict[str, Any]] = []
-        fallback_share: dict[str, float] = {}
-        for name in config_names:
-            cfg = known[name]
-            if cfg.kind in ("vector", "hybrid") and not engine._vec_enabled:
-                raise EvalError(
-                    f"config {name} needs the vector half, but sqlite-vec did not load")
-            result, runs = evaluate(engine, cfg, rows, k)
-            if model:
-                result["config"] = f"{cfg.name}+{_model_slug(model)}"
-            if cfg.fts_mode == sb_search.FTS_MODE_ALL_THEN_ANY and runs:
-                fell_back = sum(1 for run in runs
-                                if run.effective_fts_mode == "fallback_any")
-                fallback_share[result["config"]] = round(fell_back / len(runs), 4)
-            results.append(result)
+    has_rerank = any(known[name].kind == "rerank" for name in config_names)
+    resolved_rerank_model = rerank_model or RERANK_MODEL
+    if has_rerank:
+        # E1 — _cross_encoder() takes no argument (its own test suite
+        # monkeypatches it as a zero-arg callable), so the chosen model
+        # travels through this module global instead.
+        global _rerank_model_name
+        _rerank_model_name = resolved_rerank_model
 
-        judged = sum(1 for row in rows if _relevant(grades_for(row)))
-        meta = {
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "vault": str(vault),
-            "work_dir": str(work_dir),
-            "queries": str(queries),
-            "k": k,
-            "model": model or sb_search._MODEL_NAME,
-            "rows_total": len(rows) + dropped,
-            "rows_executed": len(rows),
-            "rows_dropped_system": dropped,
-            "rows_judged": judged,
-            "lexical_zero_hit_rate": lexical,
-            "fallback_any_share": fallback_share,
-            "caveats": list(CAVEATS),
-        }
-        return {"meta": meta, "results": results}
+    work_db = prepare_work_dir(vault, work_dir)
+    reindex_started = time.perf_counter()
+    # E2 — captured BEFORE open_engine installs any prefix wrapper, so the
+    # `finally` below can hand the module singletons back untouched even if
+    # nothing was ever wrapped (a same-value restore is a harmless no-op).
+    embed_before, embed_one_before = sb_search._embed, sb_search._embed_one
+    try:
+        engine, storage = open_engine(work_db, model=model,
+                                      query_prefix=query_prefix, doc_prefix=doc_prefix)
+        reindex_seconds = round(time.perf_counter() - reindex_started, 1) if model else None
+        try:
+            lexical = lexical_zero_hit_rate(engine, rows, k)
+            results: list[dict[str, Any]] = []
+            fallback_share: dict[str, float] = {}
+            for name in config_names:
+                cfg = known[name]
+                if cfg.kind in ("vector", "hybrid", "rerank") and not engine._vec_enabled:
+                    raise EvalError(
+                        f"config {name} needs the vector half, but sqlite-vec did not load")
+                result, runs = evaluate(engine, cfg, rows, k)
+                if cfg.kind == "rerank":
+                    result["config"] = f"{cfg.name}({_model_slug(resolved_rerank_model)})"
+                elif model:
+                    result["config"] = f"{cfg.name}+{_model_slug(model)}"
+                if query_prefix or doc_prefix:
+                    result["config"] += "+prefixed"
+                if cfg.fts_mode == sb_search.FTS_MODE_ALL_THEN_ANY and runs:
+                    fell_back = sum(1 for run in runs
+                                    if run.effective_fts_mode == "fallback_any")
+                    fallback_share[result["config"]] = round(fell_back / len(runs), 4)
+                results.append(result)
+
+            judged = sum(1 for row in rows if _relevant(grades_for(row)))
+            meta = {
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "vault": str(vault),
+                "work_dir": str(work_dir),
+                "queries": str(queries),
+                "k": k,
+                "model": model or sb_search._MODEL_NAME,
+                "rows_total": len(rows) + dropped,
+                "rows_executed": len(rows),
+                "rows_dropped_system": dropped,
+                "rows_judged": judged,
+                "lexical_zero_hit_rate": lexical,
+                "fallback_any_share": fallback_share,
+                "caveats": list(CAVEATS),
+            }
+            if model:
+                # Spec 7.5 asks for both numbers, and 7.4 turns one of them into a
+                # criterion: a full rebuild over 10 minutes disqualifies a candidate
+                # regardless of how well it ranks.
+                meta["reindex_seconds"] = reindex_seconds
+                meta["peak_rss_bytes"] = peak_rss_bytes()
+            if has_rerank:
+                meta["rerank_model"] = resolved_rerank_model
+            if query_prefix or doc_prefix:
+                meta["query_prefix"] = query_prefix
+                meta["doc_prefix"] = doc_prefix
+            return {"meta": meta, "results": results}
+        finally:
+            storage.close()
     finally:
-        storage.close()
+        sb_search._embed, sb_search._embed_one = embed_before, embed_one_before
 
 
 # -------------------------------------------------------------- rendering ---
@@ -551,6 +737,16 @@ def render_report(payload: dict[str, Any]) -> str:
                f"{meta['rows_judged']} carry a positive label")
     out.append(f"k         : {meta['k']}")
     out.append(f"model     : {meta['model']}")
+    if meta.get("reindex_seconds") is not None:
+        out.append(f"reindex   : {meta['reindex_seconds']} s for the COPY "
+                   f"(spec 7.4 disqualifies a candidate above 600 s)")
+    if meta.get("peak_rss_bytes"):
+        out.append(f"peak RSS  : {_gib(meta['peak_rss_bytes'])} during the rebuild")
+    if meta.get("rerank_model"):
+        out.append(f"rerank    : {meta['rerank_model']}")
+    if "query_prefix" in meta:
+        out.append(f'prefixes  : query="{meta.get("query_prefix") or ""}" '
+                   f'doc="{meta.get("doc_prefix") or ""}"')
     lexical = " | ".join(f"{mode} {value:.1%}"
                          for mode, value in sorted(meta["lexical_zero_hit_rate"].items()))
     out.append(f"lexical zero-hit rate (label-independent, spec 7.2): {lexical}")
@@ -605,6 +801,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=None,
                         help="Embedder to measure instead of the installed one. Downloads it "
                              "on first use and reindexes the COPY — CP-8b, owner's go only.")
+    parser.add_argument("--rerank-model", default=RERANK_MODEL,
+                        help=f"Cross-encoder for the hybrid-any+rerank config (E1). "
+                             f"Default: {RERANK_MODEL}. Downloads it on first use — CP-8b, "
+                             f"owner's go only.")
+    parser.add_argument("--query-prefix", default=None,
+                        help="Prepended to every query before embedding (E2). Needs --model — "
+                             "there is no swapped-in embedder to wrap otherwise.")
+    parser.add_argument("--doc-prefix", default=None,
+                        help="Prepended to every document before embedding (E2). Needs --model, "
+                             "same reason as --query-prefix.")
     args = parser.parse_args(argv)
 
     config_names = [name.strip() for name in args.configs.split(",") if name.strip()]
@@ -614,7 +820,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         payload = run_eval(vault=args.vault, work_dir=args.work_dir, queries=args.queries,
-                           config_names=config_names, k=args.k, model=args.model)
+                           config_names=config_names, k=args.k, model=args.model,
+                           rerank_model=args.rerank_model,
+                           query_prefix=args.query_prefix, doc_prefix=args.doc_prefix)
     except EvalError as e:
         print(f"eval_search: {e}", file=sys.stderr)
         return 1

@@ -19,7 +19,7 @@ helper produces silence and exit 0, never a blocked tool call or a blocked promp
 | **brain-sync.sh** | SessionEnd | Commit the vault, `pull --rebase --autostash`, push; leave an alarm marker instead of resolving a conflict |
 | **sb-statusline.sh** | statusLine | Wrapper: exports the data bridges, then renders row 1 (yours or ours) and row 2 (Symbiosis Brain state) |
 | **sb-hooklib.sh** | *(sourced)* | `sb_tmp_dir` / `sb_session_id` — the fork-free parser sourced by `brain-session-start.sh`, `brain-save-marker.sh` and the three status-line scripts (`brain-save-trigger.sh` / `brain-pre-action-trigger.sh` still parse with grep+sed) |
-| **sb-export.sh** | *(sourced)* | The single export point for the two status-line bridges |
+| **sb-export.sh** | *(sourced)* | The single export point for the three status-line bridges |
 | **sb-line.sh** | *(sourced)* | Row 2: scope, context %, save thresholds, rules zones, sync alarm |
 | **sb-base-statusline.sh** | *(sourced)* | Default row 1 — replaced when you set your own status line |
 
@@ -97,6 +97,39 @@ the fork in the logic and marks it done with `export SB_EXPORT_DONE=1`, so by th
 your command runs both bridges are already on disk. That is the whole point of the
 change — but it means a row-1 script that used to export this variable now has no effect
 on it.
+
+### Bridge 3 — current model
+
+`$SB_TMP/brain-model-<CLAUDE_PID>` — one line, three TAB-separated fields, rewritten
+on every status tick that carries a `model` block:
+
+```
+<model_id>\t<display_name>\t<unix_seconds>
+```
+
+`CLAUDE_PID` is the PID of the Claude Code window, and every process it spawns sees it
+in the environment. The MCP server is a direct child of that window, so `os.getppid()`
+hands it the same number and it reads *its own* window's file without walking the
+process tree — which a fork-free status line could not do anyway (MSYS reports
+`ppid=1` when the parent is a native Windows process). Clients that do not export
+`CLAUDE_PID` fall back to a session key: `brain-model-sid-<session_id>`.
+
+The server reads it in `provenance.model_from_bridge()` to fill the model field of
+`written_by`. The rules there are deliberately strict:
+
+| Situation | Result |
+|---|---|
+| our own file, younger than 15 min | used |
+| our own file, older than 15 min | `unknown` — other windows are **not** consulted |
+| no file under our key at all | exactly one fresh `brain-model-*` is used; zero, or two and more, give `unknown` |
+| not exactly three TAB fields, no trailing newline, non-integer timestamp | `unknown` |
+
+The last row is not paranoia. The write is a plain `printf` and cannot be made atomic
+— moving a file into place needs a fork, and Claude Code cancels the in-flight status
+script on every event — so a truncated line is indistinguishable from a valid one and
+has to be rejected on read.
+
+Stale files are reaped by `brain-session-start.sh` (`-mmin +60`).
 
 ## Vault sync and its alarm marker
 

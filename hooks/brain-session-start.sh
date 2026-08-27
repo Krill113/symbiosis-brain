@@ -155,6 +155,7 @@ if command -v find >/dev/null 2>&1; then
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-seen-*.json' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-turn-*' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-roster-*' -mmin +60 -delete 2>/dev/null || true
+  find "$SB_TMP" -maxdepth 1 -name 'brain-model-*' -mmin +60 -delete 2>/dev/null || true
 fi
 
 exit 0

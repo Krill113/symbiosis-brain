@@ -16,7 +16,7 @@ from mcp.types import TextContent, Tool
 from symbiosis_brain import provenance
 from symbiosis_brain import retrieval_log
 from symbiosis_brain.graph import GraphTraverser
-from symbiosis_brain.search import SearchEngine, _reindex_lock
+from symbiosis_brain.search import FTS_MODE_ANY, SearchEngine, _reindex_lock
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VAULT_DIRS, SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
@@ -572,6 +572,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             scope=arguments.get("scope"),
             limit=arguments.get("limit", 5),
             mode=mode,
+            # Q3: человек спросил ЯВНО — «хотя бы одно слово». Значение совпадает
+            # с дефолтом search(), но стоит здесь буквой: границы режимов читаются
+            # на месте вызова, а не выводятся из дефолта (§4.2).
+            fts_mode=FTS_MODE_ANY,
             log_ctx=_log_ctx("mcp_search"),
         )
         output_parts = []

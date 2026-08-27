@@ -360,3 +360,215 @@ def test_buckets_are_split_by_lang_and_by_source(synthetic_engine, synthetic_row
     keys = set(result["buckets"])
     assert {"lang:ru", "lang:en", "lang:mixed"} <= keys, keys
     assert any(k.startswith("source:") for k in keys), keys
+
+
+# ---------- CP-8b: model swap for real, rerank, and the cost of a rebuild ----------
+
+def test_rebuild_vector_index_redeclares_the_table_for_a_narrower_model(tmp_path, monkeypatch):
+    """I-32 п. 2 end to end, offline. notes_vec is declared FLOAT[384]
+    (search.py:245-254), so a model of another width needs the table dropped and
+    recreated — otherwise every INSERT of a differently-sized blob fails, or
+    worse, two models share one table and the distances mean nothing.
+
+    The fake embedder is eight floats wide and deterministic: the point of this
+    test is the plumbing, not the vectors, and a real model would make it a
+    download test instead."""
+    from symbiosis_brain import search as sb_search
+    from symbiosis_brain.storage import Storage
+
+    db = eval_search.prepare_work_dir(DATA_DIR / "vault", tmp_path / "work")
+    storage = Storage(db)
+    try:
+        engine = sb_search.SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+        def fake_embed(texts):
+            return [[float((len(t) + i) % 7) for i in range(8)] for t in texts]
+
+        # monkeypatch records the originals, so the module singletons are restored
+        # even though rebuild_vector_index assigns to them directly.
+        monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+        monkeypatch.setattr(sb_search, "_embedder", None)
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+        dim = eval_search.rebuild_vector_index(engine, storage, model="fixture/model-eight")
+
+        assert dim == 8
+        assert sb_search._MODEL_NAME == "fixture/model-eight"
+        assert sb_search._embedder is None
+
+        declared = storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[8]" in declared, declared
+        indexed = storage._conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0]
+        assert indexed == storage.count_notes()
+        assert engine.search_vector("quartz ingest", limit=3)
+    finally:
+        storage.close()
+
+
+def test_peak_rss_is_a_positive_number_or_an_honest_none():
+    """A benchmark that dies because it could not read a counter is worse than a
+    benchmark with one blank cell — spec 7.5 asks for the number, not for a new
+    way to fail."""
+    value = eval_search.peak_rss_bytes()
+    assert value is None or (isinstance(value, int) and value > 0)
+
+
+def test_the_reranker_reorders_inside_the_overfetched_pool(synthetic_engine, monkeypatch):
+    """The rerank configuration of spec 7.3 must (a) draw from an OVER-fetched
+    hybrid pool, (b) return at most k, (c) actually let the cross-encoder decide
+    the order. A fake ascending scorer reverses the pool, which is the cheapest
+    unambiguous proof of (c)."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — hybrid cannot be measured")
+
+    row = {"query": "redis cache eviction policy", "source": "mcp-search",
+           "origin": "unknown", "scope": None, "lang": "en",
+           "shown": [], "read_after": [], "gold": []}
+
+    pool_run = eval_search._run_one(
+        synthetic_engine, eval_search.configs()["hybrid-any"], row,
+        5 * eval_search.RERANK_OVERFETCH)
+
+    class _Ascending:
+        def rerank(self, query, documents, **kwargs):
+            return [float(i) for i, _ in enumerate(documents)]
+
+    monkeypatch.setattr(eval_search, "_cross_encoder", lambda: _Ascending())
+    run = eval_search._run_one(synthetic_engine, eval_search.configs()["hybrid-any+rerank"], row, 5)
+
+    assert len(run.ranked) <= 5
+    assert set(run.ranked) <= set(pool_run.ranked)
+    assert run.ranked == list(reversed(pool_run.ranked))[:5]
+
+
+def test_the_report_prints_the_cost_of_a_rebuild_when_a_model_was_swapped():
+    payload = _payload_for_render()
+    payload["meta"]["model"] = "fixture/model-nine"
+    payload["meta"]["reindex_seconds"] = 143.2
+    payload["meta"]["peak_rss_bytes"] = 1_181_116_006
+    text = eval_search.render_report(payload)
+    assert "reindex" in text
+    assert "143.2" in text
+    assert "1.10 GiB" in text or "1.1 GiB" in text
+
+
+def test_the_report_stays_quiet_about_a_rebuild_that_did_not_happen():
+    """CP-8a payloads carry neither key; the renderer must not invent a line —
+    an empty "reindex: 0 s" would read as "the rebuild was free"."""
+    text = eval_search.render_report(_payload_for_render())
+    assert "reindex" not in text
+
+
+# ---------- CP-8b: E1 --rerank-model, E2 --query-prefix/--doc-prefix (lead directive §3) ----------
+
+def test_rerank_model_flag_reaches_the_cross_encoder_factory(monkeypatch, tmp_path, synthetic_engine):
+    """E1.1: --rerank-model must travel all the way to TextCrossEncoder(model_name=...)
+    (patched here so the test never touches the network), and the result label
+    must carry the model slug — otherwise two reranker JSONs collide in the
+    summary table (lead directive §3, E1)."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — rerank cannot be measured")
+
+    seen = {}
+
+    class _RecordingCrossEncoder:
+        def __init__(self, model_name, **kwargs):
+            seen["model_name"] = model_name
+
+        def rerank(self, query, documents, **kwargs):
+            return [1.0 for _ in documents]
+
+    monkeypatch.setattr(
+        "fastembed.rerank.cross_encoder.TextCrossEncoder", _RecordingCrossEncoder)
+    monkeypatch.setattr(eval_search, "_cross_encoder_singleton", None)
+
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["hybrid-any+rerank"],
+        rerank_model="fixture/candidate-reranker")
+
+    assert seen.get("model_name") == "fixture/candidate-reranker"
+    assert payload["meta"]["rerank_model"] == "fixture/candidate-reranker"
+    assert payload["results"][0]["config"] == "hybrid-any+rerank(candidate-reranker)"
+
+
+def test_prefix_flags_reshape_texts_and_restore_originals_after_run(tmp_path, monkeypatch,
+                                                                     synthetic_engine):
+    """E2.2: a fake _embed records every text it is handed. After rebuild_vector_index
+    every document text starts with doc_prefix, and a query through search_vector
+    starts with query_prefix; once run_eval returns, the module singletons
+    _embed/_embed_one must be back to what they were before the call — a leaked
+    wrapper would silently prefix the NEXT process-lifetime config too."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+    from symbiosis_brain import search as sb_search
+
+    recorded_batches = []
+
+    def fake_embed(texts):
+        texts = list(texts)
+        recorded_batches.append(texts)
+        return [[float((len(t) + i) % 7) for i in range(8)] for t in texts]
+
+    monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+    monkeypatch.setattr(sb_search, "_embedder", None)
+    monkeypatch.setattr(sb_search, "_embed", fake_embed)
+    monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+    embed_before, embed_one_before = sb_search._embed, sb_search._embed_one
+
+    eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["vec-current"],
+        model="fixture/model-eight",
+        query_prefix="query: ", doc_prefix="passage: ")
+
+    doc_batches = [b for b in recorded_batches if len(b) > 1]
+    assert doc_batches, "index_all should have embedded more than one document at once"
+    assert all(t.startswith("passage: ") for t in doc_batches[0]), doc_batches[0]
+
+    single_texts = [b[0] for b in recorded_batches if len(b) == 1]
+    assert single_texts, "search_vector should have embedded at least one query"
+    assert any(t.startswith("query: ") for t in single_texts), single_texts
+
+    # sb_search._embed / _embed_one were captured as monkeypatch fixtures above
+    # (fake_embed / the lambda); run_eval must hand back exactly those objects,
+    # not some other wrapper.
+    assert sb_search._embed is embed_before
+    assert sb_search._embed_one is embed_one_before
+
+
+def test_query_prefix_without_a_model_is_an_eval_error(tmp_path):
+    """E2.3: prefixes rewrite the module singletons that --model itself swaps in;
+    without --model there is no swapped-in embedder to wrap, so the combination
+    is refused up front rather than silently prefixing the installed model."""
+    with pytest.raises(eval_search.EvalError):
+        eval_search.run_eval(
+            vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+            queries=DATA_DIR / "queries.jsonl",
+            config_names=["fts-any"], query_prefix="query: ")
+
+
+def test_the_report_stays_quiet_about_rerank_and_prefixes_the_payload_does_not_carry():
+    """E2.4 / CP-8a payloads carry neither key — the renderer must not invent a
+    line for either."""
+    text = eval_search.render_report(_payload_for_render())
+    assert "rerank" not in text
+    assert "prefixes" not in text
+
+
+def test_the_report_prints_rerank_model_and_prefixes_when_present():
+    payload = _payload_for_render()
+    payload["meta"]["rerank_model"] = "fixture/candidate-reranker"
+    payload["meta"]["query_prefix"] = "query: "
+    payload["meta"]["doc_prefix"] = "passage: "
+    text = eval_search.render_report(payload)
+    assert "rerank" in text and "fixture/candidate-reranker" in text
+    assert "prefixes" in text and "query: " in text and "passage: " in text

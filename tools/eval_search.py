@@ -248,7 +248,7 @@ def apply_model_override(model: str) -> None:
     sb_search._embedder = None
 
 
-def rebuild_vector_index(engine, storage, *, model: str) -> int:
+def rebuild_vector_index(engine, storage, *, model: str, timings: dict | None = None) -> int:
     """Swap the embedder and rebuild notes_vec inside the COPY. Returns the dim.
 
     notes_vec is declared FLOAT[384] (search.py:245-254), so a model of another
@@ -259,14 +259,29 @@ def rebuild_vector_index(engine, storage, *, model: str) -> int:
     `engine` must already exist: dropping a vec0 virtual table needs the
     sqlite-vec extension loaded, and SearchEngine.__init__ is what loads it
     (search.py:234-243).
+
+    `timings`, when given, is filled with three separately-measured phases
+    (each rounded to 0.1s) — CP-8b follow-up (K.D. 2026-08-27), because a
+    single number wrapped around all three used to hide which one actually
+    cost the time:
+      - model_load_s: building the ONNX session and running the first embed
+        (the "dimension probe").
+      - lock_wait_s: time spent waiting to ACQUIRE _reindex_lock — up to
+        _REINDEX_LOCK_WAIT_S=180s (search.py:35) on a stale lock, and pure
+        contention, never actual index work.
+      - rebuild_s: engine.index_all() itself, once the lock is held. This is
+        the only phase the caller should compare against spec 7.4's 600s cap.
     """
     from symbiosis_brain import search as sb_search
 
     if not engine._vec_enabled:
         raise EvalError("sqlite-vec is not available — a model swap has nothing to index")
 
+    model_load_started = time.perf_counter()
     apply_model_override(model)
     dim = len(sb_search._embed_one("dimension probe"))
+    if timings is not None:
+        timings["model_load_s"] = round(time.perf_counter() - model_load_started, 1)
     if dim != 384:
         storage._conn.execute("DROP TABLE IF EXISTS notes_vec")
         storage._conn.commit()
@@ -275,8 +290,14 @@ def rebuild_vector_index(engine, storage, *, model: str) -> int:
             f"path TEXT PRIMARY KEY, embedding FLOAT[{dim}])"
         )
         storage._conn.commit()
+    lock_wait_started = time.perf_counter()
     with sb_search._reindex_lock(storage.db_path):
+        if timings is not None:
+            timings["lock_wait_s"] = round(time.perf_counter() - lock_wait_started, 1)
+        rebuild_started = time.perf_counter()
         engine.index_all()
+        if timings is not None:
+            timings["rebuild_s"] = round(time.perf_counter() - rebuild_started, 1)
     return dim
 
 
@@ -336,13 +357,17 @@ def _install_embed_wrappers(sb_search_module, query_prefix: str | None,
 
 def open_engine(work_db: Path, *, model: str | None,
                 query_prefix: str | None = None, doc_prefix: str | None = None,
-                normalize: bool = False):
+                normalize: bool = False, timings: dict | None = None):
     """Open the COPY and return (engine, storage). The caller closes storage.
 
     query_prefix/doc_prefix/normalize are installed here, before
     rebuild_vector_index, and stay live after this function returns — the
     wrapped _embed_one is what every later search_vector() call goes through
     too. This function never restores them; run_eval owns that, in `finally`.
+
+    `timings`, when given, is forwarded to rebuild_vector_index (see there for
+    the keys it fills) — it only matters on the `model` branch, since that is
+    the only one that rebuilds anything.
     """
     from symbiosis_brain import search as sb_search
     from symbiosis_brain.storage import Storage
@@ -353,7 +378,7 @@ def open_engine(work_db: Path, *, model: str | None,
         if model:
             if query_prefix or doc_prefix or normalize:
                 _install_embed_wrappers(sb_search, query_prefix, doc_prefix, normalize)
-            rebuild_vector_index(engine, storage, model=model)
+            rebuild_vector_index(engine, storage, model=model, timings=timings)
         elif engine._vec_enabled and storage.count_notes() and _vec_count(storage) == 0:
             # A database built from markdown (the synthetic set) has no vectors yet.
             with sb_search._reindex_lock(storage.db_path):
@@ -675,16 +700,15 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
         _rerank_model_name = resolved_rerank_model
 
     work_db = prepare_work_dir(vault, work_dir)
-    reindex_started = time.perf_counter()
     # E2 — captured BEFORE open_engine installs any prefix wrapper, so the
     # `finally` below can hand the module singletons back untouched even if
     # nothing was ever wrapped (a same-value restore is a harmless no-op).
     embed_before, embed_one_before = sb_search._embed, sb_search._embed_one
+    timings: dict[str, float] = {}
     try:
         engine, storage = open_engine(work_db, model=model,
                                       query_prefix=query_prefix, doc_prefix=doc_prefix,
-                                      normalize=normalize)
-        reindex_seconds = round(time.perf_counter() - reindex_started, 1) if model else None
+                                      normalize=normalize, timings=timings)
         try:
             lexical = lexical_zero_hit_rate(engine, rows, k)
             results: list[dict[str, Any]] = []
@@ -738,8 +762,16 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
             if model:
                 # Spec 7.5 asks for the rebuild cost, and 7.4 turns it into a
                 # criterion: a full rebuild over 10 minutes disqualifies a candidate
-                # regardless of how well it ranks.
-                meta["reindex_seconds"] = reindex_seconds
+                # regardless of how well it ranks. reindex_seconds counts ONLY
+                # engine.index_all() inside the lock (timings["rebuild_s"]) — the
+                # dimension-probe embed and any wait for the reindex lock are
+                # reported apart, under their own keys, so this number stays
+                # comparable across runs regardless of lock contention (CP-8b
+                # follow-up, K.D. 2026-08-27: a stale-lock wait once inflated a
+                # 135s rebuild into a reported 315s and misled the next reader).
+                meta["reindex_seconds"] = timings.get("rebuild_s")
+                meta["reindex_lock_wait_seconds"] = timings.get("lock_wait_s")
+                meta["model_load_seconds"] = timings.get("model_load_s")
             if has_rerank:
                 meta["rerank_model"] = resolved_rerank_model
             if query_prefix or doc_prefix:
@@ -792,8 +824,14 @@ def render_report(payload: dict[str, Any]) -> str:
     out.append(f"k         : {meta['k']}")
     out.append(f"model     : {meta['model']}")
     if meta.get("reindex_seconds") is not None:
-        out.append(f"reindex   : {meta['reindex_seconds']} s for the COPY "
-                   f"(spec 7.4 disqualifies a candidate above 600 s)")
+        reindex_line = (f"reindex   : {meta['reindex_seconds']} s for the COPY "
+                        f"(spec 7.4 disqualifies a candidate above 600 s)")
+        lock_wait = meta.get("reindex_lock_wait_seconds")
+        if lock_wait is not None and lock_wait > 0.05:
+            reindex_line += f" — waited {lock_wait} s for the reindex lock (NOT counted)"
+        out.append(reindex_line)
+    if meta.get("model_load_seconds") is not None:
+        out.append(f"model load: {meta['model_load_seconds']} s")
     if meta.get("peak_rss_bytes"):
         out.append(f"peak RSS  : {_gib(meta['peak_rss_bytes'])} (peak of this process)")
     if "notes" in meta and "notes_vec" in meta:

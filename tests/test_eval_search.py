@@ -464,6 +464,185 @@ def test_the_report_stays_quiet_about_a_rebuild_that_did_not_happen():
     assert "reindex" not in text
 
 
+# ---------- CP-8b follow-up: reindex timer excludes lock wait (K.D. 2026-08-27) ----------
+#
+# meta["reindex_seconds"] used to be perf_counter() wrapped around the whole
+# open_engine() call — the dimension-probe embed, up to 180s of waiting for a
+# stale reindex lock (_REINDEX_LOCK_WAIT_S, search.py:35), AND the rebuild
+# itself. A stale lock in CP-8b turned a 135s rebuild into a reported 315s and
+# sent the next reader down a false trail (err.log: "reindex lock: gave up
+# waiting after 180s"). rebuild_vector_index now accepts an optional
+# `timings` dict and reports the three phases apart.
+
+def test_rebuild_vector_index_fills_all_three_timings_keys(tmp_path, monkeypatch):
+    """The `timings` kwarg, when passed, must come back with model_load_s,
+    lock_wait_s and rebuild_s — all >= 0. Old callers that omit it must see no
+    change in behaviour (covered by the existing redeclare-the-table test)."""
+    from symbiosis_brain import search as sb_search
+    from symbiosis_brain.storage import Storage
+
+    db = eval_search.prepare_work_dir(DATA_DIR / "vault", tmp_path / "work")
+    storage = Storage(db)
+    try:
+        engine = sb_search.SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+        def fake_embed(texts):
+            return [[float((len(t) + i) % 7) for i in range(8)] for t in texts]
+
+        monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+        monkeypatch.setattr(sb_search, "_embedder", None)
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+        timings: dict = {}
+        dim = eval_search.rebuild_vector_index(
+            engine, storage, model="fixture/model-eight", timings=timings)
+
+        assert dim == 8
+        assert set(timings) == {"model_load_s", "lock_wait_s", "rebuild_s"}
+        assert timings["rebuild_s"] >= 0
+        assert timings["model_load_s"] >= 0
+        assert timings["lock_wait_s"] >= 0
+    finally:
+        storage.close()
+
+
+def test_rebuild_vector_index_does_not_count_lock_wait_toward_rebuild(tmp_path, monkeypatch):
+    """The actual bug, reproduced offline: a slow-to-acquire reindex lock must
+    show up in lock_wait_s, never bleed into rebuild_s. `_reindex_lock` is
+    monkeypatched to a fake contextmanager that sleeps 0.2s BEFORE yielding —
+    the same shape a contended real lock has (all the wait happens in
+    __enter__, before the guarded body runs)."""
+    from contextlib import contextmanager
+    import time as time_module
+
+    from symbiosis_brain import search as sb_search
+    from symbiosis_brain.storage import Storage
+
+    db = eval_search.prepare_work_dir(DATA_DIR / "vault", tmp_path / "work")
+    storage = Storage(db)
+    try:
+        engine = sb_search.SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+        def fake_embed(texts):
+            return [[float((len(t) + i) % 7) for i in range(8)] for t in texts]
+
+        monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+        monkeypatch.setattr(sb_search, "_embedder", None)
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+        @contextmanager
+        def slow_lock(db_path):
+            time_module.sleep(0.2)
+            yield
+
+        monkeypatch.setattr(sb_search, "_reindex_lock", slow_lock)
+
+        timings: dict = {}
+        eval_search.rebuild_vector_index(
+            engine, storage, model="fixture/model-eight", timings=timings)
+
+        assert timings["lock_wait_s"] >= 0.2, timings
+        assert timings["rebuild_s"] < 0.2, timings
+    finally:
+        storage.close()
+
+
+def test_run_eval_reindex_seconds_is_only_the_rebuild(tmp_path, monkeypatch, synthetic_engine):
+    """meta["reindex_seconds"] must equal timings["rebuild_s"] exactly, and
+    the lock-wait/model-load numbers must reach meta too — under their own
+    keys, never folded into reindex_seconds."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+    from symbiosis_brain import search as sb_search
+
+    def fake_embed(texts):
+        return [[float((len(t) + i) % 7) for i in range(8)] for t in texts]
+
+    monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+    monkeypatch.setattr(sb_search, "_embedder", None)
+    monkeypatch.setattr(sb_search, "_embed", fake_embed)
+    monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+    captured: dict = {}
+    orig_rebuild = eval_search.rebuild_vector_index
+
+    def spying_rebuild(engine, storage, *, model, timings=None):
+        dim = orig_rebuild(engine, storage, model=model, timings=timings)
+        captured.update(timings or {})
+        return dim
+
+    monkeypatch.setattr(eval_search, "rebuild_vector_index", spying_rebuild)
+
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["fts-any"],
+        model="fixture/model-eight")
+
+    meta = payload["meta"]
+    assert captured, "rebuild_vector_index was never called"
+    assert meta["reindex_seconds"] == captured["rebuild_s"]
+    assert meta["reindex_lock_wait_seconds"] == captured["lock_wait_s"]
+    assert meta["model_load_seconds"] == captured["model_load_s"]
+
+
+def test_the_report_notes_the_lock_wait_apart_from_the_rebuild_when_it_matters():
+    payload = _payload_for_render()
+    payload["meta"]["model"] = "fixture/model-nine"
+    payload["meta"]["reindex_seconds"] = 143.2
+    payload["meta"]["reindex_lock_wait_seconds"] = 12.5
+    text = eval_search.render_report(payload)
+    assert "143.2" in text
+    assert "waited 12.5 s for the reindex lock" in text
+    assert "NOT counted" in text
+
+
+def test_the_report_stays_quiet_about_a_negligible_lock_wait():
+    payload = _payload_for_render()
+    payload["meta"]["model"] = "fixture/model-nine"
+    payload["meta"]["reindex_seconds"] = 143.2
+    payload["meta"]["reindex_lock_wait_seconds"] = 0.0
+    text = eval_search.render_report(payload)
+    assert "143.2" in text
+    assert "waited" not in text
+    assert "NOT counted" not in text
+
+
+def test_the_report_lock_wait_threshold_is_strictly_greater_than_0_05():
+    """0.05 s is noise (scheduling jitter around the lock's own bookkeeping),
+    not a real wait — the threshold must be a strict `>`, not `>=`."""
+    payload = _payload_for_render()
+    payload["meta"]["model"] = "fixture/model-nine"
+    payload["meta"]["reindex_seconds"] = 100.0
+    payload["meta"]["reindex_lock_wait_seconds"] = 0.05
+    text = eval_search.render_report(payload)
+    assert "waited" not in text
+
+
+def test_the_report_prints_model_load_seconds_when_present():
+    payload = _payload_for_render()
+    payload["meta"]["model"] = "fixture/model-nine"
+    payload["meta"]["reindex_seconds"] = 143.2
+    payload["meta"]["model_load_seconds"] = 3.4
+    text = eval_search.render_report(payload)
+    assert "model load" in text
+    assert "3.4" in text
+
+
+def test_the_report_stays_quiet_about_model_load_for_the_cp8a_payload_shape():
+    """A CP-8a payload carries neither reindex_seconds nor model_load_seconds
+    — the renderer must not invent either line."""
+    text = eval_search.render_report(_payload_for_render())
+    assert "model load" not in text
+
+
 # ---------- CP-8b: E1 --rerank-model, E2 --query-prefix/--doc-prefix (lead directive §3) ----------
 
 def test_rerank_model_flag_reaches_the_cross_encoder_factory(monkeypatch, tmp_path, synthetic_engine):

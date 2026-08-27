@@ -11,6 +11,8 @@ dist/
 
 # User vault — created by `symbiosis-brain setup` / brain-welcome skill, not bundled
 vault/
+# ...except the synthetic corpus CP-8a ships as a test fixture (tracked on purpose).
+!tests/data/eval_search/vault/
 
 # Personal Claude Code overrides
 CLAUDE.local.md

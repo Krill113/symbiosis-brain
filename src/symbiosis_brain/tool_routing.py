@@ -64,9 +64,28 @@ def _compile_flags(flags: str) -> int:
     return out
 
 
-def _compile_route(raw: dict[str, Any]) -> Optional[Route]:
+def _note_route_problem(problems: list | None, route_id: str, reason: str) -> None:
+    """Append a drop reason when the caller asked for them. Fail-open."""
+    if problems is None:
+        return
+    try:
+        problems.append({"id": str(route_id), "reason": reason})
+    except Exception:
+        pass  # a diagnostics list is never worth breaking routing for
+
+
+def _compile_route(raw: dict[str, Any], *, problems: list | None = None) -> Optional[Route]:
+    """Compile one raw catalog entry into a Route, or None.
+
+    `problems` (I-31): when a list is passed, every drop appends
+    {"id", "reason"} to it. The reason is only knowable HERE — load_routes sees
+    a bare None and cannot reconstruct why (§8.1: that is how the whole prompt
+    side of route `sdd-build-status` disappeared with no trace outside a temp
+    file). The existing _debug_log line stays.
+    """
     rid = raw.get("id")
     if not rid or not isinstance(rid, str):
+        _note_route_problem(problems, "<missing-id>", "no id")
         return None
     pats: list[re.Pattern] = []
     for t in raw.get("triggers") or []:
@@ -75,6 +94,7 @@ def _compile_route(raw: dict[str, Any]) -> Optional[Route]:
         except (re.error, KeyError, TypeError) as e:
             # Fail-open: a single bad regex skips THIS route only, others work.
             _debug_log(f"tool_routing: bad regex in route {rid!r}: {e}")
+            _note_route_problem(problems, rid, f"bad regex: {e}")
             return None
     cmd_triggers = raw.get("command_triggers")
     if not isinstance(cmd_triggers, dict):
@@ -82,6 +102,7 @@ def _compile_route(raw: dict[str, Any]) -> Optional[Route]:
     # A route is valid with EITHER prompt triggers OR command_triggers (Stage-1
     # action-recall routes carry only the latter — see Route.command_triggers).
     if not pats and not cmd_triggers:
+        _note_route_problem(problems, rid, "no triggers and no command_triggers")
         return None
     cls = raw.get("class", "augment")
     if cls not in ("augment", "supersede", "action"):
@@ -149,7 +170,8 @@ def _merge_raw(default: Any, local: Any) -> list[dict]:
 
 
 def load_routes(
-    vault: Optional[Path] = None, default_path: Path = _DEFAULT_JSON
+    vault: Optional[Path] = None, default_path: Path = _DEFAULT_JSON,
+    *, problems: list | None = None,
 ) -> list[Route]:
     default = _read_json(default_path)
     if not _as_route_list(default):
@@ -162,7 +184,7 @@ def load_routes(
             local = _read_json(lp)
     routes: list[Route] = []
     for raw in _merge_raw(default, local):
-        r = _compile_route(raw)
+        r = _compile_route(raw, problems=problems)
         if r is None:
             continue
         if r.observable and r.expected_tool and r.expected_tool not in _OBSERVABLE_TOOLS:

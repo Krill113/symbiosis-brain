@@ -711,9 +711,11 @@ def test_cli_pre_action_logs_source_tool_and_session(populated_vault: Path):
     assert rows[0]["latency_ms"] is not None
 
 
-def test_cli_pre_action_marks_a_subagent_via_the_env_signal(populated_vault: Path):
-    """The MEASURED signal (§2.5 п. 1): a bash process spawned by a subagent
-    carries CLAUDE_CODE_CHILD_SESSION=1, and the hook process inherits it."""
+def test_cli_pre_action_ignores_the_child_session_env(populated_vault: Path):
+    """CLAUDE_CODE_CHILD_SESSION=1 is inherited by a main session launched
+    through the desktop/bridge as well, so it must not flip origin: without
+    an agent_id in the payload the event stays 'main' (post-rollout smoke
+    2026-08-27)."""
     payload = {"tool_name": "Bash",
                "tool_input": {"command": "git commit -m 'feat: y'"},
                "session_id": "sid-43"}
@@ -721,7 +723,7 @@ def test_cli_pre_action_marks_a_subagent_via_the_env_signal(populated_vault: Pat
                                  env_extra={"CLAUDE_CODE_CHILD_SESSION": "1"})
     assert rc == 0, err
     rows = _events(populated_vault)
-    assert rows[-1]["origin"] == "subagent"
+    assert rows[-1]["origin"] == "main"
 
 
 def test_cli_pre_action_marks_a_subagent_via_agent_id_in_the_payload(

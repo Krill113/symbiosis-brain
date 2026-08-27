@@ -568,3 +568,91 @@ def test_extract_gist_snippet_strips_wikilinks():
     assert "cleanup landed, see" in g
     assert "for details" in g
     assert "  " not in g  # пробелы схлопнуты
+
+
+# ============================ CP-4 / I-16 ====================================
+# written_by в архивных нотах и идемпотентность ротации при смене дня и модели.
+
+from symbiosis_brain.rotation import _body_without_written_by  # noqa: E402
+
+WB_A = 'testclient/9.9.9 test-model-9 2026-01-01'
+WB_B = 'testclient/9.9.9 other-test-model-7 2026-01-02'
+
+
+def test_render_archive_file_without_written_by_has_no_such_line():
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="X")
+    assert "written_by:" not in out
+
+
+def test_render_archive_file_written_by_is_quoted_and_last_in_frontmatter():
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="X", written_by=WB_A)
+    assert f'written_by: "{WB_A}"\n---\n' in out
+    assert "tags: [handoff, demo]" in out
+
+
+def test_render_archive_file_written_by_empty_string_prints_nothing():
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
+    out = render_archive_file(s, scope="demo", slug=None, gist="X", written_by="")
+    assert "written_by:" not in out
+
+
+def test_body_without_written_by_matches_the_unstamped_render():
+    """Нормализованное тело со штампом обязано быть БАЙТ В БАЙТ равно телу, которое
+    рендерится без штампа, — иначе сравнение идемпотентности всё равно разойдётся."""
+    s = _section(Date(2026, 5, 14), suffix=None, body="## Handoff 2026-05-14\n**Shipped:** X.\n")
+    stamped = render_archive_file(s, scope="demo", slug=None, gist="X", written_by=WB_A)
+    plain = render_archive_file(s, scope="demo", slug=None, gist="X")
+    assert _body_without_written_by(stamped) == plain
+    assert _body_without_written_by(plain) == plain
+
+
+def test_body_without_written_by_is_a_noop_without_frontmatter():
+    assert _body_without_written_by("no frontmatter here\n") == "no frontmatter here\n"
+
+
+def test_body_without_written_by_leaves_the_body_alone():
+    """Выкидывается строка ФРОНТМАТТЕРА, а не любая строка файла."""
+    text = ('---\ntitle: "T"\nwritten_by: "x"\n---\n\n# T\n\n'
+            'written_by: this line is prose and must survive\n')
+    out = _body_without_written_by(text)
+    assert "written_by: this line is prose and must survive" in out
+    assert 'written_by: "x"' not in out
+
+
+def test_rotate_twice_with_different_written_by_does_not_conflict(tmp_path):
+    """Регресс I-16 п. 3. Второй прогон приходит из другого дня и с другой моделью;
+    карточка при этом снова содержит секцию (её вернули руками или ревертом), то
+    есть архивный файл действительно пересчитывается и сравнивается."""
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    card_text = ("## Handoff 2026-05-14\n**Shipped:** A.\n\n"
+                 "## Handoff 2026-05-08\n**Shipped:** B.\n")
+    _write(card, card_text)
+
+    rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_A)
+    archive = vault / "archive" / "handoffs" / "demo-2026-05-08-b.md"
+    assert archive.exists(), sorted(p.name for p in (vault / "archive" / "handoffs").iterdir())
+    before = archive.read_text(encoding="utf-8")
+    assert f'written_by: "{WB_A}"' in before
+
+    _write(card, card_text)                      # секция снова в карточке
+    report2 = rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_B)
+
+    assert report2.sections_archived == 1
+    assert report2.archive_files_created == []   # идемпотентный skip, файл не пересоздан
+    assert archive.read_text(encoding="utf-8") == before   # старый штамп сохранён
+
+
+def test_rotate_still_conflicts_on_a_real_difference(tmp_path):
+    """Нормализация снимает ТОЛЬКО written_by: настоящее расхождение по-прежнему
+    обязано падать ConflictError."""
+    vault = _make_vault(tmp_path)
+    card = vault / "projects" / "demo.md"
+    _write(card, ("## Handoff 2026-05-14\n**Shipped:** A.\n\n"
+                  "## Handoff 2026-05-08\n**Shipped:** Original.\n"))
+    pre_existing = vault / "archive" / "handoffs" / "demo-2026-05-08-original.md"
+    _write(pre_existing, f'---\ntype: project\nscope: demo\nwritten_by: "{WB_A}"\n---\nDifferent.\n')
+    with pytest.raises(ConflictError):
+        rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_B)

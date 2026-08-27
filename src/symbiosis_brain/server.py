@@ -20,7 +20,7 @@ from symbiosis_brain.search import FTS_MODE_ANY, SearchEngine, _reindex_lock
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VAULT_DIRS, SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
-from symbiosis_brain.markdown_parser import parse_note, render_note
+from symbiosis_brain.markdown_parser import parse_note, render_note, merge_frontmatter
 from symbiosis_brain.lint import VaultLinter
 from symbiosis_brain.atomic_write import atomic_write_text
 from symbiosis_brain.write_lock import note_write_lock
@@ -558,6 +558,31 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# --- brain_write: frontmatter merge (I-13, §3.5) -----------------------------
+# The tool's ARGUMENT names are not the frontmatter KEY names, and the gap is
+# silent: the tool calls the note type `note_type` (server.py:363) while the file
+# calls it `type` (markdown_parser.py:193-196). A `"type" in arguments` check is
+# therefore ALWAYS false, and without this mapping the type would never be taken
+# from the call at all. Presence is checked by ARGUMENT name, merging and erasing
+# work by KEY name. A new frontmatter-bearing argument of brain_write means a new
+# line here — otherwise the field silently loses its link to the call.
+ARG_TO_FM = {
+    "note_type": "type",
+    "scope": "scope",
+    "tags": "tags",
+    "gist": "gist",
+    "valid_from": "valid_from",
+    "valid_to": "valid_to",
+}
+# render_note always prints `type`/`scope` and needs a string, so neither can be
+# erased: an empty argument means "not passed" -> the file's value, then the default.
+NON_ERASABLE = ("note_type", "scope")
+# "Present and empty" is the explicit-clear signal (I-13). Spelled out as a tuple
+# so `x in EMPTY_VALUES` stays an equality test, not a truthiness test: `0` and
+# `False` are legitimate values and must not be read as "clear this key".
+EMPTY_VALUES = (None, "", [], {})
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if _ready is not None and not _ready.is_set():
@@ -635,13 +660,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=text)]
 
     elif name == "brain_write":
-        extra_fm = {}
-        if arguments.get("valid_from"):
-            extra_fm["valid_from"] = arguments["valid_from"]
-        if arguments.get("valid_to"):
-            extra_fm["valid_to"] = arguments["valid_to"]
-        if arguments.get("gist"):
-            extra_fm["gist"] = arguments["gist"]
+        # Presence of a key is decided on the RAW `arguments`, BEFORE any
+        # .get(..., default): the server substitutes note_type/scope defaults a few
+        # lines below, so after a .get() "the caller passed scope=global" and "the
+        # caller passed nothing" are indistinguishable (§3.5, I-13).
+        incoming = {
+            ARG_TO_FM[a]: arguments[a]
+            for a in ARG_TO_FM
+            if a in arguments and not (a in NON_ERASABLE and arguments[a] in EMPTY_VALUES)
+        }
+        # Present-and-empty is TWO actions at once: the key is NOT written (absent
+        # from extra_fm) AND it is NOT rescued (it IS in `incoming`, so
+        # merge_frontmatter drops it). Either half alone leaves `valid_from: ""` in
+        # the file or resurrects the old value.
+        extra_fm = {
+            k: arguments[k]
+            for k in ("gist", "valid_from", "valid_to")
+            if k in arguments and arguments[k] not in EMPTY_VALUES
+        }
+        # Provenance stamp (I-12, §3.2): an ordinary frontmatter key riding in
+        # `extra_frontmatter`, which render_note merges AFTER `preserved` — that
+        # ordering IS the mechanism that overwrites the previous signature.
+        # merge_frontmatter never returns `written_by`, so "not stamped here" would
+        # mean "provenance erased". Exactly one call per tool invocation.
+        extra_fm["written_by"] = provenance.written_by_value(app)
 
         # ---------- VALIDATION GATE ----------
         try:
@@ -666,14 +708,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"Error: {e}")]
         # -------------------------------------
 
-        md_content = render_note(
-            title=arguments["title"],
-            body=arguments["body"],
-            note_type=arguments.get("note_type", "wiki"),
-            scope=arguments.get("scope", "global"),
-            tags=arguments.get("tags"),
-            extra_frontmatter=extra_fm or None,
-        )
         file_path = (_vault_path / arguments["path"]).resolve()
         if not file_path.is_relative_to(_vault_path.resolve()):
             return [TextContent(type="text", text="Error: path must be within vault")]
@@ -681,7 +715,35 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         canonical = arguments["path"].removesuffix(".md")
         broken_before = _storage.count_broken_outgoing(canonical)
-        _write_note_body(arguments["path"], md_content, "write", arguments["title"])
+
+        # brain_write is read-modify-write now (read the note's own frontmatter ->
+        # merge -> render -> write), so the whole cycle needs the per-note lock —
+        # the same reason brain_append (server.py:714) and brain_patch
+        # (server.py:768) have one. Inside the lock the write goes through
+        # _write_note_body_unlocked, never _write_note_body, which would take the
+        # lock a second time. The file is read strictly AFTER is_relative_to:
+        # reading an unvalidated path would make brain_write an arbitrary-file-read
+        # primitive (§3.5).
+        with note_write_lock(_vault_path, arguments["path"]):
+            preserved: dict = {}
+            if file_path.exists():
+                existing = dict(
+                    frontmatter.loads(file_path.read_text(encoding="utf-8")).metadata
+                )
+                preserved = merge_frontmatter(existing, incoming)
+            md_content = render_note(
+                title=arguments["title"],
+                body=arguments["body"],
+                # empty note_type/scope == not passed: they are NON_ERASABLE, so the
+                # value comes from `preserved` and only then from the default
+                note_type=arguments.get("note_type") or "wiki",
+                scope=arguments.get("scope") or "global",
+                tags=arguments.get("tags"),   # None = not passed, [] = clear (I-13)
+                extra_frontmatter=extra_fm,   # never empty: it carries written_by
+                preserved=preserved or None,
+            )
+            _write_note_body_unlocked(arguments["path"], md_content, "write",
+                                      arguments["title"])
 
         msg = f"Saved: {arguments['path']}"
         if warnings:
@@ -740,6 +802,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body
+            # Provenance (I-12, §3.2): the stamp goes into post.metadata BEFORE
+            # frontmatter.dumps, inside the lock we already hold. An append
+            # rebuilds the whole frontmatter anyway, so the field means "who
+            # wrote this note last", not "who authored it" (§3.1).
+            post.metadata["written_by"] = provenance.written_by_value(app)
             new_text = frontmatter.dumps(post) + "\n"
             canonical = rel_path.removesuffix(".md")
             broken_before = _storage.count_broken_outgoing(canonical)
@@ -795,6 +862,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     return [TextContent(type="text", text=f"Error: {e}")]
 
             post.content = new_body
+            # Provenance (I-12, §3.2): into post.metadata BEFORE
+            # frontmatter.dumps, inside the lock we already hold. Mirrors
+            # brain_append.
+            post.metadata["written_by"] = provenance.written_by_value(app)
             new_text = frontmatter.dumps(post) + "\n"
             canonical = rel_path.removesuffix(".md")
             broken_before = _storage.count_broken_outgoing(canonical)
@@ -1003,6 +1074,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 scope=scope,
                 dry_run=dry_run,
                 inline_days=inline_days,
+                # One written_by_value() call per tool invocation (I-12): every
+                # archive note this run creates carries the same stamp.
+                written_by=provenance.written_by_value(app),
             )
         except (ValueError, ConflictError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]

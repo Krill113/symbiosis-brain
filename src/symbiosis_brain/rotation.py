@@ -234,13 +234,51 @@ def _yaml_quote_string(s: str) -> str:
     return f'"{escaped}"'
 
 
+def _body_without_written_by(text: str) -> str:
+    """`text` with the frontmatter's `written_by:` line removed (I-16 п. 2).
+
+    Idempotency of rotation is decided by comparing the archive file we WOULD write
+    with the one already on disk (rotation.py:411-414). `written_by` depends on the
+    day and on the model, so a plain comparison would raise ConflictError on every
+    second run — and that reaches the agent as `Error:` (server.py:923-924).
+
+    Only the frontmatter block is scanned, so a body line that happens to start
+    with `written_by:` survives. The removed line takes its own newline with it, so
+    the result is byte-identical to the same file rendered without a stamp. Used
+    for COMPARISON only — what we write always keeps its stamp.
+    """
+    m = _FM_BLOCK_RE.match(text)
+    if not m:
+        return text
+    head_end = m.end(1)
+    lines = text[:head_end].splitlines(keepends=True)
+    kept = [ln for ln in lines if not ln.startswith("written_by:")]
+    if len(kept) == len(lines):
+        return text
+    head = "".join(kept)
+    if head.endswith("\r\n"):
+        head = head[:-2]
+    elif head.endswith("\n"):
+        head = head[:-1]
+    return head + text[head_end:]
+
+
 def render_archive_file(
     section: HandoffSection,
     scope: str,
     slug: Optional[str],
     gist: str,
+    *,
+    written_by: Optional[str] = None,
 ) -> str:
-    """Render full archive file content (frontmatter + body + footer)."""
+    """Render full archive file content (frontmatter + body + footer).
+
+    `written_by` (I-16, §3.2) is printed only when non-empty, and always through
+    _yaml_quote_string so a colon or a quote in the value cannot break the YAML.
+    An archive note is a brand-new file, so nothing is lost by stamping it — but
+    the value depends on the DAY and on the MODEL, which is why idempotency is
+    compared on bodies normalized by _body_without_written_by (rotation.py, below).
+    """
     date_str = section.date.isoformat()
     # Strip leading punctuation from suffix if it starts with em-dash
     title_suffix = ""
@@ -265,8 +303,10 @@ def render_archive_file(
         f"gist: {_yaml_quote_string(gist)}\n"
         f"valid_from: {date_str}\n"
         f"tags: [handoff, {scope}]\n"
-        f"---\n"
     )
+    if written_by:
+        frontmatter += f"written_by: {_yaml_quote_string(written_by)}\n"
+    frontmatter += "---\n"
     footer = f"\n---\n*Архивный handoff. Свежие — в [[projects/{scope}]] §«Handoff …».*\n"
     return f"{frontmatter}\n# {title}\n\n{body_content}\n{footer}"
 
@@ -380,6 +420,8 @@ def _rotate_one_card(
     inline_days: int,
     dry_run: bool,
     report: RotationReport,
+    *,
+    written_by: Optional[str] = None,
 ) -> None:
     report.cards_processed += 1
     rel_card = card_path.relative_to(vault).as_posix()
@@ -403,14 +445,19 @@ def _rotate_one_card(
     for s in candidates:
         slug = section_to_slug[id(s)]
         gist = extract_gist(s.body)
-        archive_content = render_archive_file(s, scope=scope, slug=slug, gist=gist)
+        archive_content = render_archive_file(s, scope=scope, slug=slug, gist=gist,
+                                              written_by=written_by)
         slug_part = f"-{slug}" if slug else ""
         archive_path = archive_dir / f"{scope}-{s.date.isoformat()}{slug_part}.md"
         rel_archive = archive_path.relative_to(vault).as_posix()
 
         if archive_path.exists():
             existing = archive_path.read_text(encoding="utf-8")
-            if existing.strip() != archive_content.strip():
+            # Normalized comparison (I-16 п. 3): written_by differs by day and by
+            # model, and a byte compare would turn the next day's run into a
+            # ConflictError on every already-archived handoff.
+            if (_body_without_written_by(existing).strip()
+                    != _body_without_written_by(archive_content).strip()):
                 raise ConflictError(f"Archive file exists with different content: {archive_path}")
             # Same content → idempotent skip (no new write, but still remove from card if present)
         else:
@@ -436,6 +483,8 @@ def rotate_handoffs(
     scope: Optional[str] = None,
     dry_run: bool = False,
     inline_days: int = 2,
+    *,
+    written_by: Optional[str] = None,
 ) -> RotationReport:
     """Rotate stale handoffs from project cards into archive/handoffs/.
 
@@ -478,5 +527,6 @@ def rotate_handoffs(
             continue
         # Scope resolution: explicit arg > card frontmatter scope > filename stem.
         card_scope = scope or _frontmatter_scope(_safe_read(card_path)) or card_path.stem
-        _rotate_one_card(vault, card_path, card_scope, inline_days, dry_run, report)
+        _rotate_one_card(vault, card_path, card_scope, inline_days, dry_run, report,
+                         written_by=written_by)
     return report

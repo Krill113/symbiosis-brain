@@ -53,3 +53,23 @@ async def test_rotate_handoffs_archives_stay_embedded(initialized_server):
         assert row is not None, f"{rel} missing a notes_vec row after rotation"
 
     assert server_mod._search.is_index_dirty() is False
+
+
+async def test_rotate_handoffs_stamps_archive_notes(initialized_server):
+    """Сервер прокидывает written_by в ротацию (I-16 п. 4). Значение проверяем
+    по форме, а не буквально: клиента в тесте нет (LookupError -> unknown/unknown),
+    а модель после CP-5 может прийти из моста."""
+    import re
+    from datetime import date
+
+    result = await server_mod.call_tool(
+        "brain_rotate_handoffs", {"scope": "demo", "dry_run": False}
+    )
+    payload = json.loads(result[0].text)
+    created = payload["archive_files_created"]
+    assert created
+
+    pattern = re.compile(rf'^written_by: "\S+/\S+ \S+ {date.today().isoformat()}"$', re.M)
+    for rel in created:
+        text = (server_mod._vault_path / rel).read_text(encoding="utf-8")
+        assert pattern.search(text), text[:400]

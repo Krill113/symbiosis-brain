@@ -187,16 +187,59 @@ def extract_wikilinks(text: str) -> list[dict]:
     return result
 
 
+def merge_frontmatter(existing: dict, incoming: dict) -> dict:
+    """Keys of `existing` that are NOT in `incoming` — the ones a rewrite must carry
+    over (I-13, §3.5).
+
+    Pure: renames nothing, substitutes no defaults, mutates neither argument. Both
+    dicts are keyed by FRONTMATTER names (`type`), never by tool-argument names
+    (`note_type`) — the caller does that mapping (server.ARG_TO_FM).
+
+    `written_by` is never returned: the stamp is rewritten by the server on every
+    write (§3.1, I-12), so carrying the old one over would resurrect a stale
+    signature under a fresh record.
+    """
+    return {k: v for k, v in existing.items()
+            if k not in incoming and k != "written_by"}
+
+
 def render_note(title: str, body: str, note_type: str = "wiki", scope: str = "global",
-                tags: list[str] | None = None, extra_frontmatter: dict | None = None) -> str:
-    """Render a note dict back to markdown with YAML frontmatter."""
+                tags: list[str] | None = None, extra_frontmatter: dict | None = None,
+                *, preserved: dict | None = None) -> str:
+    """Render a note dict back to markdown with YAML frontmatter.
+
+    `preserved` — frontmatter keys carried over from the file being overwritten
+    (I-13). Three ordering rules, and each of them is load-bearing:
+
+    * `preserved` is merged AFTER the `type`/`scope` defaults, so a rewrite that
+      did not pass `note_type`/`scope` keeps the values the file already had
+      instead of resetting the note to wiki/global (defect B4);
+    * `preserved` is merged BEFORE `extra_frontmatter`, so an explicit argument of
+      the call always wins over the old file — that ordering IS the mechanism that
+      overwrites the previous `written_by` (I-12, §3.5). There is deliberately no
+      `written_by` parameter here: the stamp travels as an ordinary
+      `extra_frontmatter` key, exactly like it does in brain_append/brain_patch;
+    * `title` is re-asserted last of the three own keys: it is a required parameter
+      here and `required` in the tool schema (server.py:370), so a `preserved`
+      mapping must never be able to bring an old title back.
+
+    `tags=None` means "not passed" — a preserved `tags` survives. `tags=[]` means
+    "clear" — the key is not written and a preserved one is dropped (I-13).
+    Until now `if tags:` (markdown_parser.py:198) could not tell the two apart.
+    """
     meta: dict[str, Any] = {
         "title": title,
         "type": note_type,
         "scope": scope,
     }
-    if tags:
-        meta["tags"] = tags
+    if preserved:
+        meta.update(preserved)
+        meta["title"] = title
+    if tags is not None:
+        if tags:
+            meta["tags"] = tags
+        else:
+            meta.pop("tags", None)
     if extra_frontmatter:
         meta.update(extra_frontmatter)
 

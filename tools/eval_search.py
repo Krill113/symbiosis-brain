@@ -288,15 +288,32 @@ def _vec_count(storage) -> int:
     return int(row[0]) if row else 0
 
 
-def _install_prefix_wrappers(sb_search_module, query_prefix: str | None,
-                             doc_prefix: str | None) -> None:
-    """E2 (lead directive §3): wrap _embed / _embed_one so a document/query
-    text carries the model's published prefix, without touching search.py.
-    Called by open_engine BEFORE rebuild_vector_index, so index_all's documents
-    pick up doc_prefix too; run_eval restores the originals in `finally`.
+def _l2_normalize(vector: list[float]) -> list[float]:
+    """v / ‖v‖₂. A zero vector is returned unchanged rather than divided by
+    zero — theoretically reachable from a fake embedder in a test, and cheaper
+    to special-case than to forbid."""
+    norm = math.sqrt(sum(x * x for x in vector))
+    return [x / norm for x in vector] if norm else list(vector)
 
-    index_note (search.py:459) also calls _embed_one and would pick up
-    query_prefix too — this harness never calls index_note after a rebuild
+
+def _install_embed_wrappers(sb_search_module, query_prefix: str | None,
+                            doc_prefix: str | None, normalize: bool) -> None:
+    """E2/E3 (lead directive §3): wrap _embed / _embed_one so a document/query
+    text carries the model's published prefix and/or comes back L2-normalised,
+    without touching search.py. Called by open_engine BEFORE rebuild_vector_index,
+    so index_all's documents pick up doc_prefix and normalize too; run_eval
+    restores the originals in `finally`.
+
+    Composition order is prefix -> embed -> normalize: the prefix changes what
+    text the model sees, normalize only rescales what the model hands back.
+    E3's reason to exist: fastembed 0.8.0 normalises the output of only some
+    models (lead's measurement: bge-small 1.0000, the multilingual candidates
+    2.0-28), and notes_vec is declared without distance_metric (search.py:
+    245-254) so sqlite-vec scores it by plain L2 — an unnormalised candidate is
+    measured with a handicap unless this wrapper is on.
+
+    index_note (search.py:459) also calls _embed_one and would pick up every
+    active wrapper too — this harness never calls index_note after a rebuild
     (only reads follow one), so that is acceptable HERE and would NOT be in
     the product.
     """
@@ -304,24 +321,28 @@ def _install_prefix_wrappers(sb_search_module, query_prefix: str | None,
     dp = doc_prefix or ""
     qp = query_prefix or ""
 
+    def _maybe_normalize(vectors):
+        return [_l2_normalize(v) for v in vectors] if normalize else vectors
+
     def wrapped_embed(texts):
-        return orig_embed([dp + t for t in texts])
+        return _maybe_normalize(orig_embed([dp + t for t in texts]))
 
     def wrapped_embed_one(text):
-        return orig_embed([qp + text])[0]
+        return _maybe_normalize(orig_embed([qp + text]))[0]
 
     sb_search_module._embed = wrapped_embed
     sb_search_module._embed_one = wrapped_embed_one
 
 
 def open_engine(work_db: Path, *, model: str | None,
-                query_prefix: str | None = None, doc_prefix: str | None = None):
+                query_prefix: str | None = None, doc_prefix: str | None = None,
+                normalize: bool = False):
     """Open the COPY and return (engine, storage). The caller closes storage.
 
-    query_prefix/doc_prefix are installed here, before rebuild_vector_index,
-    and stay live after this function returns — the wrapped _embed_one is
-    what every later search_vector() call goes through too. This function
-    never restores them; run_eval owns that, in `finally`.
+    query_prefix/doc_prefix/normalize are installed here, before
+    rebuild_vector_index, and stay live after this function returns — the
+    wrapped _embed_one is what every later search_vector() call goes through
+    too. This function never restores them; run_eval owns that, in `finally`.
     """
     from symbiosis_brain import search as sb_search
     from symbiosis_brain.storage import Storage
@@ -330,8 +351,8 @@ def open_engine(work_db: Path, *, model: str | None,
     try:
         engine = sb_search.SearchEngine(storage)
         if model:
-            if query_prefix or doc_prefix:
-                _install_prefix_wrappers(sb_search, query_prefix, doc_prefix)
+            if query_prefix or doc_prefix or normalize:
+                _install_embed_wrappers(sb_search, query_prefix, doc_prefix, normalize)
             rebuild_vector_index(engine, storage, model=model)
         elif engine._vec_enabled and storage.count_notes() and _vec_count(storage) == 0:
             # A database built from markdown (the synthetic set) has no vectors yet.
@@ -621,13 +642,18 @@ def _gib(value: int) -> str:
 def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[str],
              k: int = K_DEFAULT, model: str | None = None,
              rerank_model: str | None = None,
-             query_prefix: str | None = None, doc_prefix: str | None = None) -> dict[str, Any]:
+             query_prefix: str | None = None, doc_prefix: str | None = None,
+             normalize: bool = False) -> dict[str, Any]:
     from symbiosis_brain import search as sb_search
 
     if (query_prefix or doc_prefix) and not model:
         raise EvalError(
             "--query-prefix/--doc-prefix need --model: they wrap the embedder that "
             "--model swaps in, and without --model there is nothing swapped in to wrap")
+    if normalize and not model:
+        raise EvalError(
+            "--normalize needs --model — the installed index holds raw vectors; "
+            "normalising only the query would compare unlike with unlike")
 
     known = configs()
     unknown = [name for name in config_names if name not in known]
@@ -656,7 +682,8 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
     embed_before, embed_one_before = sb_search._embed, sb_search._embed_one
     try:
         engine, storage = open_engine(work_db, model=model,
-                                      query_prefix=query_prefix, doc_prefix=doc_prefix)
+                                      query_prefix=query_prefix, doc_prefix=doc_prefix,
+                                      normalize=normalize)
         reindex_seconds = round(time.perf_counter() - reindex_started, 1) if model else None
         try:
             lexical = lexical_zero_hit_rate(engine, rows, k)
@@ -674,6 +701,8 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
                     result["config"] = f"{cfg.name}+{_model_slug(model)}"
                 if query_prefix or doc_prefix:
                     result["config"] += "+prefixed"
+                if normalize:
+                    result["config"] += "+norm"
                 if cfg.fts_mode == sb_search.FTS_MODE_ALL_THEN_ANY and runs:
                     fell_back = sum(1 for run in runs
                                     if run.effective_fts_mode == "fallback_any")
@@ -696,17 +725,28 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
                 "fallback_any_share": fallback_share,
                 "caveats": list(CAVEATS),
             }
+            # m1 (pre-flight addendum): hybrid-any+rerank downloads a 1.04 GB
+            # cross-encoder without ever touching --model, so peak RSS is
+            # measured on EVERY run — only reindex_seconds stays --model-only,
+            # since there is no rebuild to time without one.
+            meta["peak_rss_bytes"] = peak_rss_bytes()
+            # M4.2 (pre-flight addendum): notes vs notes_vec drift is a red
+            # flag for the run that produced these numbers, not only for the
+            # live vault — print it next to every result, not just a model swap.
+            meta["notes"] = storage.count_notes()
+            meta["notes_vec"] = _vec_count(storage)
             if model:
-                # Spec 7.5 asks for both numbers, and 7.4 turns one of them into a
+                # Spec 7.5 asks for the rebuild cost, and 7.4 turns it into a
                 # criterion: a full rebuild over 10 minutes disqualifies a candidate
                 # regardless of how well it ranks.
                 meta["reindex_seconds"] = reindex_seconds
-                meta["peak_rss_bytes"] = peak_rss_bytes()
             if has_rerank:
                 meta["rerank_model"] = resolved_rerank_model
             if query_prefix or doc_prefix:
                 meta["query_prefix"] = query_prefix
                 meta["doc_prefix"] = doc_prefix
+            if normalize:
+                meta["normalize"] = True
             return {"meta": meta, "results": results}
         finally:
             storage.close()
@@ -755,12 +795,18 @@ def render_report(payload: dict[str, Any]) -> str:
         out.append(f"reindex   : {meta['reindex_seconds']} s for the COPY "
                    f"(spec 7.4 disqualifies a candidate above 600 s)")
     if meta.get("peak_rss_bytes"):
-        out.append(f"peak RSS  : {_gib(meta['peak_rss_bytes'])} during the rebuild")
+        out.append(f"peak RSS  : {_gib(meta['peak_rss_bytes'])} (peak of this process)")
+    if "notes" in meta and "notes_vec" in meta:
+        drift = "  ⚠ drift" if meta["notes"] != meta["notes_vec"] else ""
+        out.append(f"index     : {meta['notes']} notes, {meta['notes_vec']} vectors{drift}")
     if meta.get("rerank_model"):
         out.append(f"rerank    : {meta['rerank_model']}")
     if "query_prefix" in meta:
         out.append(f'prefixes  : query="{meta.get("query_prefix") or ""}" '
                    f'doc="{meta.get("doc_prefix") or ""}"')
+    if "normalize" in meta:
+        out.append("normalize : L2-normalised embeddings (harness wrapper; the live "
+                   "table compares raw vectors by L2)")
     lexical = " | ".join(f"{mode} {value:.1%}"
                          for mode, value in sorted(meta["lexical_zero_hit_rate"].items()))
     out.append(f"lexical zero-hit rate (label-independent, spec 7.2): {lexical}")
@@ -825,6 +871,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--doc-prefix", default=None,
                         help="Prepended to every document before embedding (E2). Needs --model, "
                              "same reason as --query-prefix.")
+    parser.add_argument("--normalize", action="store_true",
+                        help="L2-normalise every embedding the harness produces (E3). Needs "
+                             "--model — the installed index holds raw vectors, so normalising "
+                             "only the query would compare unlike with unlike.")
     args = parser.parse_args(argv)
 
     config_names = [name.strip() for name in args.configs.split(",") if name.strip()]
@@ -836,7 +886,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = run_eval(vault=args.vault, work_dir=args.work_dir, queries=args.queries,
                            config_names=config_names, k=args.k, model=args.model,
                            rerank_model=args.rerank_model,
-                           query_prefix=args.query_prefix, doc_prefix=args.doc_prefix)
+                           query_prefix=args.query_prefix, doc_prefix=args.doc_prefix,
+                           normalize=args.normalize)
     except EvalError as e:
         print(f"eval_search: {e}", file=sys.stderr)
         return 1

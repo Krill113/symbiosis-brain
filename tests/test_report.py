@@ -328,6 +328,25 @@ def test_render_hot_row_shows_all_three_counters(vault_db):
     assert "hook" in row and "mcp" in row and "прочитана" in row
 
 
+def test_render_reserves_room_for_cuts_and_routing(vault_db):
+    """A3 (F9): «Разрезы» и «Здоровье роутинга» — единственная поверхность
+    prompt_route_warnings (I-31/D6) — не должны пропадать из дефолтного (не
+    --full) отчёта только потому, что списочные секции перед ними заполнили
+    весь 40-строчный потолок. Дефект: на busy-сиде (30 нот, top=10) отчёт был
+    ровно 40 строк и заканчивался «…отчёт обрезан…» ДО «## Разрезы»."""
+    from symbiosis_brain import report
+
+    vault, storage = vault_db
+    _seed_busy(storage, notes=30)
+    for i in range(30):
+        for _ in range(4):
+            _event(storage, source="mcp_search", hits=[f"wiki/topic-{i:02d}.md"])
+    text = report.render_report(report.build_report(storage, vault, top=10))
+    assert "## Разрезы" in text
+    assert "## Здоровье роутинга" in text
+    assert len(text.splitlines()) <= report.DEFAULT_MAX_LINES
+
+
 def test_render_default_never_exceeds_forty_lines(vault_db):
     """§6.2 п. 7: потолок 40 строк — требование, а не пожелание (verbose линтера
     уже не влезает в лимит ответа тула)."""

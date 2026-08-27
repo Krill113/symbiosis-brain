@@ -161,16 +161,20 @@ HOOK_FILES_SH = (
 # Hooks whose CONTENT doctor compares against the package. Upgrading the package
 # does not touch ~/.claude/hooks — copying happens only from setup/--repair
 # (install_cli.py:245-266) — so an upgrade without --repair silently keeps the old
-# bash next to the new python. These are the three hooks Stage 2 changed: the model
-# bridge lives in sb-export.sh, --hook-started-at in brain-save-trigger.sh, and the
-# bridge's own startup in brain-session-start.sh (CP-5, Task 5.3).
+# bash next to the new python. The first three are the hooks Stage 2 changed: the
+# model bridge lives in sb-export.sh, --hook-started-at in brain-save-trigger.sh,
+# and the bridge's own startup in brain-session-start.sh (CP-5, Task 5.3).
 #
-# brain-pre-action-trigger.sh is deliberately NOT here: it is registered straight
-# out of the repo ('bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/…"', install_lib.py:226-229)
-# and therefore cannot go stale, while the three above are registered from hook_dir
-# (install_lib.py:207-213 for session-start) and only get there via --repair.
+# brain-pre-action-trigger.sh cannot go stale for an install registered by THIS
+# installer — the PreToolUse command it writes is 'bash
+# "$SYMBIOSIS_BRAIN_TOOLS/hooks/…"' (install_lib.py:226-229), which always reads
+# straight out of the current package. But the file is copied into hook_dir the
+# same as the other three (it is in HOOK_FILES_SH), and a legacy install can
+# still be registered against THAT copy — three different command prefixes are
+# ours in the wild (install_lib.py's OUR_HOOK_SCRIPTS comment) — so checking it
+# too costs nothing on a fresh install and catches the legacy one.
 STALE_CHECKED_HOOKS = ("sb-export.sh", "brain-save-trigger.sh",
-                       "brain-session-start.sh")
+                       "brain-session-start.sh", "brain-pre-action-trigger.sh")
 
 
 def _hook_is_stale(name: str, hook_dir: Path) -> bool:

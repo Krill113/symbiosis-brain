@@ -335,6 +335,27 @@ def test_doctor_flags_a_stale_session_start_hook(tmp_path, monkeypatch, capsys):
     assert "--repair" in out
 
 
+def test_doctor_flags_a_stale_pre_action_trigger_hook(tmp_path, monkeypatch, capsys):
+    """A6 (F12): `brain-pre-action-trigger.sh` is copied into `~/.claude/hooks` by
+    every `setup`/`--repair` (it is in `HOOK_FILES_SH`) exactly like the other
+    three, but it used to be left out of `STALE_CHECKED_HOOKS` on the theory that
+    a fresh install always runs it straight from `$SYMBIOSIS_BRAIN_TOOLS` and
+    therefore `cannot go stale`. A legacy install registered against the
+    hook_dir copy instead (install_lib.py's three-prefix note) DOES read this
+    file, so upgrading the package without `--repair` could leave it stale while
+    doctor said `All OK`, same failure shape as the other three hooks."""
+    _green_install(tmp_path, monkeypatch)
+    hook = tmp_path / "hooks" / "brain-pre-action-trigger.sh"
+    hook.write_text(hook.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "STALE" in out
+    assert "brain-pre-action-trigger.sh" in out
+    assert "--repair" in out
+
+
 def test_doctor_stale_check_ignores_line_endings(tmp_path, monkeypatch, capsys):
     """CRLF-безопасность (00-plan §0.6 п. 7): git может выдать хук с CRLF, это не
     расхождение содержимого."""

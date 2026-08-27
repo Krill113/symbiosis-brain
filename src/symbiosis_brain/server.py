@@ -799,21 +799,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if file_path.exists():
                 # A hand-edited or pre-Stage-2 note can have frontmatter that does
                 # not parse at all (a stray colon in a `gist:` line, an unclosed
-                # `tags: [`, …). Before this guard that raised straight out of the
-                # tool, and MCP was the ONLY write path into the vault for an
-                # agent — so a note in this state could never be fixed through it
-                # (F4+F5+F6). Same exception list as sync.py's per-note catch.
+                # `tags: [`, …) or that parses to YAML but collides with
+                # python-frontmatter's own constructor (a literal `content:` or
+                # `handler:` key: `Post.__init__()` ends in
+                # `Post(content, handler, **metadata)`, so those metadata keys
+                # raise `TypeError`, not a YAML error). Before this guard that
+                # raised straight out of the tool, and MCP was the ONLY write
+                # path into the vault for an agent — so a note in this state
+                # could never be fixed through it (F4+F5+F6, and F4+F5+F6 again
+                # for the `content:`/`handler:` shape). The try wraps only the
+                # read+parse call, never `merge_frontmatter` below: that keeps a
+                # genuine programming TypeError out of `merge_frontmatter` from
+                # being misreported as unparsable frontmatter.
                 try:
                     existing = dict(
                         frontmatter.loads(file_path.read_text(encoding="utf-8")).metadata
                     )
-                    preserved = merge_frontmatter(existing, incoming)
-                except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
+                except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError, TypeError):
                     unparsable_frontmatter = True
                     logger.warning(
                         "brain_write: existing frontmatter unparsable, not preserved: %s",
                         arguments["path"],
                     )
+                else:
+                    preserved = merge_frontmatter(existing, incoming)
             md_content = render_note(
                 title=arguments["title"],
                 body=arguments["body"],

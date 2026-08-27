@@ -23,13 +23,20 @@ def _ts(days_ago: float = 0.0) -> str:
 def _note(storage, path, *, title=None, scope="global", note_type="wiki",
           created_days_ago=200.0, updated_days_ago=None, content="Body"):
     """Нота с УПРАВЛЯЕМЫМ возрастом: upsert_note всегда штампует now
-    (storage.py:205), поэтому даты правим прямым UPDATE."""
+    (storage.py:205), поэтому даты правим прямым UPDATE.
+
+    `_ts()` вызывается по разу на каждую метку: два отдельных вызова
+    `_ts(same_value)` дают разные datetime (между ними проходит реальное время
+    исполнения), а report.py сравнивает created_at/updated_at ТОЧНЫМИ метками
+    (A10), не по дню, — «created == updated» должно быть буквальным равенством,
+    не просто одинаковым значением days_ago."""
     storage.upsert_note(path=path, title=title or path, content=content,
                         note_type=note_type, scope=scope, tags=[], frontmatter={})
-    updated = created_days_ago if updated_days_ago is None else updated_days_ago
+    created_ts = _ts(created_days_ago)
+    updated_ts = created_ts if updated_days_ago is None else _ts(updated_days_ago)
     storage._conn.execute(
         "UPDATE notes SET created_at=?, updated_at=? WHERE path=?",
-        (_ts(created_days_ago), _ts(updated), path),
+        (created_ts, updated_ts, path),
     )
     storage._conn.commit()
 
@@ -498,6 +505,28 @@ def test_stale_bucket_needs_no_age_filter(vault_db):
     rows = report.build_report(storage, vault)["archive_candidates"]
     row = next(r for r in rows if r["path"] == "wiki/edited-long-ago.md")
     assert row["reasons"] == ["stale"]
+
+
+def test_never_edited_compares_exact_timestamps_not_day_buckets(vault_db):
+    """A10 (F13-adjacent, продукт под баг тестового хелпера): floor(days) для
+    created_age/updated_age даёт РАВНЫЕ значения для любой правки внутри одного
+    дневного бакета (обычный случай — правка через минуты после создания), и
+    «ни разу не правилась» срабатывает ошибочно на всё время, пока бакеты
+    совпадают. Нота ниже правилась примерно через 86 секунд после создания —
+    `updated_at` строго позже `created_at`, но `(now - updated_at).days` и
+    `(now - created_at).days` совпадают."""
+    from symbiosis_brain import report
+
+    vault, storage = vault_db
+    for i in range(30):
+        _note(storage, f"wiki/filler-{i:02d}.md", created_days_ago=200.0,
+              updated_days_ago=1.0)
+    _note(storage, "wiki/edited-fast.md", created_days_ago=45.5,
+          updated_days_ago=45.5 - 0.0001)
+
+    rows = report.build_report(storage, vault)["archive_candidates"]
+    paths = {r["path"] for r in rows}
+    assert "wiki/edited-fast.md" not in paths
 
 
 # ---------------------------------------------------------------------------

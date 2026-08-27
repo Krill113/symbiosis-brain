@@ -523,17 +523,64 @@ async def test_rewrite_over_unclosed_flow_sequence_degrades_instead_of_crashing(
     assert text.startswith("Saved:"), text
     assert "unparsable" in text
 
-# NOTE (A2 scope boundary, found during verification): a *pre-existing* note
-# whose frontmatter already has a literal `content:` or `handler:` key cannot be
-# used for an end-to-end brain_write regression test of A2, because reading it
-# back — `frontmatter.loads(file_path.read_text(...))`, the very call A1 wraps
-# above — already raises `TypeError` on that read, independently of render_note.
-# `frontmatter.loads`/`load` end in `Post(content, handler, **metadata)`
-# (frontmatter/__init__.py), the exact same positional-argument collision as
-# render_note's old `Post(body, **meta)` — but on the READ side, in a third-party
-# call this project does not control, and shared by every other frontmatter.loads
-# caller (sync.py's parse_note, brain_append, brain_patch). That is a distinct,
-# pre-existing defect outside A1/A2's accepted scope, not a regression from this
-# branch. A2 itself is covered directly (render_note unit test above, in
-# test_markdown_parser.py) and via test_rewrite_keeps_unknown_frontmatter_keys
-# for the general "preserve unknown keys through brain_write" path.
+# NOTE (U1, found during final review): a note whose frontmatter already has a
+# literal `content:` or `handler:` key makes `frontmatter.loads` itself raise
+# `TypeError` — `Post.__init__()` ends in `Post(content, handler, **metadata)`,
+# so either metadata key collides with a positional parameter. That is a
+# distinct exception shape from the YAML-level errors A1 handles above
+# (yaml.YAMLError / ValueError), and it reached brain_write specifically
+# because this branch made brain_write read the note's existing frontmatter
+# before rewriting it (CP-4) — a regression of this branch, not a pre-existing
+# one, unlike the same call shared by sync.py's parse_note, brain_append and
+# brain_patch (still open there, out of scope here: none of those three read
+# the existing frontmatter as part of *this* branch's work). Fixed the same way
+# as A1: caught and degraded to "not preserved" rather than raised.
+async def test_rewrite_over_content_key_collision_degrades_instead_of_crashing(
+    initialized_server, tmp_vault_with_taxonomy: Path, stub_provenance,
+):
+    """U1: a hand-added `content:` key in frontmatter collides with
+    `Post.__init__()`'s positional `content` parameter and raises `TypeError`,
+    not a `yaml.YAMLError` — a different exception shape than A1's guard caught."""
+    await _seed("wiki/bad-content-key.md")
+    note = tmp_vault_with_taxonomy / "wiki" / "bad-content-key.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "gist: seeded note", "gist: seeded note\ncontent: y"
+        ),
+        encoding="utf-8",
+    )
+    text = await _call("brain_write", {
+        "path": "wiki/bad-content-key.md", "title": "Fixed", "body": "New body",
+        "note_type": "wiki", "scope": "global", "gist": "rewritten clean",
+    })
+    assert text.startswith("Saved:"), text
+    assert "unparsable" in text
+    meta = _meta(tmp_vault_with_taxonomy, "wiki/bad-content-key.md")
+    assert meta["title"] == "Fixed"
+    assert meta["gist"] == "rewritten clean"
+    assert "content" not in meta
+
+
+async def test_rewrite_over_handler_key_collision_degrades_instead_of_crashing(
+    initialized_server, tmp_vault_with_taxonomy: Path, stub_provenance,
+):
+    """U1, second collision: `handler:` is `Post.__init__()`'s other positional
+    parameter."""
+    await _seed("wiki/bad-handler-key.md")
+    note = tmp_vault_with_taxonomy / "wiki" / "bad-handler-key.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "gist: seeded note", "gist: seeded note\nhandler: y"
+        ),
+        encoding="utf-8",
+    )
+    text = await _call("brain_write", {
+        "path": "wiki/bad-handler-key.md", "title": "Fixed", "body": "New body",
+        "note_type": "wiki", "scope": "global", "gist": "rewritten clean",
+    })
+    assert text.startswith("Saved:"), text
+    assert "unparsable" in text
+    meta = _meta(tmp_vault_with_taxonomy, "wiki/bad-handler-key.md")
+    assert meta["title"] == "Fixed"
+    assert meta["gist"] == "rewritten clean"
+    assert "handler" not in meta

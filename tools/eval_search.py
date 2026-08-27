@@ -557,6 +557,13 @@ def peak_rss_bytes() -> int | None:
     candidate. psutil is not a dependency of this project, so: Windows goes
     through GetProcessMemoryInfo (same ctypes shape as parent_watchdog.py:67),
     POSIX reads ru_maxrss, which is KiB on Linux and bytes on macOS.
+
+    GetProcessMemoryInfo needs explicit argtypes: GetCurrentProcess() returns
+    the pseudo-handle (HANDLE)-1, and without a declared HANDLE argtype ctypes
+    marshals that 64-bit value through a 32-bit C int on the call into psapi,
+    truncating it — the callee then fails on the mangled handle (invalid on
+    64-bit Windows) and this function honestly reports "unreadable" for a
+    counter that was never actually asked for.
     """
     if sys.platform == "win32":
         try:
@@ -579,7 +586,14 @@ def peak_rss_bytes() -> int | None:
 
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.argtypes = []
             kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(_ProcessMemoryCounters),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
             counters = _ProcessMemoryCounters()
             counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
             ok = psapi.GetProcessMemoryInfo(

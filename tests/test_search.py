@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 from pathlib import Path
 from symbiosis_brain.storage import Storage
@@ -654,3 +656,290 @@ def test_vector_empty_index_returns_empty(db_path: Path, monkeypatch):
     _patch_query_vector(monkeypatch)
 
     assert engine.search_vector("q", scope=_TARGET_SCOPE, limit=5) == []
+
+
+# ================== CP-7: дедуп-сигнал (I-23, I-24, I-35) ==================
+# Числа в тестах выписаны заранее и вручную: токенизация двигает частоту
+# срабатывания при неизменном пороге, поэтому «улучшение» нормализации обязано
+# краснеть, а не тихо менять поведение (§5.3).
+
+from symbiosis_brain.search import (  # noqa: E402
+    DEDUP_CONTAINMENT_MIN,
+    DEDUP_MAX_SHOWN,
+    DEDUP_TOP_K,
+    _DEDUP_ENV_CACHE,
+    _dedup_tokens,
+    containment,
+    dedup_candidates,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_dedup_env_cache():
+    """Ручки I-35 читаются ОДИН раз на процесс — в тестах кэш сбрасывается."""
+    _DEDUP_ENV_CACHE.clear()
+    yield
+    _DEDUP_ENV_CACHE.clear()
+
+
+def test_dedup_defaults_are_the_calibrated_ones():
+    assert DEDUP_TOP_K == 5
+    assert DEDUP_CONTAINMENT_MIN == 0.5
+    assert DEDUP_MAX_SHOWN == 2
+
+
+def test_dedup_tokens_and_containment_are_deterministic():
+    """Фиксированная пара строк: пунктуация, смешанный регистр, RU/EN-смесь и
+    токены длины ≤ 2 (`ms`, `и`). Ожидаемые множества выписаны в тесте."""
+    a = _dedup_tokens("Retrieval LOG для hooks: origin, e2e_ms, и sqlite")
+    b = _dedup_tokens("Sqlite retrieval log — origin и e2e для хуков!")
+    assert a == frozenset({"retrieval", "log", "hooks", "origin", "e2e", "sqlite"})
+    assert b == frozenset({"sqlite", "retrieval", "log", "origin", "e2e", "хуков"})
+    assert containment(a, b) == pytest.approx(5 / 6)
+    assert containment(b, a) == pytest.approx(5 / 6)   # min(), а не |B|
+
+
+def test_dedup_tokens_fold_case_and_split_on_punctuation():
+    assert _dedup_tokens("Brain_Write: containment≥0.5!") == frozenset(
+        {"brain", "write", "containment"}
+    )
+
+
+def test_dedup_tokens_drop_short_and_stop_words():
+    assert _dedup_tokens("ok и в на по с") == frozenset()
+    assert _dedup_tokens("") == frozenset()
+    assert _dedup_tokens(None) == frozenset()
+
+
+def test_containment_is_zero_on_empty_side():
+    """I-24: при min(|A|,|B|) == 0 результат 0.0 — не деление на ноль и не 1.0."""
+    assert containment(frozenset(), frozenset({"x"})) == 0.0
+    assert containment(frozenset({"x"}), frozenset()) == 0.0
+    assert containment(frozenset(), frozenset()) == 0.0
+
+
+class _FakeEngine:
+    """Движок-пустышка: `dedup_candidates` обязан работать с duck-typed
+    объектом, а не только с настоящим SearchEngine."""
+
+    def __init__(self, hits):
+        self.hits = hits
+        self.calls: list[dict] = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.hits
+
+
+def _hit(path, title, gist, in_both=True):
+    return {"path": path, "title": title, "gist": gist, "_in_both": in_both}
+
+
+_NEW_TITLE = "Retrieval log rotation"
+_NEW_GIST = "Rotation deletes retrieval events older than ninety days"
+
+
+def test_dedup_candidates_query_and_search_arguments():
+    """§5.2: запрос — `title + gist`, кандидаты — top-5 в режиме `any`, без скоупа."""
+    engine = _FakeEngine([])
+    dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST, self_path="w/new.md")
+    kwargs = engine.calls[0]
+    assert kwargs["query"] == f"{_NEW_TITLE} {_NEW_GIST}"
+    assert kwargs["scope"] is None
+    assert kwargs["limit"] == DEDUP_TOP_K
+    assert kwargs["mode"] == "gist"
+    assert kwargs["fts_mode"] == "any"
+    # Дедуп-запрос НЕ логируется: журнал знает шесть путей (§2.1), этого среди
+    # них нет — значит ни log_ctx, ни stats сюда не передаются.
+    assert "log_ctx" not in kwargs and "stats" not in kwargs
+
+
+def test_dedup_candidates_reports_a_near_duplicate():
+    engine = _FakeEngine([
+        _hit("wiki/rotation.md", "Retrieval log rotation",
+             "Rotation deletes retrieval events older than ninety days"),
+    ])
+    found = dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                             self_path="wiki/rotation-2.md")
+    assert [c["path"] for c in found] == ["wiki/rotation.md"]
+    assert found[0]["containment"] == pytest.approx(1.0)
+    assert found[0]["gist"].startswith("Rotation deletes")
+
+
+def test_dedup_candidates_silent_on_a_new_topic():
+    engine = _FakeEngine([
+        _hit("wiki/valves.md", "Valve sizing", "How to size a valve for a water network"),
+    ])
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="wiki/new.md") == []
+
+
+def test_dedup_candidates_requires_in_both():
+    """§5.3: одного покрытия мало — кандидат обязан быть в ОБЕИХ половинах."""
+    engine = _FakeEngine([
+        _hit("wiki/rotation.md", _NEW_TITLE, _NEW_GIST, in_both=False),
+    ])
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="wiki/new.md") == []
+
+
+def test_dedup_candidates_excludes_itself():
+    """Перезапись существующей ноты не должна показывать её саму."""
+    engine = _FakeEngine([_hit("wiki/rotation.md", _NEW_TITLE, _NEW_GIST)])
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="wiki/rotation.md") == []
+    # тот же путь без расширения — тоже я
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="wiki/rotation") == []
+
+
+def test_dedup_candidates_caps_and_sorts():
+    """Три кандидата с РАЗНЫМ покрытием (1.0 / 0.6 / 0.5), выдача — два лучших.
+
+    Покрытия считаются вручную: |mine| = 9 токенов
+    {retrieval, log, rotation, deletes, events, older, than, ninety, days}."""
+    engine = _FakeEngine([
+        _hit("w/c.md", "Rotation", "Rotation of the journal"),              # 1/2  = 0.5
+        _hit("w/a.md", _NEW_TITLE, _NEW_GIST),                              # 9/9  = 1.0
+        _hit("w/b.md", _NEW_TITLE, "Rotation policy for the journal"),      # 3/5  = 0.6
+    ])
+    found = dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                             self_path="w/new.md")
+    assert [c["path"] for c in found] == ["w/a.md", "w/b.md"]
+    assert len(found) == DEDUP_MAX_SHOWN
+    assert found[0]["containment"] == pytest.approx(1.0)
+    assert found[1]["containment"] == pytest.approx(0.6)
+
+
+def test_dedup_threshold_is_inclusive():
+    """Ровно на пороге кандидат ПОКАЗЫВАЕТСЯ (`>=`, а не `>`): w/c.md выше даёт
+    ровно 0.5 и отсекается только капом, а не сравнением."""
+    engine = _FakeEngine([_hit("w/c.md", "Rotation", "Rotation of the journal")])
+    found = dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                             self_path="w/new.md")
+    assert [c["path"] for c in found] == ["w/c.md"]
+    assert found[0]["containment"] == pytest.approx(0.5)
+
+
+def test_dedup_candidates_never_raises_on_engine_error():
+    class _Boom:
+        def search(self, **kwargs):
+            raise RuntimeError("движок упал")
+
+    assert dedup_candidates(_Boom(), None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="w/new.md") == []
+
+
+def test_dedup_candidates_empty_query_does_not_search():
+    engine = _FakeEngine([_hit("w/a.md", _NEW_TITLE, _NEW_GIST)])
+    assert dedup_candidates(engine, None, title="", gist="", self_path="w/new.md") == []
+    assert engine.calls == []
+
+
+def test_dedup_min_zero_disables_everything(monkeypatch):
+    """I-35: `0` = сигнал выключен целиком — поиск кандидатов не выполняется."""
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEDUP_MIN", "0")
+    _DEDUP_ENV_CACHE.clear()
+    engine = _FakeEngine([_hit("wiki/rotation.md", _NEW_TITLE, _NEW_GIST)])
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="w/new.md") == []
+    assert engine.calls == []
+
+
+def test_dedup_max_shown_zero_disables_everything(monkeypatch):
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEDUP_MAX_SHOWN", "0")
+    _DEDUP_ENV_CACHE.clear()
+    engine = _FakeEngine([_hit("wiki/rotation.md", _NEW_TITLE, _NEW_GIST)])
+    assert dedup_candidates(engine, None, title=_NEW_TITLE, gist=_NEW_GIST,
+                            self_path="w/new.md") == []
+    assert engine.calls == []
+
+
+@pytest.mark.parametrize("raw", ["", "не число", "-0.5", "1.5", "0,7"])
+def test_dedup_min_garbage_falls_back_to_default(monkeypatch, raw):
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEDUP_MIN", raw)
+    _DEDUP_ENV_CACHE.clear()
+    from symbiosis_brain.search import _dedup_min
+
+    assert _dedup_min() == DEDUP_CONTAINMENT_MIN
+
+
+def test_dedup_min_is_read_once_per_process(monkeypatch):
+    """I-35: «читается один раз на процесс» — не декорация, а поведение."""
+    from symbiosis_brain.search import _dedup_min
+
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEDUP_MIN", "0.9")
+    _DEDUP_ENV_CACHE.clear()
+    assert _dedup_min() == pytest.approx(0.9)
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_DEDUP_MIN", "0.1")
+    assert _dedup_min() == pytest.approx(0.9)   # кэш, а не перечитывание
+
+
+def test_dedup_candidates_falls_back_to_storage_for_missing_gist():
+    """Аргумент `storage` (I-23) не декоративный: если хит пришёл без гиста
+    (чужой duck-typed движок, `mode` не 'gist'), гист берётся из БД."""
+    class _Storage:
+        def get_note(self, path):
+            return {"title": _NEW_TITLE, "frontmatter": {"gist": _NEW_GIST}}
+
+    engine = _FakeEngine([{"path": "wiki/rotation.md", "_in_both": True}])
+    found = dedup_candidates(engine, _Storage(), title=_NEW_TITLE, gist=_NEW_GIST,
+                             self_path="w/new.md")
+    assert [c["path"] for c in found] == ["wiki/rotation.md"]
+    assert found[0]["gist"] == _NEW_GIST
+
+
+# ================== CP-7: tools/dedup_calib.py ==================
+
+def _load_dedup_calib():
+    """tools/ — не пакет; грузим по пути, как tests/test_changelog_section.py."""
+    import importlib.util
+    import sys as _sys
+
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = repo_root / "tools" / "dedup_calib.py"
+    spec = importlib.util.spec_from_file_location("dedup_calib", module_path)
+    assert spec and spec.loader, f"cannot load {module_path}"
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dedup_calib_snapshot_is_read_only(tmp_path: Path):
+    """I-32 п. 1: живая БД открывается только `?mode=ro`, копия — VACUUM INTO.
+
+    Источник остаётся в WAL и с ОТКРЫТЫМ писателем — ровно та ситуация, в
+    которой поштучное копирование трёх файлов WAL-набора дало бы рваную копию."""
+    calib = _load_dedup_calib()
+    src = tmp_path / "live.db"
+    writer = sqlite3.connect(str(src))
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("CREATE TABLE notes (path TEXT PRIMARY KEY)")
+    writer.execute("INSERT INTO notes VALUES ('wiki/a.md')")
+    writer.commit()
+
+    dst = calib.snapshot(src, tmp_path / "snap.db")
+
+    assert dst.exists()
+    copy = sqlite3.connect(str(dst))
+    assert copy.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 1
+    copy.close()
+    # исходник не тронут и по-прежнему пишется
+    writer.execute("INSERT INTO notes VALUES ('wiki/b.md')")
+    writer.commit()
+    writer.close()
+
+
+def test_dedup_calib_snapshot_refuses_to_write_the_source(tmp_path: Path):
+    calib = _load_dedup_calib()
+    src = tmp_path / "live.db"
+    c = sqlite3.connect(str(src))
+    c.execute("CREATE TABLE notes (path TEXT PRIMARY KEY)")
+    c.commit()
+    c.close()
+
+    ro = sqlite3.connect(calib.read_only_uri(src), uri=True)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        ro.execute("CREATE TABLE z (y)")
+    ro.close()

@@ -723,6 +723,7 @@ def test_meta_unmatched_patterns_empty_when_all_used(tmp_path):
         "rules_compiled",
         "skipped",
         "unmatched_patterns",
+        "prompt_route_warnings",  # CP-7 / I-31: appended, key always present
     ]
 
 
@@ -760,3 +761,79 @@ def test_structural_error_still_drops_rule(tmp_path):
     assert out.read_text(encoding="utf-8") == ""
     reasons = {s["id"]: s["reason"] for s in meta["skipped"]}
     assert "tab/newline/CR" in reasons["two-trigger-tab-demo"]
+
+
+# ================== CP-7: предупреждения компилятора роутов (I-31, §8.1) ==================
+
+from symbiosis_brain import tool_routing as tr  # noqa: E402
+
+# Промптовый роут со СТРОКОВЫМИ триггерами вместо объектов {"re": ...} — ровно
+# та форма, которой brain-autolearn 26.08 уронил маршрут молча (§8.1).
+BROKEN_PROMPT_ROUTE = {
+    "id": "broken-prompt-route",
+    "class": "augment",
+    "priority": 50,
+    "hint": "Подсказка, которая никогда не доезжала.",
+    "triggers": ["строка вместо объекта"],
+}
+
+
+def test_compile_route_reports_bad_regex_reason():
+    problems: list = []
+    assert tr._compile_route(BROKEN_PROMPT_ROUTE, problems=problems) is None
+    assert [p["id"] for p in problems] == ["broken-prompt-route"]
+    assert "bad regex" in problems[0]["reason"]
+
+
+def test_compile_route_reports_missing_id():
+    """Достижимо только прямым вызовом: `_merge_raw` отбрасывает записи без id
+    раньше (`tool_routing.py:130-139`). Причина всё равно записывается — функция
+    публична внутри пакета и вызывается не только из load_routes."""
+    problems: list = []
+    assert tr._compile_route({"class": "augment"}, problems=problems) is None
+    assert problems == [{"id": "<missing-id>", "reason": "no id"}]
+
+
+def test_compile_route_reports_empty_route():
+    problems: list = []
+    assert tr._compile_route({"id": "empty-route", "hint": "x"}, problems=problems) is None
+    assert problems[0]["id"] == "empty-route"
+    assert problems[0]["reason"] == "no triggers and no command_triggers"
+
+
+def test_load_routes_collects_problems(tmp_path):
+    _write_local(tmp_path, [BROKEN_PROMPT_ROUTE])
+    problems: list = []
+    routes = tr.load_routes(vault=tmp_path, problems=problems)
+    assert all(r.id != "broken-prompt-route" for r in routes)
+    assert [p["id"] for p in problems] == ["broken-prompt-route"]
+
+
+def test_load_routes_without_problems_arg_is_unchanged(tmp_path):
+    """Обратная совместимость: параметр опционален, поведение прежнее."""
+    _write_local(tmp_path, [BROKEN_PROMPT_ROUTE])
+    assert all(r.id != "broken-prompt-route" for r in tr.load_routes(vault=tmp_path))
+
+
+def test_meta_carries_prompt_route_warnings(tmp_path):
+    _write_local(tmp_path, [VALID_RULE, BROKEN_PROMPT_ROUTE])
+    ar.compile_action_rules(tmp_path)
+    meta = json.loads(
+        (tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8")
+    )
+    assert [w["id"] for w in meta["prompt_route_warnings"]] == ["broken-prompt-route"]
+    assert "bad regex" in meta["prompt_route_warnings"][0]["reason"]
+    # сломанный промптовый роут не влияет на action-половину
+    assert meta["rules_total"] == 1
+    assert meta["rules_compiled"] == 1
+
+
+def test_meta_prompt_route_warnings_empty_on_a_healthy_catalog(tmp_path):
+    """Ключ есть ВСЕГДА: читатель не должен отличать «предупреждений нет» от
+    «собрано сборкой, которая ключа не знала» (Р3 каркаса)."""
+    _write_local(tmp_path, [VALID_RULE])
+    ar.compile_action_rules(tmp_path)
+    meta = json.loads(
+        (tmp_path / ".index" / "action-rules.meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["prompt_route_warnings"] == []

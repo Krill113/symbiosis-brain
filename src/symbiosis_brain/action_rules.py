@@ -364,6 +364,18 @@ def compile_action_rules(vault: Path) -> Path:
 
     grep_path = _find_grep()
 
+    # I-31 / §8.1: промптовая половина каталога компилируется ЗДЕСЬ же, только
+    # ради причин отказа. compile_action_rules — единственное место, которое и
+    # так пишет action-rules.meta.json, и оно запускается на brain_sync
+    # (server.py:855-859) и на `setup claude-code`. Отдельного файла и записи на
+    # горячем пути правка не заводит.
+    prompt_route_warnings: list[dict[str, str]] = []
+    try:
+        tr.load_routes(vault=vault, problems=prompt_route_warnings)
+    except Exception as e:  # fail-open: диагностика не роняет компиляцию
+        _debug_log(f"action_rules: prompt-route probe failed: {e}")
+        prompt_route_warnings = []
+
     for raw in merged:
         if not isinstance(raw, dict):
             continue
@@ -407,6 +419,7 @@ def compile_action_rules(vault: Path) -> Path:
             "skipped": skipped,
             "validation": "unavailable",
             "kept_previous": True,
+            "prompt_route_warnings": prompt_route_warnings,
         }
         try:
             atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
@@ -456,6 +469,7 @@ def compile_action_rules(vault: Path) -> Path:
         "rules_compiled": len(compiled_ids),
         "skipped": skipped,
         "unmatched_patterns": unmatched_patterns,
+        "prompt_route_warnings": prompt_route_warnings,
     }
     try:
         atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -264,6 +265,157 @@ def _embed(texts: list[str]) -> list[list[float]]:
 
 def _embed_one(text: str) -> list[float]:
     return _embed([text])[0]
+
+
+DEDUP_TOP_K = 5
+"""Сколько кандидатов просим у поиска. Ручкой НЕ становится (I-35): влияет на
+цену запроса, а не на шум."""
+
+DEDUP_CONTAINMENT_MIN = 0.5
+"""Порог лексического покрытия. Замер 26.08 на 250 случайных нотах живого
+vault (1465 нот): `containment >= 0.5` вместе с `_in_both` срабатывает на 4,4 %
+записей; 0,4 даёт 17,6 % (без `_in_both`), 0,6 — 1,6 %. Голый `_in_both` при
+режиме `any` — 52,0 %, то есть беспороговый признак негоден. Порог по
+РАССТОЯНИЮ негоден тоже: p1=0,396, p50=0,588, и на нижнем хвосте сидят не
+дубли, а архивные handoff'ы разных проектов (§5.3)."""
+
+DEDUP_MAX_SHOWN = 2
+"""Сколько путей печатаем. Больше двух — хвост ответа, который перестают
+читать (§12, риск 11)."""
+
+_DEDUP_MIN_ENV = "SYMBIOSIS_BRAIN_DEDUP_MIN"
+_DEDUP_MAX_SHOWN_ENV = "SYMBIOSIS_BRAIN_DEDUP_MAX_SHOWN"
+
+_DEDUP_ENV_CACHE: dict[str, object] = {}
+"""Ручки читаются ОДИН раз на процесс (I-35, образец I-5). Тесты очищают этот
+словарь; в рантайме он живёт до конца процесса."""
+
+_DEDUP_WORD = re.compile(r"[0-9A-Za-zЀ-ӿ]+")
+"""Цифры, латиница, кириллица U+0400..U+04FF; всё прочее — разделитель."""
+
+_DEDUP_STOP = frozenset({
+    "the", "a", "an", "of", "for", "and", "to", "in", "on", "is",
+    "не", "и", "в", "на", "по", "с", "для", "что", "как", "это", "из", "за",
+})
+
+
+def _dedup_tokens(text: str) -> frozenset[str]:
+    """Нормализованные токены `title + gist` (I-24, дословно из §5.3).
+
+    Порядок операций зафиксирован и является частью контракта: `findall` →
+    фильтр `len(t) > 2` по СЫРОМУ токену → `lower()` → отсев по стоп-листу.
+    Стемминга нет, нормализации Unicode нет, дедупликация — обычным set.
+    Именно этот код дал таблицу частот §5.3; тест детерминированности в
+    tests/test_search.py существует для того, чтобы «улучшение» нормализации
+    краснело, а не сдвигало частоту срабатывания молча."""
+    return frozenset(
+        t.lower() for t in _DEDUP_WORD.findall(text or "")
+        if len(t) > 2 and t.lower() not in _DEDUP_STOP
+    )
+
+
+def containment(a: frozenset[str], b: frozenset[str]) -> float:
+    """|A ∩ B| / min(|A|, |B|); 0.0 при пустой стороне (I-24).
+
+    Не Jaccard: короткий гист-дубль длинной ноты обязан давать высокое
+    покрытие, а Jaccard наказал бы его за разницу длин."""
+    smaller = min(len(a), len(b))
+    if smaller == 0:
+        return 0.0
+    return len(a & b) / smaller
+
+
+def _dedup_min() -> float:
+    """Порог из окружения; `0` выключает сигнал целиком (I-35)."""
+    if "min" not in _DEDUP_ENV_CACHE:
+        value = DEDUP_CONTAINMENT_MIN
+        try:
+            parsed = float(os.environ.get(_DEDUP_MIN_ENV, ""))
+            if 0.0 <= parsed <= 1.0:
+                value = parsed
+        except (TypeError, ValueError):
+            pass  # нечитаемое значение = дефолт (fail-open, как у I-5)
+        _DEDUP_ENV_CACHE["min"] = value
+    return float(_DEDUP_ENV_CACHE["min"])
+
+
+def _dedup_max_shown() -> int:
+    """Сколько путей печатать; `0` тоже выключает (I-35)."""
+    if "max_shown" not in _DEDUP_ENV_CACHE:
+        value = DEDUP_MAX_SHOWN
+        try:
+            parsed = int(os.environ.get(_DEDUP_MAX_SHOWN_ENV, ""))
+            if parsed >= 0:
+                value = parsed
+        except (TypeError, ValueError):
+            pass
+        _DEDUP_ENV_CACHE["max_shown"] = value
+    return int(_DEDUP_ENV_CACHE["max_shown"])
+
+
+def _dedup_canonical(path: str | None) -> str:
+    """Путь для сравнения «это же я»: слэши вперёд, без `.md`."""
+    return (path or "").strip().replace("\\", "/").removesuffix(".md")
+
+
+def dedup_candidates(engine, storage, *, title: str, gist: str,
+                     self_path: str | None, top_k: int = DEDUP_TOP_K) -> list[dict]:
+    """Notes that look like duplicates of the one about to be written (I-23).
+
+    Returns at most DEDUP_MAX_SHOWN dicts {path, gist, containment}, sorted by
+    containment DESC. NEVER raises: this runs on the write path, and a hint is
+    never worth failing a save for (§5.4).
+
+    Two conditions, both required (§5.3): the candidate surfaced in BOTH search
+    halves (`_in_both`), and the lexical containment of the new note's
+    `title + gist` in the candidate's is at least the threshold. Bare `_in_both`
+    fired on 52 % of writes once the lexical half started ORing; a distance
+    threshold is useless on this embedder (p1=0.396 vs p50=0.588, and the low
+    tail is archived handoffs, not duplicates).
+
+    `storage` is the fallback source for a candidate's title/gist when the
+    engine returned rows without them; the search this function issues is NOT
+    logged — the journal knows exactly six retrieval paths (§2.1) and this is
+    not one of them.
+    """
+    try:
+        min_containment = _dedup_min()
+        max_shown = _dedup_max_shown()
+        if min_containment <= 0 or max_shown <= 0:
+            return []                       # I-35: 0 = выключено целиком
+        query = f"{title or ''} {gist or ''}".strip()
+        if not query:
+            return []
+        mine = _dedup_tokens(query)
+        if not mine:
+            return []
+        self_key = _dedup_canonical(self_path)
+        found: list[dict] = []
+        for hit in engine.search(query=query, scope=None, limit=top_k,
+                                 mode="gist", fts_mode=FTS_MODE_ANY):
+            path = hit.get("path") or ""
+            if not path or _dedup_canonical(path) == self_key:
+                continue
+            if not hit.get("_in_both"):
+                continue
+            their_title = hit.get("title") or ""
+            their_gist = hit.get("gist") or ""
+            if (not their_title or not their_gist) and storage is not None:
+                note = storage.get_note(path) or {}
+                fm = note.get("frontmatter") or {}
+                their_title = their_title or (note.get("title") or "")
+                if not their_gist and isinstance(fm, dict):
+                    their_gist = str(fm.get("gist") or "")
+            score = containment(mine, _dedup_tokens(f"{their_title} {their_gist}"))
+            if score < min_containment:
+                continue
+            found.append({"path": path, "gist": their_gist, "containment": score})
+        found.sort(key=lambda c: (-c["containment"], c["path"]))
+        return found[:max_shown]
+    except Exception:
+        # Fail-open, and quiet: the caller prints nothing when we return [].
+        logger.debug("dedup_candidates: skipped", exc_info=True)
+        return []
 
 
 class SearchEngine:

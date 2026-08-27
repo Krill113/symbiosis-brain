@@ -16,7 +16,12 @@ from mcp.types import TextContent, Tool
 from symbiosis_brain import provenance
 from symbiosis_brain import retrieval_log
 from symbiosis_brain.graph import GraphTraverser
-from symbiosis_brain.search import FTS_MODE_ANY, SearchEngine, _reindex_lock
+from symbiosis_brain.search import (
+    FTS_MODE_ANY,
+    SearchEngine,
+    _reindex_lock,
+    dedup_candidates,
+)
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VAULT_DIRS, SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
@@ -378,6 +383,38 @@ def _write_counter(canonical: str, broken_before: int) -> str:
     return f"\n\n[counter] wrote=1 broken_added={broken_added} orphans_now={orphans_now}"
 
 
+_DEDUP_GIST_MAX = 80
+"""Сколько символов чужого гиста печатаем в подсказке (I-25)."""
+
+
+def _dedup_line(*, title: str, gist: str, self_path: str) -> str:
+    """The optional `[dedup]` hint appended to a brain_write response (I-25).
+
+    Computed STRICTLY BEFORE the note is written: afterwards the note would be
+    its own top-1 hit (§5.1). It is a warning, never a block — a duplicate
+    check that could refuse a save would race the contradiction detector and
+    break the "precision-first, never blocking" principle (§5.4). It also never
+    starts with `Error: `: that prefix already means "the server refused" to
+    hooks/brain-save-marker.sh:40, which would then skip the save marker.
+
+    Any failure yields "" — the response simply carries no hint.
+    """
+    try:
+        found = dedup_candidates(
+            _search, _storage, title=title, gist=gist, self_path=self_path,
+        )
+        if not found:
+            return ""
+        parts = [
+            f"{c['path']} — {' '.join((c.get('gist') or '').split())[:_DEDUP_GIST_MAX]}"
+            for c in found
+        ]
+        return "\n\n[dedup] похоже на: " + "; ".join(parts)
+    except Exception:
+        logger.debug("dedup hint skipped", exc_info=True)
+        return ""
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
@@ -736,6 +773,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         canonical = arguments["path"].removesuffix(".md")
         broken_before = _storage.count_broken_outgoing(canonical)
 
+        # [dedup] считается СТРОГО до записи: после неё сама нота станет своим
+        # же top-1 (§5.1). Гист берётся из АРГУМЕНТА вызова: при перезаписи, где
+        # gist не передан и подтягивается слиянием frontmatter (CP-4), запрос
+        # сужается до заголовка — это принятая цена, а не дефект.
+        dedup_hint = _dedup_line(
+            title=arguments["title"],
+            gist=arguments.get("gist") or "",
+            self_path=arguments["path"],
+        )
+
         # brain_write is read-modify-write now (read the note's own frontmatter ->
         # merge -> render -> write), so the whole cycle needs the per-note lock —
         # the same reason brain_append (server.py:714) and brain_patch
@@ -773,6 +820,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if note_count > 0 and note_count % 25 == 0:
                 msg += (f"\n\n(Vault has {note_count} notes."
                         " Consider reviewing for duplicates.)")
+        msg += dedup_hint
         msg += _write_counter(canonical, broken_before)
         return [TextContent(type="text", text=msg)]
 

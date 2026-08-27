@@ -9,8 +9,8 @@ and its rules are all consequences of a measurement, not taste:
   (§12, risk 16: a second checkpointing writer is the WAL-Reset precondition);
 * one short BEGIN IMMEDIATE transaction per event, never inside someone
   else's (§2.4 п. 2);
-* no batching at all — serve force-exits through os._exit(0)
-  (server.py:1028-1030) and a buffer would die with it (§2.4 п. 3);
+* no batching at all — `serve`'s shutdown path (`_run_server`) force-exits
+  through `os._exit(0)` and a buffer would die with it (§2.4 п. 3);
 * fail-open with a COUNTED skip (§2.4 п. 4): SQLITE_BUSY costs one retry and a
   counter, only a structural error disables the writer for the process, and
   the counter is persisted so `brain-cli report` — a different process — can
@@ -98,8 +98,8 @@ _INSERT_HIT = (
 )
 
 # Atomic increment without a read (§2.4 п. 4). UPSERT needs SQLite >= 3.24;
-# the live build is 3.50.4 and serve logs its version on every start
-# (server.py:104).
+# the live build is 3.50.4 and `_init` logs its version once at the top of
+# every start.
 _UPSERT_SKIPPED = (
     "INSERT INTO schema_version (key, version) VALUES (?, ?)"
     " ON CONFLICT(key) DO UPDATE SET version = version + excluded.version"
@@ -229,7 +229,7 @@ def record_read(ctx: LogContext, *, note_path: str, latency_ms: int) -> None:
     never asked anything), one hit row with score NULL and in_both 0.
     A MISS is not a read and does not come here — the branch logs it through
     `record(..., hits=[])` so that "searched and found nothing" stays
-    distinguishable from "did not search" (I-4, server.py:555-556).
+    distinguishable from "did not search" (I-4, brain_read's not-found branch).
     """
     if not is_enabled():
         return
@@ -243,8 +243,8 @@ def record_read(ctx: LogContext, *, note_path: str, latency_ms: int) -> None:
 def record_context(ctx: LogContext, *, entity: str, n_returned: int,
                    latency_ms: int) -> None:
     """brain_context: no hit rows at all — it returns a graph, not notes
-    (§2.1, row 3). n_returned carries the neighbour count, including 0 for the
-    early exit on an unknown entity (server.py:742-743)."""
+    (§2.1, row 3). n_returned carries the neighbour count, including 0 for
+    brain_context's own early exit on an unknown entity."""
     if not is_enabled():
         return
     _write_event(
@@ -258,8 +258,9 @@ def close() -> None:
     """Flush point (в) of §2.4 п. 4, plus connection teardown.
 
     The hook entry points call this in `finally`; `serve` cannot rely on it
-    (os._exit(0), server.py:1028-1030), which is exactly why point (а) — the
-    delta riding along with the next successful insert — carries the weight.
+    (`_run_server`'s shutdown path force-exits through `os._exit(0)`), which is
+    exactly why point (а) — the delta riding along with the next successful
+    insert — carries the weight.
     """
     global _conn, _conn_path, _skipped_pending
     conn, path = _conn, _conn_path
@@ -300,8 +301,10 @@ def _hit_rows(hits) -> list[tuple]:
 def _connect(db_path: Path) -> sqlite3.Connection:
     """The writer's own connection, cached per process and per db file.
 
-    check_same_thread=False: the process is multi-threaded and the write comes
-    from the same threads as the search (server.py:979). isolation_level=None:
+    check_same_thread=False: the process is multi-threaded — `_background_init`
+    runs `_init` (indexing included) via `asyncio.to_thread` alongside the
+    asyncio tool-call thread — and the write can come from either one.
+    isolation_level=None:
     we drive the transaction ourselves. busy_timeout is 2 s against Storage's
     30 s — the log gives up first. wal_autocheckpoint=0 keeps checkpointing to
     the single Storage connection (§12, risk 16).

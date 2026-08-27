@@ -167,11 +167,11 @@ def _init(vault_path: Path):
         logger.warning("Vault sync skipped %s: %s", rel_path, reason)
 
     # Retrieval-log rotation (I-11). Placement is deliberate: right after
-    # sync_all and BEFORE the embedding-model block, which returns early on
-    # two of its three branches (server.py:146,153). try/except is on the CALL
-    # SITE because an exception out of _init is caught by _background_init
-    # (server.py:976-984), logged into serve.log that nobody reads, and the
-    # rest of _init — the whole vec-index maintenance — is skipped (§2.6).
+    # sync_all and BEFORE the embedding-model block below, which returns early
+    # on two of its three branches. try/except is on the CALL SITE because an
+    # exception out of _init is caught by _background_init, logged into
+    # serve.log that nobody reads, and the rest of _init — the whole vec-index
+    # maintenance — is skipped (§2.6).
     try:
         _rotate_retrieval_log(db_path)
     except Exception:
@@ -618,10 +618,11 @@ async def list_tools() -> list[Tool]:
 
 # --- brain_write: frontmatter merge (I-13, §3.5) -----------------------------
 # The tool's ARGUMENT names are not the frontmatter KEY names, and the gap is
-# silent: the tool calls the note type `note_type` (server.py:363) while the file
-# calls it `type` (markdown_parser.py:193-196). A `"type" in arguments` check is
-# therefore ALWAYS false, and without this mapping the type would never be taken
-# from the call at all. Presence is checked by ARGUMENT name, merging and erasing
+# silent: the brain_write tool schema calls the note type `note_type` while the
+# file calls it `type` (markdown_parser.merge_frontmatter's own docstring). A
+# `"type" in arguments` check is therefore ALWAYS false, and without this
+# mapping the type would never be taken from the call at all. Presence is
+# checked by ARGUMENT name, merging and erasing
 # work by KEY name. A new frontmatter-bearing argument of brain_write means a new
 # line here — otherwise the field silently loses its link to the call.
 ARG_TO_FM = {
@@ -786,8 +787,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # brain_write is read-modify-write now (read the note's own frontmatter ->
         # merge -> render -> write), so the whole cycle needs the per-note lock —
-        # the same reason brain_append (server.py:714) and brain_patch
-        # (server.py:768) have one. Inside the lock the write goes through
+        # the same reason brain_append's and brain_patch's own `with
+        # note_write_lock(...)` blocks have one. Inside the lock the write goes through
         # _write_note_body_unlocked, never _write_note_body, which would take the
         # lock a second time. The file is read strictly AFTER is_relative_to:
         # reading an unvalidated path would make brain_write an arbitrary-file-read
@@ -971,8 +972,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         _ctx_ms = int((time.perf_counter() - _ctx_t0) * 1000)
         # One call covers both outcomes: n_returned carries the neighbour
-        # count, so the early exit below is logged as 0 without a second
-        # branch (I-4, server.py:742-743). No hit rows at all — brain_context
+        # count, so the "no connections found" early exit below is logged as 0
+        # without a second branch (I-4). No hit rows at all — brain_context
         # returns a graph, not notes (§2.1, row 3).
         _ctx = _log_ctx("mcp_context")
         if _ctx is not None:
@@ -1189,8 +1190,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
 
     elif name == "brain_report":
-        # Imported inside the branch, like brain_rename (server.py:869): the module
-        # is only needed when the tool is actually called.
+        # Imported inside the branch, like brain_rename's own `from
+        # symbiosis_brain.refactor import brain_rename`: the module is only
+        # needed when the tool is actually called.
         from symbiosis_brain import report as _report
         full = bool(arguments.get("full", False))
         data = _report.build_report(

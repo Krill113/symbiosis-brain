@@ -42,3 +42,17 @@ class TestAtomicWriteText:
         target = tmp_path / "nested" / "deep" / "note.md"
         atomic_write_text(target, "hi")
         assert target.read_text(encoding="utf-8") == "hi"
+
+    def test_fsyncs_the_temp_file_before_replace(self, tmp_path: Path, monkeypatch):
+        """A crash between write and rename must not leave a zero-filled target:
+        the temp file is flushed and fsync-ed before os.replace (2026-08-27: a
+        sudden reboot turned a 45 KB note into 45 KB of NUL bytes)."""
+        import os as _os
+        calls: list[str] = []
+        real_fsync, real_replace = _os.fsync, _os.replace
+        monkeypatch.setattr(_os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd)) and None)
+        monkeypatch.setattr(_os, "replace", lambda a, b: (calls.append("replace"), real_replace(a, b)) and None)
+        target = tmp_path / "note.md"
+        atomic_write_text(target, "body")
+        assert target.read_text(encoding="utf-8") == "body"
+        assert "fsync" in calls and calls.index("fsync") < calls.index("replace")

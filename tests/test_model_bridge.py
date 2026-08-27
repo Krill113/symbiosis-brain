@@ -284,6 +284,15 @@ def test_session_start_reaps_stale_bridge_files(tmp_path):
     env["PATH"] = str(stub_dir) + os.pathsep + env.get("PATH", "")
     env["SYMBIOSIS_BRAIN_RULES_ENABLED"] = "false"
     env.pop("SYMBIOSIS_BRAIN_VAULT", None)
+    # force: without this, a real `uv` on PATH plus a real $SYMBIOSIS_BRAIN_TOOLS
+    # (both routine in a dev shell) let the hook's background prewarm block open
+    # a live vault's brain.db the moment HOME/symbiosis-brain-vault happens to
+    # exist (tests/test_action_rules.py:276 uses the same guard).
+    env.pop("SYMBIOSIS_BRAIN_TOOLS", None)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
     # .as_posix(): brain-session-start.sh derives its own dir from
     # ${BASH_SOURCE[0]%/*} to source sb-hooklib.sh; MSYS bash does not translate a
     # backslash-separated argv path, so %/* strips nothing and the source silently

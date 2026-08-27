@@ -173,3 +173,119 @@ class TestRenderNote:
         assert "scope: global" in result
         assert "tags:" in result
         assert "## Content" in result
+
+
+import frontmatter as _fm  # noqa: E402 — секция CP-4, импорт рядом с её тестами
+
+from symbiosis_brain.markdown_parser import merge_frontmatter  # noqa: E402
+
+
+class TestMergeFrontmatter:
+    """I-13: чистая функция «ключи existing, которых НЕТ в incoming»."""
+
+    def test_returns_only_keys_absent_from_incoming(self):
+        existing = {
+            "title": "Old Title", "type": "wiki", "scope": "global",
+            "umbrella": "alpha", "aliases": ["ALPHA"], "created_at": "2026-01-01",
+        }
+        incoming = {"type": "decision", "scope": "beta"}
+        assert merge_frontmatter(existing, incoming) == {
+            "title": "Old Title",
+            "umbrella": "alpha",
+            "aliases": ["ALPHA"],
+            "created_at": "2026-01-01",
+        }
+
+    def test_never_returns_written_by(self):
+        """Штамп всегда перезаписывается сервером (§3.1): вернуть старый — значит
+        воскресить чужую подпись под новой записью."""
+        existing = {"written_by": "oldclient/0.0.1 old-model-1 2026-01-01",
+                    "umbrella": "alpha"}
+        assert merge_frontmatter(existing, {}) == {"umbrella": "alpha"}
+        assert merge_frontmatter(existing, {"written_by": "x"}) == {"umbrella": "alpha"}
+
+    def test_substitutes_no_defaults(self):
+        assert merge_frontmatter({}, {}) == {}
+        assert merge_frontmatter({}, {"type": "wiki"}) == {}
+
+    def test_renames_nothing(self):
+        """`note_type` — имя АРГУМЕНТА тула; ключей с таким именем функция не знает."""
+        assert merge_frontmatter({"type": "wiki"}, {"note_type": "decision"}) == {"type": "wiki"}
+
+    def test_does_not_mutate_its_arguments(self):
+        existing = {"umbrella": "alpha", "written_by": "oldclient/0.0.1 old-model-1 2026-01-01"}
+        incoming = {"scope": "beta"}
+        merge_frontmatter(existing, incoming)
+        assert existing == {"umbrella": "alpha",
+                            "written_by": "oldclient/0.0.1 old-model-1 2026-01-01"}
+        assert incoming == {"scope": "beta"}
+
+
+class TestRenderNotePreserved:
+    """I-13: `preserved` вливается ПЕРЕД `extra_frontmatter`; tags=None ≠ tags=[]."""
+
+    def test_preserved_keys_survive_the_render(self):
+        out = render_note(
+            title="T", body="B", note_type="wiki", scope="global",
+            preserved={"umbrella": "alpha", "aliases": ["ALPHA"],
+                       "created_at": "2026-01-01"},
+        )
+        meta = _fm.loads(out).metadata
+        assert meta["umbrella"] == "alpha"
+        assert meta["aliases"] == ["ALPHA"]
+        assert meta["created_at"] == "2026-01-01"
+
+    def test_extra_frontmatter_overrides_preserved(self):
+        """Это и есть механизм перезаписи старой подписи (I-13): порядок
+        «preserved, затем extra_frontmatter» обязателен."""
+        out = render_note(
+            title="T", body="B",
+            preserved={"written_by": "oldclient/0.0.1 old-model-1 2026-01-01",
+                       "gist": "old gist"},
+            extra_frontmatter={"written_by": "testclient/9.9.9 test-model-9 2026-01-02",
+                               "gist": "new gist"},
+        )
+        meta = _fm.loads(out).metadata
+        assert meta["written_by"] == "testclient/9.9.9 test-model-9 2026-01-02"
+        assert meta["gist"] == "new gist"
+
+    def test_preserved_supplies_type_and_scope_over_the_defaults(self):
+        """Ядро дефекта B4: перезапись без note_type/scope больше не сбрасывает
+        ноту в wiki/global — значение берётся из файла."""
+        out = render_note(
+            title="T", body="B", note_type="wiki", scope="global",
+            preserved={"type": "decision", "scope": "beta"},
+        )
+        meta = _fm.loads(out).metadata
+        assert meta["type"] == "decision"
+        assert meta["scope"] == "beta"
+
+    def test_preserved_never_overrides_title(self):
+        """`title` — обязательный параметр функции и `required` в схеме тула
+        (server.py:370), поэтому в `preserved` его быть не может; если он туда
+        всё же попал, побеждает аргумент вызова, а не старый файл."""
+        out = render_note(title="New Title", body="B",
+                          preserved={"title": "Old Title"})
+        assert _fm.loads(out).metadata["title"] == "New Title"
+
+    def test_tags_none_takes_the_preserved_tags(self):
+        out = render_note(title="T", body="B", tags=None,
+                          preserved={"tags": ["alpha", "beta"]})
+        assert _fm.loads(out).metadata["tags"] == ["alpha", "beta"]
+
+    def test_tags_empty_list_clears_the_key(self):
+        out = render_note(title="T", body="B", tags=[],
+                          preserved={"tags": ["alpha", "beta"]})
+        assert "tags" not in _fm.loads(out).metadata
+
+    def test_tags_non_empty_wins_over_preserved(self):
+        out = render_note(title="T", body="B", tags=["gamma"],
+                          preserved={"tags": ["alpha"]})
+        assert _fm.loads(out).metadata["tags"] == ["gamma"]
+
+    def test_preserved_none_is_todays_behaviour(self):
+        out = render_note(title="T", body="B", note_type="wiki", scope="global",
+                          tags=["x"], extra_frontmatter={"gist": "g"})
+        meta = _fm.loads(out).metadata
+        assert meta == {"title": "T", "type": "wiki", "scope": "global",
+                        "tags": ["x"], "gist": "g"}

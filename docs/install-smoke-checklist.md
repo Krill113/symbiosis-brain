@@ -15,7 +15,9 @@ For each platform:
 1. [ ] `uv tool install symbiosis-brain`
 2. [ ] `symbiosis-brain --help` lists `serve`, `setup`, `doctor`, `uninstall`
 3. [ ] `symbiosis-brain setup claude-code` — answer with default vault path
-4. [ ] Verify: `~/.claude/settings.json` contains hooks block + statusLine + ≥7 permissions
+4. [ ] Verify: `~/.claude/settings.json` contains hooks block + statusLine + the full
+       SB_PERMISSIONS allowlist (14 `mcp__symbiosis-brain__*` names) — `symbiosis-brain
+       doctor` names the missing ones
 5. [ ] Verify: `~/.claude/CLAUDE.md` ends with `<!-- symbiosis-brain v1: global -->`
 6. [ ] Verify: `~/symbiosis-brain-vault/` has full folder structure + README.md + scope-taxonomy.md
 7. [ ] Restart Claude Code in any directory
@@ -55,10 +57,11 @@ the last step, not a step in the middle.
        fix the lexical half was empty on 94.3 % of such queries).
 4. [ ] Edit any file in a project → the `[recall: …]` block appears; the database has a row
        `retrieval_event(source='hook_pre_action', origin='main', e2e_ms IS NOT NULL)`.
-5. [ ] Start a subagent → a row with `tool IN ('Task','Agent')`. `origin` is whatever the CP-3
-       preflight settled on (00-plan §2 Ф5), not a value this checklist gets to demand: the hint
-       is injected by a PreToolUse hook, and whose process runs it is exactly what the preflight
-       measures. Record the value you actually see.
+5. [ ] Start a subagent → a row with `tool IN ('Task','Agent')` and `origin='subagent'`.
+       The signal is a non-empty `agent_id` in the PreToolUse payload (`detect_origin`,
+       retrieval_log.py), not a `subagents` segment in `transcript_path` — the CP-3
+       preflight (2026-08-27, `review/preflight-step-b/README.md`) measured that
+       hypothesis false: session_id/transcript_path are always the PARENT's.
 6. [ ] `brain_write` a scratch note → the file carries
        `written_by: claude-code/<ver> <model> <date>` and the model is **not** `unknown` (if it is,
        the bridge is not working); the response carries `[counter]`, and `[dedup]` only if a similar

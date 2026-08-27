@@ -184,7 +184,7 @@ def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
     itself is untouched: it stays in the hit dict and in the journal.
     This is the ONLY surface that prints ★ — the prompt-path [memory:] block is
     rendered by `_shape_hits` (`__main__.py:223-237`) and has no stars at all.
-    See [[decisions/2026-08-26-recall-strength-mark]].
+    See the owner-side decision record on the strength mark (2026-08-26).
     """
     if not hits:
         return ""

@@ -464,7 +464,7 @@ def test_the_report_stays_quiet_about_a_rebuild_that_did_not_happen():
     assert "reindex" not in text
 
 
-# ---------- CP-8b follow-up: reindex timer excludes lock wait (K.D. 2026-08-27) ----------
+# ---------- CP-8b follow-up: reindex timer excludes lock wait (owner decision, 2026-08-27) ----------
 #
 # meta["reindex_seconds"] used to be perf_counter() wrapped around the whole
 # open_engine() call — the dimension-probe embed, up to 180s of waiting for a

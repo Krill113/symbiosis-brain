@@ -475,3 +475,65 @@ async def test_brain_rename_does_not_stamp_the_sources_it_rewrites(
     })
     meta = _meta(tmp_vault_with_taxonomy, "wiki/rename-source.md")
     assert meta["written_by"] == "oldclient/0.0.1 old-model-1 2026-01-01"
+
+
+async def test_rewrite_over_unparsable_frontmatter_degrades_instead_of_crashing(
+    initialized_server, tmp_vault_with_taxonomy: Path, stub_provenance,
+):
+    """A1 (F4+F5+F6): a stray colon in `gist:` makes python-frontmatter raise
+    `yaml.YAMLError` on load. Before this test, that exception was uncaught, so
+    the only write path into the vault (brain_write) could never repair the note
+    it came from — the tool just crashed. The fix degrades to before-Stage-2
+    behaviour: nothing preserved, a clean rewrite, a warning in the response."""
+    await _seed("wiki/bad-colon.md")
+    note = tmp_vault_with_taxonomy / "wiki" / "bad-colon.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "gist: seeded note", "gist: fix: colon"
+        ),
+        encoding="utf-8",
+    )
+    text = await _call("brain_write", {
+        "path": "wiki/bad-colon.md", "title": "Fixed", "body": "New body",
+        "note_type": "wiki", "scope": "global", "gist": "rewritten clean",
+    })
+    assert text.startswith("Saved:"), text
+    assert "unparsable" in text
+    meta = _meta(tmp_vault_with_taxonomy, "wiki/bad-colon.md")
+    assert meta["title"] == "Fixed"
+    assert meta["gist"] == "rewritten clean"
+
+
+async def test_rewrite_over_unclosed_flow_sequence_degrades_instead_of_crashing(
+    initialized_server, tmp_vault_with_taxonomy: Path, stub_provenance,
+):
+    """Same defect, second yaml.YAMLError shape: an unclosed `tags: [a, b`."""
+    await _seed("wiki/bad-brackets.md")
+    note = tmp_vault_with_taxonomy / "wiki" / "bad-brackets.md"
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "gist: seeded note", "gist: seeded note\ntags: [a, b"
+        ),
+        encoding="utf-8",
+    )
+    text = await _call("brain_write", {
+        "path": "wiki/bad-brackets.md", "title": "Fixed", "body": "New body",
+        "note_type": "wiki", "scope": "global", "gist": "rewritten clean",
+    })
+    assert text.startswith("Saved:"), text
+    assert "unparsable" in text
+
+# NOTE (A2 scope boundary, found during verification): a *pre-existing* note
+# whose frontmatter already has a literal `content:` or `handler:` key cannot be
+# used for an end-to-end brain_write regression test of A2, because reading it
+# back — `frontmatter.loads(file_path.read_text(...))`, the very call A1 wraps
+# above — already raises `TypeError` on that read, independently of render_note.
+# `frontmatter.loads`/`load` end in `Post(content, handler, **metadata)`
+# (frontmatter/__init__.py), the exact same positional-argument collision as
+# render_note's old `Post(body, **meta)` — but on the READ side, in a third-party
+# call this project does not control, and shared by every other frontmatter.loads
+# caller (sync.py's parse_note, brain_append, brain_patch). That is a distinct,
+# pre-existing defect outside A1/A2's accepted scope, not a regression from this
+# branch. A2 itself is covered directly (render_note unit test above, in
+# test_markdown_parser.py) and via test_rewrite_keeps_unknown_frontmatter_keys
+# for the general "preserve unknown keys through brain_write" path.

@@ -35,6 +35,7 @@ from symbiosis_brain.parent_watchdog import start_parent_watchdog
 from symbiosis_brain.sqlite_health import sqlite_warning
 
 import frontmatter
+import yaml
 
 logger = logging.getLogger("symbiosis-brain")
 
@@ -793,11 +794,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # primitive (§3.5).
         with note_write_lock(_vault_path, arguments["path"]):
             preserved: dict = {}
+            unparsable_frontmatter = False
             if file_path.exists():
-                existing = dict(
-                    frontmatter.loads(file_path.read_text(encoding="utf-8")).metadata
-                )
-                preserved = merge_frontmatter(existing, incoming)
+                # A hand-edited or pre-Stage-2 note can have frontmatter that does
+                # not parse at all (a stray colon in a `gist:` line, an unclosed
+                # `tags: [`, …). Before this guard that raised straight out of the
+                # tool, and MCP was the ONLY write path into the vault for an
+                # agent — so a note in this state could never be fixed through it
+                # (F4+F5+F6). Same exception list as sync.py's per-note catch.
+                try:
+                    existing = dict(
+                        frontmatter.loads(file_path.read_text(encoding="utf-8")).metadata
+                    )
+                    preserved = merge_frontmatter(existing, incoming)
+                except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
+                    unparsable_frontmatter = True
+                    logger.warning(
+                        "brain_write: existing frontmatter unparsable, not preserved: %s",
+                        arguments["path"],
+                    )
             md_content = render_note(
                 title=arguments["title"],
                 body=arguments["body"],
@@ -815,6 +830,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         msg = f"Saved: {arguments['path']}"
         if warnings:
             msg += "\n\nwarnings: " + "; ".join(w.message for w in warnings)
+        if unparsable_frontmatter:
+            msg += ("\n\nwarning: existing frontmatter was unparsable — its fields"
+                    " were not preserved")
         if is_new:
             note_count = _storage.count_notes()
             if note_count > 0 and note_count % 25 == 0:

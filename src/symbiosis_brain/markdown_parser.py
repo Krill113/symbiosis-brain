@@ -243,5 +243,13 @@ def render_note(title: str, body: str, note_type: str = "wiki", scope: str = "gl
     if extra_frontmatter:
         meta.update(extra_frontmatter)
 
-    post = frontmatter.Post(body, **meta)
+    # Not frontmatter.Post(body, **meta): `Post.__init__(self, content, handler=None,
+    # **metadata)` treats a `content`/`handler` KEY as ITS OWN parameter, not as a
+    # frontmatter field — a preserved third-party `content:` key raises TypeError
+    # ("multiple values for argument 'content'") and a preserved `handler:` key
+    # silently swaps the serializer instead of becoming a frontmatter line (A2).
+    # Setting `.metadata` after construction keeps every key an ordinary field,
+    # whatever it is named.
+    post = frontmatter.Post(body)
+    post.metadata = meta
     return frontmatter.dumps(post) + "\n"

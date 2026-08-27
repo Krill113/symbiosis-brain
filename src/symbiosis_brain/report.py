@@ -247,18 +247,24 @@ def build_report(storage, vault_path, *, days=30, scope=None, top=10) -> dict:
         created_age = _age_days(note["created_at"], now)
         updated_age = _age_days(note["updated_at"], now)
         reasons: list[str] = []
-        # Day-granularity, not raw datetime comparison: two notes stamped with the
-        # same days-ago value can differ by microseconds (two separate _now()
-        # calls), which would make an exact "updated <= created" comparison miss
-        # a note that was in fact never edited. The report already speaks in
-        # whole days everywhere else (Р6.1), so "as old or older, to the day" is
-        # the right resolution for "never edited since creation".
+        # Exact timestamps, not day-granularity (A10): flooring both ages to
+        # whole days first made "never edited" flicker on for ~24h minus the
+        # real edit gap, once a day, for ANY note edited soon after creation —
+        # created_age and updated_age floor to the SAME integer whenever the
+        # true gap between the two timestamps is under a day (the common case),
+        # even though updated_at is strictly later than created_at. In
+        # production storage.upsert_note stamps both from the SAME `now` on a
+        # genuine first write, so `updated_dt <= created_dt` is exact and never
+        # flickers. `created_age` (days, for the display threshold below) is
+        # unaffected — only the equality check moves to raw timestamps.
         # §6.3, age filter: "never edited since it was created" only counts for a
         # note older than 30 days. Without it the first report of a fresh install
         # proposes to archive everything the owner wrote yesterday.
-        if (created_age is not None and updated_age is not None
-                and updated_age >= created_age
-                and created_age >= ARCHIVE_MIN_AGE_DAYS):
+        created_dt = _parse_ts(note["created_at"])
+        updated_dt = _parse_ts(note["updated_at"])
+        if (created_dt is not None and updated_dt is not None
+                and updated_dt <= created_dt
+                and created_age is not None and created_age >= ARCHIVE_MIN_AGE_DAYS):
             reasons.append("never_edited")
         if updated_age is not None and updated_age > ARCHIVE_STALE_DAYS:
             reasons.append("stale")

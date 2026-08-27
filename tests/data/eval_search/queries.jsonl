@@ -1,0 +1,14 @@
+{"query": "redis cache eviction policy", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["decisions/cache-layer-choice.md"]}
+{"query": "почему выбрали kafka как брокер очереди", "source": "hook-prompt", "origin": "unknown", "scope": null, "lang": "ru", "shown": [], "read_after": [], "gold": ["decisions/queue-choice.md"]}
+{"query": "exponential backoff with jitter on retry", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["patterns/retry-backoff.md"]}
+{"query": "миграция схемы без простоя сервиса", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "ru", "shown": [], "read_after": [], "gold": ["patterns/migration-no-downtime.md"]}
+{"query": "timestamps saved without timezone caused drift", "source": "hook-pretool", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["mistakes/timezone-drift.md"]}
+{"query": "утечка соединений в пуле базы", "source": "hook-prompt", "origin": "unknown", "scope": null, "lang": "ru", "shown": [], "read_after": [], "gold": ["mistakes/connection-pool-leak.md"]}
+{"query": "quartz ingest конвейер", "source": "mcp-search", "origin": "unknown", "scope": "quartz", "lang": "mixed", "shown": [], "read_after": [], "gold": ["wiki/quartz-ingest.md"]}
+{"query": "basalt refresh token lifetime", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["wiki/basalt-auth.md"]}
+{"query": "размерность vector index tuning", "source": "hook-prompt", "origin": "unknown", "scope": null, "lang": "mixed", "shown": [], "read_after": [], "gold": ["research/vector-index-tuning.md"]}
+{"query": "how long do we keep logs", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["decisions/log-retention.md"]}
+{"query": "feature flag выкатка 10 процентов", "source": "hook-pretool", "origin": "unknown", "scope": null, "lang": "mixed", "shown": [], "read_after": [], "gold": ["patterns/feature-flag-rollout.md"]}
+{"query": "cron задача запустилась дважды", "source": "hook-prompt", "origin": "unknown", "scope": null, "lang": "ru", "shown": [], "read_after": [], "gold": ["mistakes/cron-double-run.md"]}
+{"query": "orchid scheduler quick start", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "en", "shown": [], "read_after": [], "gold": ["wiki/orchid-scheduler.md"]}
+{"query": "разделитель дробной части в другой локали", "source": "mcp-search", "origin": "unknown", "scope": null, "lang": "ru", "shown": [], "read_after": [], "gold": ["research/decimal-separator-locale.md"]}

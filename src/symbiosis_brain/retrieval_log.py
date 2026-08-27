@@ -156,31 +156,23 @@ def is_enabled(config=None) -> bool:
 def detect_origin(payload: dict | None) -> str:
     """'main' | 'subagent' | 'unknown' for a hook-path event (§2.5).
 
-    Signals, checked in order of evidence:
+    The one working signal is a non-empty `agent_id` in the hook payload —
+    measured live in the CP-3 preflight (review/preflight-step-b/README.md,
+    2026-08-27): the hook DOES run for a tool call made from inside a subagent
+    (Agent-tool sub-agent and workflow-subagent alike), and that payload
+    carries `agent_id`/`agent_type`, while a main-session payload carries
+    `agent_id: null`. `agent_type` is informational only (no DDL column).
 
-    1. `CLAUDE_CODE_CHILD_SESSION=1` — measured [замер лида, §2.5]: the
-       environment of a process spawned by a subagent carries it.
-    2. a non-empty `agent_id` in the hook payload — measured live in the CP-3
-       preflight (review/preflight-step-b/README.md, 2026-08-27, done by the
-       owner before this checkpoint). §2.5's ORIGINAL hypothesis for signal 2
-       — a `subagents` path segment inside `transcript_path` — was measured
-       FALSE there: `transcript_path` and `session_id` are ALWAYS the PARENT
-       session's, for a tool call from an Agent-tool subagent and from a
-       workflow-subagent alike (the hook DOES run for both; it just never
-       sees its own transcript). Per 00-plan §2 Р6 an unconfirmed hypothesis
-       is struck, not patched — and the same preflight named the signal that
-       actually works. `agent_type` (e.g. 'workflow-subagent') is
-       informational only: no DDL column exists for it and none is added on
-       this checkpoint.
-
-    NOT by session_id or transcript_path: both are the PARENT's, always (same
-    preflight). No payload at all means no channel, and that is 'unknown',
-    not a guessed 'main' (the legacy `_gist_search` path, §2.1).
+    NOT by `CLAUDE_CODE_CHILD_SESSION`: a main session launched through the
+    desktop/bridge carries that env var too, so the post-rollout smoke of
+    2026-08-27 saw every main-session event labelled 'subagent' until this
+    signal was dropped. NOT by session_id or transcript_path either: both are
+    ALWAYS the parent's (same preflight). No payload at all means no channel,
+    and that is 'unknown', not a guessed 'main' (the legacy `_gist_search`
+    path, §2.1).
     """
     if not isinstance(payload, dict):
         return "unknown"
-    if os.environ.get("CLAUDE_CODE_CHILD_SESSION") == "1":
-        return "subagent"
     agent_id = payload.get("agent_id")
     if isinstance(agent_id, str) and agent_id:
         return "subagent"

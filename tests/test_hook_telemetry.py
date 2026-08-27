@@ -37,11 +37,15 @@ def test_detect_origin_defaults_to_main(monkeypatch):
     assert retrieval_log.detect_origin({"session_id": "s-1"}) == "main"
 
 
-def test_detect_origin_env_signal_wins(monkeypatch):
-    """Signal 1 is MEASURED: a bash process spawned by a subagent carries
-    CLAUDE_CODE_CHILD_SESSION=1 [замер лида]. It is checked first."""
+def test_detect_origin_ignores_the_child_session_env(monkeypatch):
+    """CLAUDE_CODE_CHILD_SESSION=1 is NOT a subagent signal: a main session
+    launched through the desktop/bridge carries it too (post-rollout smoke
+    2026-08-27: every main-session event was labelled 'subagent'). Only the
+    payload's agent_id decides."""
     monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
-    assert retrieval_log.detect_origin({"session_id": "s-1"}) == "subagent"
+    assert retrieval_log.detect_origin({"session_id": "s-1"}) == "main"
+    assert retrieval_log.detect_origin(
+        {"session_id": "s-1", "agent_id": "aabbccdd1122"}) == "subagent"
 
 
 def test_detect_origin_ignores_other_values_of_the_env_signal(monkeypatch):

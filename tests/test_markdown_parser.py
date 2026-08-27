@@ -289,3 +289,30 @@ class TestRenderNotePreserved:
         meta = _fm.loads(out).metadata
         assert meta == {"title": "T", "type": "wiki", "scope": "global",
                         "tags": ["x"], "gist": "g"}
+
+    def test_preserved_content_and_handler_keys_do_not_break_the_call(self):
+        """A2 (F7+F19): `frontmatter.Post(body, **meta)` treats a `content` key as
+        a duplicate positional argument (TypeError) and a `handler` key as the
+        serializer to use (silently corrupts the file — `dumps()` on such a Post
+        prints the raw handler value instead of any frontmatter) — because
+        `Post.__init__` reads THOSE TWO NAMES off its own signature, not off the
+        frontmatter. A third-party key with either name (hand-edited, or carried
+        over from `preserved`) must become an ordinary frontmatter field instead.
+
+        Verified by string/YAML inspection, not `frontmatter.loads(out)`: that
+        call has the exact same `content`/`handler` collision baked into ITS OWN
+        signature (`loads(text, ..., handler=None, **defaults)` ends in
+        `Post(content, handler, **metadata)`), so reading back a note that
+        legitimately has either key as a frontmatter field is a separate,
+        pre-existing library limitation this test must not depend on.
+        """
+        import yaml
+
+        out = render_note(title="T", body="body text",
+                          preserved={"handler": "x", "content": "y"})
+        assert out.endswith("\n\nbody text\n")
+        front = out.split("---\n", 2)[1]
+        meta = yaml.safe_load(front)
+        assert meta["handler"] == "x"
+        assert meta["content"] == "y"
+        assert meta["title"] == "T"

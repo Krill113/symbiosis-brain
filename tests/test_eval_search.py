@@ -17,6 +17,7 @@ import importlib.util
 import json
 import math
 import sqlite3
+import struct
 import sys
 from pathlib import Path
 
@@ -572,6 +573,215 @@ def test_the_report_prints_rerank_model_and_prefixes_when_present():
     text = eval_search.render_report(payload)
     assert "rerank" in text and "fixture/candidate-reranker" in text
     assert "prefixes" in text and "query: " in text and "passage: " in text
+
+
+# ---------- CP-8b: E3 --normalize (lead pre-flight, fastembed 0.8.0) --------
+
+def test_normalize_flag_l2_normalises_indexed_vectors_and_the_query_embedder(tmp_path, monkeypatch):
+    """E3.1: fastembed 0.8.0 normalises the OUTPUT of only some models (measured
+    by the lead: bge-small 1.0000, the multilingual candidates 2.0-28), and
+    notes_vec is declared `vec0(path TEXT PRIMARY KEY, embedding FLOAT[N])`
+    without distance_metric (search.py:245-254) — sqlite-vec therefore scores
+    it by plain L2, so an unnormalised candidate is measured with a handicap.
+    The fake embedder here returns vectors whose norm depends on text length
+    (never already unit), so a passing assertion proves the wrapper rescaled
+    them rather than happening to already be normalised.
+
+    The query path is checked by calling sb_search._embed_one directly rather
+    than poking at search_vector's internals: after open_engine installs the
+    wrapper it IS the function search_vector calls, so its return value is the
+    same thing a real query embedding would produce."""
+    from symbiosis_brain import search as sb_search
+    from symbiosis_brain.storage import Storage
+
+    db = eval_search.prepare_work_dir(DATA_DIR / "vault", tmp_path / "work")
+    storage = Storage(db)
+    try:
+        engine = sb_search.SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+        def fake_embed(texts):
+            return [[float((len(t) + i) % 7) + 1.0 for i in range(8)] for t in texts]
+
+        monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+        monkeypatch.setattr(sb_search, "_embedder", None)
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+        eval_search._install_embed_wrappers(sb_search, None, None, True)
+        eval_search.rebuild_vector_index(engine, storage, model="fixture/model-eight")
+
+        rows = storage._conn.execute("SELECT embedding FROM notes_vec").fetchall()
+        assert rows, "rebuild_vector_index wrote nothing to notes_vec"
+        for (blob,) in rows:
+            floats = struct.unpack(f"<{len(blob) // 4}f", blob)
+            norm = math.sqrt(sum(x * x for x in floats))
+            assert math.isclose(norm, 1.0, abs_tol=1e-5), norm
+
+        queried = sb_search._embed_one("does the query wrapper normalise too")
+        q_norm = math.sqrt(sum(x * x for x in queried))
+        assert math.isclose(q_norm, 1.0, abs_tol=1e-5), q_norm
+    finally:
+        storage.close()
+
+
+def test_install_embed_wrappers_composes_doc_prefix_then_normalize(monkeypatch):
+    """E3.2: composition is prefix -> embed -> normalize. The fake embedder
+    records the exact text it was handed (proving the prefix ran BEFORE the
+    embed call) and always returns a fixed non-unit vector (proving the
+    rescale ran AFTER — on the model's output, not on its input)."""
+    from symbiosis_brain import search as sb_search
+
+    received: list[list[str]] = []
+
+    def fake_embed(texts):
+        texts = list(texts)
+        received.append(texts)
+        return [[3.0, 4.0] for _ in texts]   # norm 5, deliberately not unit
+
+    monkeypatch.setattr(sb_search, "_embed", fake_embed)
+    monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+    eval_search._install_embed_wrappers(sb_search, "query: ", "passage: ", True)
+
+    doc_vecs = sb_search._embed(["note body"])
+    assert received[-1] == ["passage: note body"], received[-1]
+    assert doc_vecs[0] == pytest.approx([0.6, 0.8])
+
+    query_vec = sb_search._embed_one("a question")
+    assert received[-1] == ["query: a question"], received[-1]
+    assert query_vec == pytest.approx([0.6, 0.8])
+
+
+def test_normalize_without_a_model_is_an_eval_error(tmp_path):
+    """E3.3: --normalize rewrites the embedder that --model itself swaps in;
+    without --model the installed index still holds raw vectors, and
+    normalising only the query would compare unlike with unlike."""
+    with pytest.raises(eval_search.EvalError, match="normalize"):
+        eval_search.run_eval(
+            vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+            queries=DATA_DIR / "queries.jsonl",
+            config_names=["fts-any"], normalize=True)
+
+
+def test_normalize_flag_defaults_to_off_and_leaves_meta_untouched(tmp_path):
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["fts-any"])
+    assert "normalize" not in payload["meta"]
+    assert payload["results"][0]["config"] == "fts-any"
+
+
+def test_normalize_flag_appends_a_label_suffix_after_prefixed_and_sets_meta(
+        tmp_path, monkeypatch, synthetic_engine):
+    """E3.4: the label carries +norm AFTER +prefixed (lead directive example:
+    hybrid-any+multilingual-e5-large+prefixed+norm), and meta.normalize is
+    written only when the flag is actually on."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — there is no index to rebuild")
+
+    from symbiosis_brain import search as sb_search
+
+    def fake_embed(texts):
+        return [[float((len(t) + i) % 7) + 1.0 for i in range(8)] for t in texts]
+
+    monkeypatch.setattr(sb_search, "_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+    monkeypatch.setattr(sb_search, "_embedder", None)
+    monkeypatch.setattr(sb_search, "_embed", fake_embed)
+    monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["vec-current"],
+        model="fixture/model-eight",
+        query_prefix="query: ", doc_prefix="passage: ",
+        normalize=True)
+
+    assert payload["results"][0]["config"].endswith("+prefixed+norm"), \
+        payload["results"][0]["config"]
+    assert payload["meta"]["normalize"] is True
+
+
+def test_the_report_stays_quiet_about_normalize_the_payload_does_not_carry():
+    text = eval_search.render_report(_payload_for_render())
+    assert "normalize" not in text
+
+
+def test_the_report_prints_the_normalize_line_when_present():
+    payload = _payload_for_render()
+    payload["meta"]["normalize"] = True
+    text = eval_search.render_report(payload)
+    assert "normalize" in text
+    assert "L2-normalised" in text
+
+
+# ---------- CP-8b addendum: m1 peak RSS always, M4.2 notes/notes_vec in meta -
+
+def test_peak_rss_is_recorded_even_without_a_model_swap(tmp_path):
+    """m1 (pre-flight addendum): hybrid-any+rerank downloads a 1.04 GB
+    cross-encoder without ever touching --model, so a run that never swaps the
+    embedder would otherwise report no RSS at all for that download.
+    reindex_seconds stays --model-only — there is no rebuild to time without
+    one."""
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["fts-any"])
+    assert "peak_rss_bytes" in payload["meta"]
+    assert "reindex_seconds" not in payload["meta"]
+
+
+def test_the_report_prints_peak_rss_even_when_no_model_was_swapped():
+    """m1: the CP-8a payload shape (no reindex_seconds) must still get a peak
+    RSS line once the key is present — the line no longer implies a rebuild
+    happened."""
+    payload = _payload_for_render()
+    payload["meta"]["peak_rss_bytes"] = 1_181_116_006
+    text = eval_search.render_report(payload)
+    assert "peak RSS" in text
+    assert "1.10 GiB" in text or "1.1 GiB" in text
+    assert "reindex" not in text
+
+
+def test_meta_carries_notes_and_notes_vec_counts_and_they_agree_on_the_synthetic_set(
+        tmp_path, synthetic_engine):
+    """M4.2 (pre-flight addendum): notes vs notes_vec drift is a red flag for
+    the run that produced these numbers — printing both on every run turns a
+    silent drift into something visible instead of a report six weeks later."""
+    if not synthetic_engine._vec_enabled:
+        pytest.skip("sqlite-vec unavailable — notes_vec has nothing to count")
+    payload = eval_search.run_eval(
+        vault=DATA_DIR / "vault", work_dir=tmp_path / "work",
+        queries=DATA_DIR / "queries.jsonl",
+        config_names=["fts-any"])
+    assert payload["meta"]["notes"] > 0
+    assert payload["meta"]["notes_vec"] == payload["meta"]["notes"]
+
+
+def test_the_report_prints_the_index_line_with_no_drift_mark_when_counts_agree():
+    payload = _payload_for_render()
+    payload["meta"]["notes"] = 14
+    payload["meta"]["notes_vec"] = 14
+    text = eval_search.render_report(payload)
+    assert "index" in text and "14 notes" in text and "14 vectors" in text
+    assert "⚠" not in text
+
+
+def test_the_report_flags_index_drift_between_notes_and_notes_vec():
+    payload = _payload_for_render()
+    payload["meta"]["notes"] = 14
+    payload["meta"]["notes_vec"] = 12
+    text = eval_search.render_report(payload)
+    assert "14 notes" in text and "12 vectors" in text
+    assert "⚠" in text
+
+
+def test_the_report_stays_quiet_about_the_index_line_the_payload_does_not_carry():
+    text = eval_search.render_report(_payload_for_render())
+    assert "index " not in text
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows counter")

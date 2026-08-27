@@ -260,8 +260,6 @@ def test_written_by_carries_the_model_from_the_bridge(tmp_path, monkeypatch):
 def test_session_start_reaps_stale_bridge_files(tmp_path):
     """Оппортунистический GC: файлы моста мёртвых окон не должны копиться в TEMP
     и делать «ровно один свежий чужой файл» неверным навсегда."""
-    import shutil
-
     sb = tmp_path / "sb"
     sb.mkdir()
     stub_dir = tmp_path / "stub"

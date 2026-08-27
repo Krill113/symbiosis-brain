@@ -293,6 +293,216 @@ def test_run_recall_zero_results():
     assert run_recall(query="x", scope=None, config=cfg, engine=fake_engine) == []
 
 
+# ---------- CP-3 / I-8: run_recall writes the retrieval log itself ----------
+
+class _StatsEngine:
+    """A duck-typed engine that fills the `stats` out-param, like the real one.
+
+    Deliberately NOT a MagicMock: the trap this test exists for is that on a
+    MagicMock any getattr is truthy, so reading `engine._vec_enabled` would
+    silently log a 1 and never go red (I-8, tests/test_pre_action_recall.py:260).
+    """
+
+    def __init__(self, hits, *, fts_mode="all", vec_enabled=False):
+        self._vec_enabled = True          # the trap: always truthy, never read
+        self._hits = hits
+        self._fts_mode = fts_mode
+        self._vec = vec_enabled
+        self.calls = []
+
+    def search(self, *, query, scope, limit, mode, stats=None, **kw):
+        self.calls.append({"query": query, "scope": scope, "limit": limit,
+                           "mode": mode, **kw})
+        if stats is not None:
+            stats["fts_mode"] = self._fts_mode
+            stats["vec_enabled"] = self._vec
+        return list(self._hits)
+
+
+def _hit(i: int, **kw) -> dict:
+    base = {"path": f"patterns/p{i}.md", "title": f"P{i}", "scope": "global",
+            "gist": f"gist {i}", "frontmatter": {"type": "pattern"},
+            "_score": 0.05 - i / 1000, "_in_both": i == 0}
+    base.update(kw)
+    return base
+
+
+def _captured_record(monkeypatch) -> list:
+    from symbiosis_brain import retrieval_log
+    captured: list = []
+
+    def fake_record(ctx, **kw):
+        captured.append({"ctx": ctx, **kw})
+
+    monkeypatch.setattr(retrieval_log, "record", fake_record)
+    return captured
+
+
+def test_run_recall_records_the_capped_list_not_the_raw_pool(monkeypatch, tmp_path):
+    """§2.9: the log must show what the AGENT saw. run_recall over-fetches 6 and
+    emits 3; writing inside search() would store six ranks the agent never got."""
+    from symbiosis_brain import retrieval_log
+
+    captured = _captured_record(monkeypatch)
+    cfg = PreActionConfig(hit_limit=3)
+    engine = _StatsEngine([_hit(i) for i in range(6)])
+    ctx = retrieval_log.LogContext(source="hook_pre_action",
+                                   db_path=tmp_path / "brain.db", client="hook")
+
+    hits = run_recall(query="q", scope=None, config=cfg, engine=engine,
+                      fts_mode="all_then_any", log_ctx=ctx)
+
+    assert len(hits) == 3
+    assert engine.calls[0]["limit"] == 6          # over-fetch is unchanged
+    assert len(captured) == 1
+    assert len(captured[0]["hits"]) == 3
+    assert [h["path"] for h in captured[0]["hits"]] == [h["path"] for h in hits]
+    assert captured[0]["mode"] == "gist"
+    assert captured[0]["latency_ms"] >= 0
+
+
+def test_run_recall_takes_vec_enabled_from_stats_and_never_from_the_engine(
+        monkeypatch, tmp_path):
+    """I-8: the ONLY legal source is the out-param. `_vec_enabled` on the engine
+    is True in both cases below — if it were read, both would log 1."""
+    from symbiosis_brain import retrieval_log
+
+    ctx = retrieval_log.LogContext(source="hook_prompt",
+                                   db_path=tmp_path / "brain.db", client="hook")
+    cfg = PreActionConfig(hit_limit=3)
+
+    captured = _captured_record(monkeypatch)
+    run_recall(query="q", scope=None, config=cfg,
+               engine=_StatsEngine([_hit(0)], vec_enabled=False),
+               fts_mode="all_then_any", log_ctx=ctx)
+    assert captured[0]["vec_enabled"] is False
+
+    captured = _captured_record(monkeypatch)
+    run_recall(query="q", scope=None, config=cfg,
+               engine=_StatsEngine([_hit(0)], vec_enabled=True),
+               fts_mode="all_then_any", log_ctx=ctx)
+    assert captured[0]["vec_enabled"] is True     # a hardcoded False dies here
+
+
+def test_run_recall_logs_the_effective_fts_mode_never_the_requested_one(
+        monkeypatch, tmp_path):
+    """§2.9: `all_then_any` is a REQUEST. The outcome is known only inside
+    search(), and writing the request would kill the fallback metric, the
+    rollback stop-rule (§12, risk 6) and the §4.6 п.2 test on 89% of traffic."""
+    from symbiosis_brain import retrieval_log
+
+    captured = _captured_record(monkeypatch)
+    ctx = retrieval_log.LogContext(source="hook_prompt",
+                                   db_path=tmp_path / "brain.db", client="hook")
+    run_recall(query="q", scope=None, config=PreActionConfig(),
+               engine=_StatsEngine([_hit(0)], fts_mode="fallback_any"),
+               fts_mode="all_then_any", log_ctx=ctx)
+    assert captured[0]["fts_mode"] == "fallback_any"
+
+
+def test_run_recall_counts_hits_the_seen_store_dropped(monkeypatch, tmp_path):
+    from symbiosis_brain import retrieval_log
+
+    class _Seen:
+        def is_seen(self, path):
+            return path in ("patterns/p0.md", "patterns/p1.md")
+
+        def record(self, paths):
+            list(paths)
+
+    captured = _captured_record(monkeypatch)
+    ctx = retrieval_log.LogContext(source="hook_pre_action",
+                                   db_path=tmp_path / "brain.db", client="hook")
+    hits = run_recall(query="q", scope=None, config=PreActionConfig(hit_limit=3),
+                      engine=_StatsEngine([_hit(i) for i in range(6)]),
+                      seen=_Seen(), fts_mode="all_then_any", log_ctx=ctx)
+    assert captured[0]["dedup_dropped"] == 2
+    assert len(hits) == 3
+
+
+def test_run_recall_without_log_ctx_records_nothing(monkeypatch, tmp_path):
+    captured = _captured_record(monkeypatch)
+    run_recall(query="q", scope=None, config=PreActionConfig(),
+               engine=_StatsEngine([_hit(0)]))
+    assert captured == []
+
+
+def test_run_recall_does_not_pass_log_ctx_into_the_engine(monkeypatch, tmp_path):
+    """§2.9: exactly one write point per path. If log_ctx leaked into
+    engine.search, `mcp_search` and `hook_*` would both write the same event."""
+    from symbiosis_brain import retrieval_log
+
+    _captured_record(monkeypatch)
+    engine = _StatsEngine([_hit(0)])
+    ctx = retrieval_log.LogContext(source="hook_prompt",
+                                   db_path=tmp_path / "brain.db", client="hook")
+    run_recall(query="q", scope=None, config=PreActionConfig(),
+               engine=engine, fts_mode="all_then_any", log_ctx=ctx)
+    # Смысл — «контекст журнала до движка не доехал», а не «ключа нет в словаре».
+    # CP-1 ставит в вызов движка ЯВНЫЙ `log_ctx=None` (cp-01 §2, ШАГ 2 — осознанное
+    # решение: запрет I-8 читается на месте вызова), и утверждение о ключе
+    # покраснело бы на чужом чекпоинте. Это же утверждение остаётся красным при
+    # настоящем пробросе — то есть ровно тогда, когда должно.
+    assert engine.calls[0].get("log_ctx") is None
+
+
+def test_run_recall_never_raises_when_the_log_explodes(monkeypatch, tmp_path):
+    """Fail-open, principle 1 §1.3: telemetry must not empty a recall."""
+    from symbiosis_brain import retrieval_log
+
+    def boom(ctx, **kw):
+        raise RuntimeError("log exploded")
+
+    monkeypatch.setattr(retrieval_log, "record", boom)
+    ctx = retrieval_log.LogContext(source="hook_prompt",
+                                   db_path=tmp_path / "brain.db", client="hook")
+    hits = run_recall(query="q", scope=None, config=PreActionConfig(),
+                      engine=_StatsEngine([_hit(0)]),
+                      fts_mode="all_then_any", log_ctx=ctx)
+    assert len(hits) == 1
+
+
+# ---------- CP-3 / I-6: the file switch ----------
+
+def test_pre_action_config_has_the_retrieval_log_switch():
+    assert PreActionConfig().retrieval_log_enabled is True
+
+
+def test_retrieval_log_switch_is_validated_by_the_generic_loop(tmp_path):
+    from symbiosis_brain.pre_action_config import load_config
+
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps({"retrieval_log_enabled": False}), encoding="utf-8")
+    assert load_config(path).retrieval_log_enabled is False
+
+    path.write_text(json.dumps({"retrieval_log_enabled": "no"}), encoding="utf-8")
+    assert load_config(path).retrieval_log_enabled is True   # type mismatch → default
+
+
+def test_env_switch_beats_the_file_switch(monkeypatch):
+    """§2.7: one kill switch that turns everything off, everywhere."""
+    from symbiosis_brain import retrieval_log
+
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_RETRIEVAL_LOG", "off")
+    retrieval_log._env_enabled = None
+    try:
+        assert retrieval_log.is_enabled(PreActionConfig(retrieval_log_enabled=True)) is False
+    finally:
+        retrieval_log._env_enabled = None
+
+
+def test_file_switch_off_disables_the_log_on_its_own(monkeypatch):
+    from symbiosis_brain import retrieval_log
+
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_RETRIEVAL_LOG", raising=False)
+    retrieval_log._env_enabled = None
+    try:
+        assert retrieval_log.is_enabled(PreActionConfig(retrieval_log_enabled=False)) is False
+        assert retrieval_log.is_enabled(PreActionConfig(retrieval_log_enabled=True)) is True
+    finally:
+        retrieval_log._env_enabled = None
+
+
 # ---------- CLI subcommand integration ----------
 
 import json
@@ -406,6 +616,140 @@ def test_cli_emits_nothing_when_kill_switch_set(populated_vault: Path, monkeypat
     rc, out, _ = _run_cli(payload, populated_vault)
     assert rc == 0
     assert out.strip() == ""
+
+
+# ---------- CP-3: the PreToolUse path writes hook_pre_action ----------
+
+def _run_cli_with(payload: dict, vault: Path, *, extra_args=None, env_extra=None):
+    """Same isolation as _run_cli (HOME + USERPROFILE at a sibling of the vault),
+    plus room for CP-3 flags and env switches.
+
+    CLAUDE_CODE_CHILD_SESSION is stripped from the inherited environment for
+    the same reason as test_cli_search_gist._hermetic_env: this suite can
+    itself be running inside a subagent, and that env var (§2.5 signal 1)
+    would otherwise leak into the child and corrupt origin='main' assertions.
+    """
+    home = vault.parent / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+           "SYMBIOSIS_BRAIN_RETRIEVAL_LOG": "on"}
+    env.pop("CLAUDE_CODE_CHILD_SESSION", None)
+    env.update(env_extra or {})
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
+         "--vault", str(vault), *(extra_args or [])],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=120,
+        env=env,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _events(vault: Path) -> list[dict]:
+    import sqlite3
+    conn = sqlite3.connect(str(vault / ".index" / "brain.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM retrieval_event ORDER BY id").fetchall()]
+    finally:
+        conn.close()
+
+
+def test_cli_pre_action_logs_source_tool_and_session(populated_vault: Path):
+    import time as _t
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'feat: x'"},
+        "session_id": "sid-42",
+        "transcript_path": "/tmp/projects/p/sid-42.jsonl",
+    }
+    micros = str(int(_t.time() * 1_000_000))
+    rc, out, err = _run_cli_with(payload, populated_vault,
+                                 extra_args=["--hook-started-at", micros])
+    assert rc == 0, err
+    assert "[recall:" in out
+    rows = _events(populated_vault)
+    assert [r["source"] for r in rows] == ["hook_pre_action"]
+    assert rows[0]["tool"] == "Bash"
+    assert rows[0]["session_id"] == "sid-42"
+    assert rows[0]["origin"] == "main"
+    assert rows[0]["client"] == "hook"
+    assert rows[0]["mode"] == "gist"
+    assert rows[0]["fts_mode"] in ("any", "all", "fallback_any")
+    assert rows[0]["n_returned"] >= 1
+    assert rows[0]["e2e_ms"] is not None and rows[0]["e2e_ms"] >= 0
+    assert rows[0]["latency_ms"] is not None
+
+
+def test_cli_pre_action_marks_a_subagent_via_the_env_signal(populated_vault: Path):
+    """The MEASURED signal (§2.5 п. 1): a bash process spawned by a subagent
+    carries CLAUDE_CODE_CHILD_SESSION=1, and the hook process inherits it."""
+    payload = {"tool_name": "Bash",
+               "tool_input": {"command": "git commit -m 'feat: y'"},
+               "session_id": "sid-43"}
+    rc, out, err = _run_cli_with(payload, populated_vault,
+                                 env_extra={"CLAUDE_CODE_CHILD_SESSION": "1"})
+    assert rc == 0, err
+    rows = _events(populated_vault)
+    assert rows[-1]["origin"] == "subagent"
+
+
+def test_cli_pre_action_marks_a_subagent_via_agent_id_in_the_payload(
+        populated_vault: Path):
+    """Second signal, ADAPTED per the CP-3 preflight (deviation, see
+    review/exec-CP-3.md and review/preflight-step-b/README.md): the
+    ORIGINAL hypothesis (`transcript_path` carrying a `subagents` segment)
+    was measured false there — a non-empty `agent_id` in the payload is the
+    real, working signal instead."""
+    payload = {"tool_name": "Bash",
+               "tool_input": {"command": "git commit -m 'feat: w'"},
+               "session_id": "sid-46", "agent_id": "aabbccdd1122",
+               "agent_type": "workflow-subagent"}
+    rc, out, err = _run_cli_with(payload, populated_vault)
+    assert rc == 0, err
+    rows = _events(populated_vault)
+    assert rows[-1]["origin"] == "subagent"
+    # transcript_path stays the PARENT's, and session_id does too (measured) —
+    # the row still carries the payload's own session_id verbatim.
+    assert rows[-1]["session_id"] == "sid-46"
+
+
+def test_cli_pre_action_logs_nothing_when_the_env_switch_is_off(populated_vault: Path):
+    payload = {"tool_name": "Bash",
+               "tool_input": {"command": "git commit -m 'feat: z'"},
+               "session_id": "sid-44"}
+    rc, out, err = _run_cli_with(payload, populated_vault,
+                                 env_extra={"SYMBIOSIS_BRAIN_RETRIEVAL_LOG": "off"})
+    assert rc == 0, err
+    assert "[recall:" in out            # recall itself is untouched
+    assert _events(populated_vault) == []
+
+
+def test_cli_pre_action_broken_payload_stays_silent(populated_vault: Path):
+    """Fail-open (§11.5): a malformed payload costs exit 0 and empty stdout,
+    never a traceback and never a half-written event."""
+    home = populated_vault.parent / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "pre-action-recall",
+         "--vault", str(populated_vault)],
+        input="{not json at all", capture_output=True, text=True, timeout=120,
+        env={**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+             "SYMBIOSIS_BRAIN_RETRIEVAL_LOG": "on"},
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""
+    assert _events(populated_vault) == []
+
+
+def test_cli_pre_action_ignores_a_flag_from_a_newer_hook(populated_vault: Path):
+    payload = {"tool_name": "Bash",
+               "tool_input": {"command": "git commit -m 'feat: q'"},
+               "session_id": "sid-45"}
+    rc, out, err = _run_cli_with(payload, populated_vault,
+                                 extra_args=["--some-flag-from-2027", "42"])
+    assert rc == 0, err
+    assert "[recall:" in out
 
 
 def test_cli_handles_malformed_stdin_json(populated_vault: Path):

@@ -127,9 +127,14 @@ def test_ddl_is_five_separate_statements(db_path: Path):
     assert all(";" not in re.sub(r"--[^\n]*", "", s) for s in RETRIEVAL_LOG_STATEMENTS)
 
 
-def test_detect_origin_is_unknown_without_a_payload():
-    """CP-2 ships the function and its base cases; the two signals are CP-3's
-    task and land only after the preflight (§2.5, Р6)."""
+def test_detect_origin_is_unknown_without_a_payload(monkeypatch):
+    """CP-2 ships the function and its base cases; the real signals are CP-3's
+    task (§2.5, Р6). CLAUDE_CODE_CHILD_SESSION is cleared here for the same
+    reason CP-3's own detect_origin tests clear it (tests/test_hook_telemetry.py):
+    the test RUNNER can itself be a subagent, in which case that env var is
+    already '1' in the real environment and would silently flip 'main' to
+    'subagent' below — a CP-3 discovery, since CP-2's stub never read it."""
+    monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
     assert retrieval_log.detect_origin(None) == "unknown"
     assert retrieval_log.detect_origin({}) == "main"
 

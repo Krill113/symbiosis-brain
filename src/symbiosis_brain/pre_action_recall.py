@@ -5,6 +5,7 @@ Pure-Python module — no I/O side effects (caller wires SearchEngine).
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -69,31 +70,56 @@ def run_recall(
     config: PreActionConfig,
     engine: Any,
     seen: Any = None,
+    *,
+    fts_mode: str = "all_then_any",
+    log_ctx: Any = None,
 ) -> list[dict[str, Any]]:
     """Run search via injected engine, filter excluded types, dedup, trim to hit_limit.
 
-    `engine` is a duck-typed object with `search(query, scope, limit, mode="gist")`
-    returning a list of dicts with shape {path, title, scope, frontmatter, gist}.
-    `seen` is an optional duck-typed dedup store (`is_seen(path) -> bool`,
-    `record(paths)`); when supplied and `config.recall_dedup_enabled`, already-shown
-    hits are dropped BEFORE the cap so fresh hits fill the N slots, then the emitted
-    hits are recorded. Both injected so this fn stays unit-testable (no I/O here).
+    `engine` is a duck-typed object with `search(query, scope, limit, mode="gist",
+    stats=...)` returning a list of dicts with shape {path, title, scope,
+    frontmatter, gist}. `seen` is an optional duck-typed dedup store (`is_seen(path)
+    -> bool`, `record(paths)`); when supplied and `config.recall_dedup_enabled`,
+    already-shown hits are dropped BEFORE the cap so fresh hits fill the N slots,
+    then the emitted hits are recorded. Both injected so this fn stays unit-testable
+    (no I/O here except the retrieval log below).
 
     The cap (`hit_limit`) is itself the relevance gate — top-N of fused RRF, never
     emit-only-STRONG (a multi-token tool-input often matches vector-only, so an
     `_in_both` drop-gate would empty recall in production; see
     [[decisions/2026-06-03-recall-behavior]]). `_in_both` is a label, not a filter.
+
+    `log_ctx` (I-8) makes THIS function the write point for the two hook paths,
+    and it is deliberately NOT forwarded into `engine.search`: search() returns
+    the RAW pool (over_limit = 6 at hit_limit=3), while the agent sees the list
+    after the type filter, the SeenStore and the cap. Logging inside search()
+    would store six ranks nobody was shown, and "surfaced but not read" (§6.2)
+    would be counted over notes the agent never got (§2.9).
+
+    `fts_mode` is the REQUESTED mode; what reaches the log is the EFFECTIVE one,
+    handed back through the `stats` out-param — run_recall cannot see the outcome
+    of `all_then_any`, that is decided inside search(). `vec_enabled` comes from
+    the same `stats` and from nowhere else: reading `engine._vec_enabled` would be
+    a lie under a MagicMock (every getattr is truthy there), and a hardcoded False
+    would be a lie in production (I-8).
     """
     if not query:
         return []
     over_limit = min(max(config.hit_limit * 2, 5), 50)
-    raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist")
+    stats: dict[str, Any] = {}
+    t0 = time.perf_counter()
+    raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist",
+                        stats=stats)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
     excluded = set(config.excluded_note_types)
     filtered = [r for r in raw if _note_type(r) not in excluded]
     dedup_on = seen is not None and config.recall_dedup_enabled
+    dedup_dropped = 0
     if dedup_on:
         try:
-            filtered = [r for r in filtered if not seen.is_seen(r.get("path", ""))]
+            kept = [r for r in filtered if not seen.is_seen(r.get("path", ""))]
+            dedup_dropped = len(filtered) - len(kept)
+            filtered = kept
         except Exception:
             pass  # fail-open: a dedup error must never drop or empty recall
     hits = filtered[:config.hit_limit]
@@ -102,6 +128,23 @@ def run_recall(
             seen.record(h.get("path", "") for h in hits)
         except Exception:
             pass  # fail-open
+    if log_ctx is not None:
+        try:
+            from symbiosis_brain import retrieval_log
+
+            retrieval_log.record(
+                log_ctx,
+                query=query,
+                scope=scope,
+                mode="gist",
+                fts_mode=stats.get("fts_mode", fts_mode),
+                hits=hits,
+                latency_ms=latency_ms,
+                vec_enabled=bool(stats.get("vec_enabled", False)),
+                dedup_dropped=dedup_dropped,
+            )
+        except Exception:
+            pass  # fail-open: telemetry never empties a recall
     return hits
 
 

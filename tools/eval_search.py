@@ -261,7 +261,7 @@ def rebuild_vector_index(engine, storage, *, model: str, timings: dict | None = 
     (search.py:234-243).
 
     `timings`, when given, is filled with three separately-measured phases
-    (each rounded to 0.1s) — CP-8b follow-up (K.D. 2026-08-27), because a
+    (each rounded to 0.1s) — CP-8b follow-up (owner decision, 2026-08-27), because a
     single number wrapped around all three used to hide which one actually
     cost the time:
       - model_load_s: building the ONNX session and running the first embed
@@ -767,7 +767,7 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
                 # dimension-probe embed and any wait for the reindex lock are
                 # reported apart, under their own keys, so this number stays
                 # comparable across runs regardless of lock contention (CP-8b
-                # follow-up, K.D. 2026-08-27: a stale-lock wait once inflated a
+                # follow-up, owner decision, 2026-08-27: a stale-lock wait once inflated a
                 # 135s rebuild into a reported 315s and misled the next reader).
                 meta["reindex_seconds"] = timings.get("rebuild_s")
                 meta["reindex_lock_wait_seconds"] = timings.get("lock_wait_s")

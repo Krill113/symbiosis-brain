@@ -285,3 +285,238 @@ def test_get_embedder_skips_lock_when_already_loaded(tmp_path, monkeypatch):
 
     result = _search_mod._get_embedder()
     assert result is sentinel  # fast path returned the cached singleton
+
+
+# ================== CP-1: лексические режимы (I-17, I-18, I-19) ==================
+# Корпус синтетический: выдуманные ноты, выдуманные пути, ни одного реального
+# имени. Русская нота нужна потому, что 94,3 % нулевых выдач режима `all`
+# приходится именно на русские запросы (§4.1).
+
+from symbiosis_brain.search import (  # noqa: E402
+    FTS_EFFECTIVE_FALLBACK_ANY,
+    FTS_MODE_ALL,
+    FTS_MODE_ALL_THEN_ANY,
+    FTS_MODE_ANY,
+)
+
+
+@pytest.fixture
+def lexicon_engine(db_path: Path) -> SearchEngine:
+    storage = Storage(db_path)
+    storage.upsert_note(
+        path="wiki/rotation.md", title="Ротация журнала", scope="global",
+        note_type="wiki", tags=["log"],
+        content="Ротация журнала выдачи удаляет события старше 90 дней",
+    )
+    storage.upsert_note(
+        path="wiki/overfetch.md", title="Vector overfetch", scope="global",
+        note_type="wiki", tags=["search"],
+        content="Scoped vector search over-fetches candidates instead of starving",
+    )
+    storage.upsert_note(
+        path="wiki/dedup.md", title="Дедуп при записи", scope="global",
+        note_type="wiki", tags=["dedup"],
+        content="Сигнал похожести считается до записи ноты",
+    )
+    engine = SearchEngine(storage)
+    engine.index_all()
+    return engine
+
+
+# 11,1 токена — средняя длина живого запроса (§4.1). Здесь шесть, и четыре из
+# них в корпусе отсутствуют: ровно тот случай, на котором AND даёт ноль.
+_MULTIWORD_RU = "ротация журнала по расписанию каждые сутки"
+
+
+def test_sanitize_ors_tokens_only_in_any_mode():
+    """I-17: режим — второй ПОЗИЦИОННЫЙ аргумент; дефолт остаётся AND."""
+    san = SearchEngine._sanitize_fts_query
+    assert san("ротация журнала", FTS_MODE_ANY) == '"ротация" OR "журнала"'
+    assert san("ротация журнала", FTS_MODE_ALL) == '"ротация" "журнала"'
+    assert san("ротация журнала") == '"ротация" "журнала"'
+    # неизвестный режим НЕ расширяет запрос — падаем в сегодняшний AND
+    assert san("ротация журнала", "нет-такого-режима") == '"ротация" "журнала"'
+    assert san("   ", FTS_MODE_ANY) == '""'
+    # операторы FTS5 по-прежнему вычищаются до квотирования
+    assert san("a:b (c)", FTS_MODE_ANY) == '"a" OR "b" OR "c"'
+
+
+def test_fts_all_requires_every_token(lexicon_engine: SearchEngine):
+    """C1: сегодняшнее поведение — ноль строк на многословном запросе."""
+    assert lexicon_engine.search_fts(_MULTIWORD_RU, limit=10, mode=FTS_MODE_ALL) == []
+
+
+def test_fts_any_finds_note_matching_part_of_the_query(lexicon_engine: SearchEngine):
+    """§4.6 п. 1: многословный русский запрос находит ноту с ЧАСТЬЮ слов."""
+    rows = lexicon_engine.search_fts(_MULTIWORD_RU, limit=10, mode=FTS_MODE_ANY)
+    assert [r["path"] for r in rows] == ["wiki/rotation.md"]
+
+
+def test_fts_mode_is_keyword_only(lexicon_engine: SearchEngine):
+    """I-18: mode — keyword-only, позиционно его передать нельзя."""
+    with pytest.raises(TypeError):
+        lexicon_engine.search_fts(_MULTIWORD_RU, None, 10, FTS_MODE_ANY)
+
+
+def test_search_default_fts_mode_is_any(lexicon_engine: SearchEngine):
+    """I-19: дефолт самой функции — `any` (безопаснее для будущих вызовов)."""
+    stats: dict = {}
+    lexicon_engine.search(_MULTIWORD_RU, limit=5, stats=stats)
+    assert stats["fts_mode"] == FTS_MODE_ANY
+
+
+def test_stats_carries_exactly_two_keys(lexicon_engine: SearchEngine):
+    """I-7: ровно два ключа и ни одного больше."""
+    stats: dict = {}
+    lexicon_engine.search(_MULTIWORD_RU, limit=5, stats=stats)
+    assert set(stats) == {"fts_mode", "vec_enabled"}
+    assert isinstance(stats["vec_enabled"], bool)
+    assert stats["vec_enabled"] is bool(lexicon_engine._vec_enabled)
+
+
+def test_all_then_any_reports_fallback(lexicon_engine: SearchEngine):
+    """§4.6 п. 2: AND дал ноль -> повтор OR -> в stats уходит `fallback_any`."""
+    stats: dict = {}
+    hits = lexicon_engine.search(_MULTIWORD_RU, limit=5, mode="gist",
+                                 fts_mode=FTS_MODE_ALL_THEN_ANY, stats=stats)
+    assert stats["fts_mode"] == FTS_EFFECTIVE_FALLBACK_ANY
+    assert stats["fts_mode"] != FTS_MODE_ALL_THEN_ANY  # в журнал — НИКОГДА
+    assert any(h["path"] == "wiki/rotation.md" for h in hits)
+
+
+def test_all_then_any_reports_all_when_and_hits(lexicon_engine: SearchEngine):
+    """Тот же режим, но AND сработал -> эффективный режим `all`, не `fallback_any`."""
+    stats: dict = {}
+    lexicon_engine.search("ротация журнала", limit=5,
+                          fts_mode=FTS_MODE_ALL_THEN_ANY, stats=stats)
+    assert stats["fts_mode"] == FTS_MODE_ALL
+
+
+@pytest.mark.parametrize("requested", [FTS_MODE_ANY, FTS_MODE_ALL])
+def test_plain_modes_report_themselves(lexicon_engine: SearchEngine, requested):
+    stats: dict = {}
+    lexicon_engine.search(_MULTIWORD_RU, limit=5, fts_mode=requested, stats=stats)
+    assert stats["fts_mode"] == requested
+
+
+def test_stats_filled_even_on_empty_lexical_half(lexicon_engine: SearchEngine):
+    """I-7: stats заполняется ПЕРЕД возвратом всегда — в том числе когда обе
+    попытки лексической половины дали ноль. Это и есть случай, ради которого
+    метрика заводится."""
+    stats: dict = {}
+    lexicon_engine.search("zzzнетакоготокенаqqq", limit=5,
+                          fts_mode=FTS_MODE_ALL_THEN_ANY, stats=stats)
+    assert stats["fts_mode"] == FTS_EFFECTIVE_FALLBACK_ANY
+    assert set(stats) == {"fts_mode", "vec_enabled"}
+
+
+@pytest.mark.asyncio
+async def test_brain_search_requests_any_mode(tmp_vault: Path, db_path: Path, monkeypatch):
+    """§4.2/§4.6 п. 3, ПРЯМАЯ проверка: движок подменён моком, утверждается
+    значение аргумента, а не запись в журнале."""
+    from unittest.mock import MagicMock
+
+    from symbiosis_brain import server
+
+    fake = MagicMock()
+    fake.search.return_value = []
+    monkeypatch.setattr(server, "_search", fake)
+    monkeypatch.setattr(server, "_storage", Storage(db_path))
+    monkeypatch.setattr(server, "_ready", None)
+    monkeypatch.setattr(server, "_vault_path", tmp_vault)
+
+    await server.call_tool("brain_search", {"query": "ротация журнала выдачи"})
+
+    assert fake.search.call_args.kwargs["fts_mode"] == FTS_MODE_ANY
+
+
+@pytest.fixture
+def c8_engine(db_path: Path) -> SearchEngine:
+    """Мини-корпус для C8: три ноты, чьи темы совпадают со stem'ами файлов."""
+    storage = Storage(db_path)
+    storage.upsert_note(
+        path="wiki/rotation.md", title="Rotation", scope="global", note_type="wiki",
+        content="Rotation deletes retrieval events older than ninety days", tags=[],
+    )
+    storage.upsert_note(
+        path="wiki/dedup.md", title="Dedup", scope="global", note_type="wiki",
+        content="Dedup hints at a similar note before the write happens", tags=[],
+    )
+    storage.upsert_note(
+        path="wiki/lexicon.md", title="Lexicon", scope="global", note_type="wiki",
+        content="Lexical half stops requiring every token of the query", tags=[],
+    )
+    engine = SearchEngine(storage)
+    engine.index_all()
+    return engine
+
+
+def test_edit_queries_for_different_files_give_different_top3(c8_engine: SearchEngine):
+    """C8/§4.6 п. 5: сигналом стало имя файла, а не общий хвост каталогов.
+
+    До I-21 обе правки давали запрос, в котором доминировали одни и те же
+    токены пути (`src`, `deep`, `nested`), и топ-3 совпадали."""
+    from symbiosis_brain.pre_action_recall import build_query
+
+    q1 = build_query("Edit", {"file_path": "src/deep/nested/rotation.py",
+                              "new_string": "days"}, max_chars=500)
+    q2 = build_query("Edit", {"file_path": "src/deep/nested/dedup.py",
+                              "new_string": "days"}, max_chars=500)
+    assert q1 == "rotation days" and q2 == "dedup days"
+
+    top1 = [h["path"] for h in c8_engine.search(q1, limit=3, fts_mode=FTS_MODE_ANY)]
+    top2 = [h["path"] for h in c8_engine.search(q2, limit=3, fts_mode=FTS_MODE_ANY)]
+    assert top1 != top2
+    assert top1[0] == "wiki/rotation.md"
+    assert "wiki/dedup.md" in top2
+
+
+def test_strong_requires_top3_in_both_halves(lexicon_engine: SearchEngine, monkeypatch):
+    """§4.6 п. 6: `_strong` — топ-3 ОБЕИХ половин; `_in_both` семантику сохраняет.
+
+    Половины подменены детерминированными списками: на трёх нотах реального
+    корпуса ранги ≥ 3 не встречаются вовсе, и правило было бы не проверено."""
+    def _n(path: str) -> dict:
+        return {"path": path, "title": path, "scope": "global",
+                "content": "тело ноты", "frontmatter": {}}
+
+    fts = [_n("p/a"), _n("p/b"), _n("p/c"), _n("p/d")]      # ранги 0,1,2,3
+    vec = [_n("p/a"), _n("p/d"), _n("p/e")]                 # ранги 0,1,2
+    monkeypatch.setattr(lexicon_engine, "search_fts", lambda *a, **k: fts)
+    monkeypatch.setattr(lexicon_engine, "search_vector", lambda *a, **k: vec)
+
+    by_path = {h["path"]: h for h in lexicon_engine.search("q", limit=5)}
+    assert set(by_path) == {"p/a", "p/b", "p/c", "p/d", "p/e"}
+
+    assert by_path["p/a"]["_fts_rank"] == 0 and by_path["p/a"]["_vec_rank"] == 0
+    assert by_path["p/a"]["_in_both"] is True and by_path["p/a"]["_strong"] is True
+    # в обеих половинах, но лексический ранг 3 -> не «сильный»
+    assert by_path["p/d"]["_in_both"] is True and by_path["p/d"]["_strong"] is False
+    # только в одной половине
+    assert by_path["p/b"]["_in_both"] is False and by_path["p/b"]["_strong"] is False
+    assert by_path["p/e"]["_fts_rank"] is None and by_path["p/e"]["_vec_rank"] == 2
+    assert by_path["p/e"]["_strong"] is False
+
+
+def test_fts_only_emits_hits_and_never_stars(lexicon_engine: SearchEngine, monkeypatch):
+    """§4.6 п. 7: вектор выключен -> выдача не обнуляется, ★ нет ни у кого."""
+    from symbiosis_brain.pre_action_recall import format_recall_block
+
+    monkeypatch.setattr(lexicon_engine, "_vec_enabled", False)
+    hits = lexicon_engine.search(_MULTIWORD_RU, limit=5, mode="gist",
+                                 fts_mode=FTS_MODE_ALL_THEN_ANY)
+    assert hits                                    # FTS-only всё равно выдаёт
+    assert all(h["_strong"] is False for h in hits)
+    assert all(h["_in_both"] is False for h in hits)
+    assert all(h["_vec_rank"] is None for h in hits)
+    assert "★" not in format_recall_block("q", hits)
+
+
+def test_rank_keys_present_in_gist_mode(lexicon_engine: SearchEngine):
+    """I-22: новые ключи видны обеим поверхностям, как и `_score`/`_in_both`."""
+    hits = lexicon_engine.search("ротация", limit=5, mode="gist", fts_mode=FTS_MODE_ANY)
+    assert hits
+    for h in hits:
+        assert "_fts_rank" in h and "_vec_rank" in h
+        assert isinstance(h["_strong"], bool)
+        assert isinstance(h["_in_both"], bool)

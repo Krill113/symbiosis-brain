@@ -367,7 +367,7 @@ def _gist_search(vault_path, query, scope, limit, *, log_ctx=None) -> list:
     (stdin is consumed only under --prompt-from-stdin, __main__.py:150-157).
     """
     from symbiosis_brain.storage import Storage
-    from symbiosis_brain.search import SearchEngine
+    from symbiosis_brain.search import FTS_MODE_ALL_THEN_ANY, SearchEngine
     from symbiosis_brain.sync import VaultSync
 
     db_path = vault_path / ".index" / "brain.db"
@@ -381,7 +381,7 @@ def _gist_search(vault_path, query, scope, limit, *, log_ctx=None) -> list:
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
     results = search.search(query=query, scope=scope, limit=limit, mode="gist",
-                            log_ctx=log_ctx)
+                            fts_mode=FTS_MODE_ALL_THEN_ANY, log_ctx=log_ctx)
     return _shape_hits(results)
 
 
@@ -407,7 +407,7 @@ def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg, *,
 
     try:
         from symbiosis_brain.pre_action_recall import run_recall
-        from symbiosis_brain.search import SearchEngine
+        from symbiosis_brain.search import FTS_MODE_ALL_THEN_ANY, SearchEngine
         from symbiosis_brain.storage import Storage
         from symbiosis_brain.sync import VaultSync
 
@@ -440,10 +440,10 @@ def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg, *,
             config=replace(cfg, hit_limit=limit),
             engine=engine,
             seen=seen,
-            # Explicit on BOTH inject paths (I-8): search()'s own default is
-            # `any` (I-19), and letting it apply here would break the Q3 law
-            # silently. CP-1 gives the value teeth; CP-3 only fixes the wiring.
-            fts_mode="all_then_any",
+            # Q3: инжект в контекст — «все слова, при нуле любое». Явным
+            # аргументом, а не дефолтом run_recall (§4.2). CP-1 заменяет
+            # литерал CP-3 канонической константой search.py (I-17).
+            fts_mode=FTS_MODE_ALL_THEN_ANY,
             log_ctx=log_ctx,
         )
     except Exception:
@@ -587,7 +587,7 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     # defense in depth.
     try:
         from symbiosis_brain.storage import Storage
-        from symbiosis_brain.search import SearchEngine
+        from symbiosis_brain.search import FTS_MODE_ALL_THEN_ANY, SearchEngine
         from symbiosis_brain.sync import VaultSync
 
         vault_path = Path(args.vault).expanduser().resolve()
@@ -625,7 +625,7 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         # new column (I-1).
         hits = run_recall(
             query=query, scope=scope, config=cfg, engine=engine, seen=seen,
-            fts_mode="all_then_any",
+            fts_mode=FTS_MODE_ALL_THEN_ANY,
             log_ctx=_hook_log_ctx(
                 "hook_pre_action", vault_path, cfg,
                 session_id=session_id,

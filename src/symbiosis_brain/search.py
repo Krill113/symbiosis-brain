@@ -52,6 +52,34 @@ without overwhelming genuinely stronger matches from the global pool.
 Tunable — see `docs/superpowers/plans/2026-04-21-w4-lint-data-hygiene.md`.
 """
 
+FTS_MODE_ANY = "any"
+"""Лексическая половина: OR по токенам — «хотя бы одно слово»."""
+
+FTS_MODE_ALL = "all"
+"""Лексическая половина: AND по токенам. Историческое поведение и дефолт
+_sanitize_fts_query/search_fts: неизвестный режим не должен молча РАСШИРЯТЬ
+выдачу."""
+
+FTS_MODE_ALL_THEN_ANY = "all_then_any"
+"""AND, а при нуле строк лексической половины — повтор в OR.
+
+Только ЗАПРОШЕННЫЙ режим: наружу (в `stats` и в журнал) уходит ИСХОД —
+FTS_MODE_ALL или FTS_EFFECTIVE_FALLBACK_ANY (§2.9, §4.2). Замер 26.08 на 1666
+живых запросах: на инжект-путях этот режим вырождается в OR в 97-99 % случаев,
+поэтому митигацией precision он не считается (§12, риск 6)."""
+
+FTS_EFFECTIVE_FALLBACK_ANY = "fallback_any"
+"""ИСХОД, а не режим запроса: AND дал ноль строк, и мы повторили в OR.
+Легально только в `stats["fts_mode"]` и в колонке `retrieval_event.fts_mode`;
+передавать это значение в `search(fts_mode=…)` нельзя — там оно трактуется как
+неизвестный режим, то есть как AND."""
+
+_STRONG_RANK_MAX = 3
+"""★ = нота в топ-3 ОБЕИХ половин (§4.5, I-22). Замер на реальном профиле
+рендера PreToolUse (пул 6, кап 3, 142 живых запроса): 3,5 % показанных хитов
+против 27,5 % у прежнего `_in_both`. Порог зависит от размера пула — меняя
+`hit_limit`, перечитай [[decisions/2026-08-26-recall-strength-mark]]."""
+
 
 def _extract_fallback_gist(content: str, max_chars: int = 80) -> str:
     """Extract first non-empty paragraph after frontmatter+heading, ≤max_chars.
@@ -399,12 +427,23 @@ class SearchEngine:
             return False
 
     @staticmethod
-    def _sanitize_fts_query(query: str) -> str:
+    def _sanitize_fts_query(query: str, mode: str = FTS_MODE_ALL) -> str:
         """Escape user input for FTS5 MATCH.
 
-        Strips FTS5 operators and wraps each token in double quotes
-        so that characters like hyphens, dots, and colons are treated
-        as literals, not syntax.
+        Strips FTS5 operators and wraps each token in double quotes so that
+        characters like hyphens, dots, and colons are treated as literals, not
+        syntax. `mode` decides how the quoted tokens are joined:
+
+        - FTS_MODE_ANY  -> ' OR ' between them: at least one token must match;
+        - anything else -> a bare space, i.e. FTS5's implicit AND.
+
+        AND stays the default on purpose: an unknown or stub mode must never
+        silently WIDEN a query. Measured 2026-08-26 on 1666 live queries: the
+        implicit AND returned zero rows for 84.5 % of them (94.3 % of the
+        Russian ones), which is what FTS_MODE_ANY exists to fix (§4.1).
+
+        Quoting also disarms the OR keyword itself: a user token `OR` arrives
+        as `"OR"` and matches literally, never as an operator.
         """
         import re
         # Remove characters that are FTS5 operators or break the parser
@@ -412,10 +451,14 @@ class SearchEngine:
         tokens = cleaned.split()
         if not tokens:
             return '""'
-        return " ".join(f'"{t}"' for t in tokens)
+        quoted = [f'"{t}"' for t in tokens]
+        if mode == FTS_MODE_ANY:
+            return " OR ".join(quoted)
+        return " ".join(quoted)
 
-    def search_fts(self, query: str, scope: str | None = None, limit: int = 10) -> list[dict]:
-        fts_query = self._sanitize_fts_query(query)
+    def search_fts(self, query: str, scope: str | None = None, limit: int = 10,
+                   *, mode: str = FTS_MODE_ALL) -> list[dict]:
+        fts_query = self._sanitize_fts_query(query, mode)
         if scope:
             rows = self.storage._conn.execute("""
                 SELECT n.*, bm25(notes_fts, 10, 1, 1) as rank
@@ -459,13 +502,20 @@ class SearchEngine:
         return results
 
     def search(self, query: str, scope: str | None = None, limit: int = 10,
-               mode: str = "preview", *,
+               mode: str = "preview", *, fts_mode: str = FTS_MODE_ANY,
                log_ctx: "LogContext | None" = None,
                stats: dict | None = None) -> list[dict]:
         """Hybrid search: FTS5 + vector with Reciprocal Rank Fusion.
 
         mode='preview' (default) — returns notes with full content for legacy callers.
         mode='gist' — adds 'gist' key (frontmatter['gist'] or fallback 80-char paragraph).
+
+        fts_mode picks the LEXICAL half's token policy (I-17..I-19). What leaves
+        this function — through `stats` and through the journal — is the
+        EFFECTIVE mode: 'any' | 'all' | 'fallback_any'. The requested
+        'all_then_any' is never written anywhere (§2.9, §4.2): the share of
+        'fallback_any' IS the metric, and substituting the request for the
+        outcome empties it silently.
 
         log_ctx (I-7): when given, this call IS the surfacing point and the
         retrieval log is written here, after _score/_in_both are attached and
@@ -481,7 +531,20 @@ class SearchEngine:
         column of the same name on the hook paths (§2.9, I-8).
         """
         t0 = time.perf_counter()
-        fts_results = self.search_fts(query, scope=scope, limit=limit * 2)
+        if fts_mode == FTS_MODE_ALL_THEN_ANY:
+            fts_results = self.search_fts(query, scope=scope, limit=limit * 2,
+                                          mode=FTS_MODE_ALL)
+            if fts_results:
+                effective_fts_mode = FTS_MODE_ALL
+            else:
+                fts_results = self.search_fts(query, scope=scope, limit=limit * 2,
+                                              mode=FTS_MODE_ANY)
+                effective_fts_mode = FTS_EFFECTIVE_FALLBACK_ANY
+        else:
+            # Unknown values fall back to AND, never to OR — see _sanitize_fts_query.
+            effective_fts_mode = FTS_MODE_ANY if fts_mode == FTS_MODE_ANY else FTS_MODE_ALL
+            fts_results = self.search_fts(query, scope=scope, limit=limit * 2,
+                                          mode=effective_fts_mode)
         vec_results = self.search_vector(query, scope=scope, limit=limit * 2)
 
         scores: dict[str, float] = {}
@@ -504,16 +567,31 @@ class SearchEngine:
         sorted_paths = sorted(scores, key=lambda p: scores[p], reverse=True)
         results = [all_notes[p] for p in sorted_paths[:limit]]
 
-        # Attach ranking metadata (Stage 0, recall-hardening). Purely additive,
-        # underscore-prefixed (cf. _distance), visible to both preview and gist
-        # callers. _score is post-boost RRF; _in_both means the note surfaced in
-        # BOTH FTS and vector — a strength LABEL for recall (★), never a filter
+        # Attach ranking metadata (Stage 0, recall-hardening; Stage 2, I-22).
+        # Purely additive, underscore-prefixed (cf. _distance), visible to both
+        # preview and gist callers. _score is post-boost RRF. _in_both means
+        # the note surfaced in BOTH halves and KEEPS its old meaning — existing
+        # tests stand on it and the journal logs it (retrieval_hit.in_both).
+        # _strong is the NEW label behind ★: top-_STRONG_RANK_MAX in both
+        # halves (§4.5). Neither is ever a filter
         # (see [[decisions/2026-06-03-recall-behavior]]).
-        seen_fts = {n["path"] for n in fts_results}
-        seen_vec = {n["path"] for n in vec_results}
+        fts_rank_by_path: dict[str, int] = {}
+        for rank, note in enumerate(fts_results):
+            fts_rank_by_path.setdefault(note["path"], rank)
+        vec_rank_by_path: dict[str, int] = {}
+        for rank, note in enumerate(vec_results):
+            vec_rank_by_path.setdefault(note["path"], rank)
         for note in results:
             note["_score"] = float(scores.get(note["path"], 0.0))
-            note["_in_both"] = note["path"] in seen_fts and note["path"] in seen_vec
+            fts_rank = fts_rank_by_path.get(note["path"])
+            vec_rank = vec_rank_by_path.get(note["path"])
+            note["_fts_rank"] = fts_rank
+            note["_vec_rank"] = vec_rank
+            note["_in_both"] = fts_rank is not None and vec_rank is not None
+            note["_strong"] = (
+                fts_rank is not None and fts_rank < _STRONG_RANK_MAX
+                and vec_rank is not None and vec_rank < _STRONG_RANK_MAX
+            )
 
         if mode == "gist":
             for note in results:
@@ -523,12 +601,6 @@ class SearchEngine:
                     gist = _extract_fallback_gist(note["content"], max_chars=80)
                 note["gist"] = gist
 
-        # CP-2 (Р1): the lexical half is AND by construction — _sanitize_fts_query
-        # glues quoted tokens with a space (search.py:398-412) — so the effective
-        # mode literally is 'all'. CP-1 widens the set to any|all|fallback_any and
-        # replaces this literal with the computed value; 'all_then_any' is a
-        # REQUEST and must never reach the column (§2.9, I-19).
-        effective_fts_mode = "all"
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
         # This is the single return of search(). If a future change adds an

@@ -11,6 +11,35 @@ from typing import Any, Optional
 
 from symbiosis_brain.pre_action_config import PreActionConfig
 
+_DEFAULT_FTS_MODE = "all_then_any"
+"""Запрошенный режим лексической половины для ОБОИХ инжект-путей (§4.2, Q3).
+
+Литерал, а не `from symbiosis_brain.search import FTS_MODE_ALL_THEN_ANY`:
+этот модуль импортируется КАЖДЫМ PreToolUse-процессом, в том числе теми, что
+выходят до всякого поиска (`__main__.py:429-442`), а `search` тянет за собой
+numpy (`search.py:13`). Канонические константы живут в search.py (I-17);
+tests/test_pre_action_recall.py следит, чтобы значения не разъехались."""
+
+
+_EDIT_BODY_MAX_CHARS = 400
+"""Сколько символов самой правки идёт в запрос (I-21, §4.4).
+
+Не путать с `PreActionConfig.query_max_chars` (500): тот режет ИТОГ, этот —
+содержимое до склейки с именем файла."""
+
+
+def _edit_query(file_path: str, new_text: str, max_chars: int) -> str:
+    """Query for an Edit/Write/MultiEdit call: file STEM + head of the edit.
+
+    Directories are dropped on purpose (I-21, §4.4 C8). The old formula fed the
+    whole `file_path` in, and once the lexical half started ORing tokens a
+    single edit pulled 417 of 1466 notes on path tokens alone. The basename is
+    signal — the tree is noise; the edit body is what carries the meaning.
+    """
+    stem = os.path.splitext(os.path.basename(file_path or ""))[0]
+    head = " ".join((new_text or "").split())[:_EDIT_BODY_MAX_CHARS]
+    return f"{stem} {head}".strip()[:max_chars]
+
 
 def build_query(tool_name: str, tool_input: dict[str, Any], max_chars: int) -> Optional[str]:
     """Extract a search query from a tool call's input args.
@@ -22,21 +51,17 @@ def build_query(tool_name: str, tool_input: dict[str, Any], max_chars: int) -> O
         prompt = tool_input.get("prompt") or ""
         return prompt[:max_chars]
     if tool_name == "Edit":
-        path = tool_input.get("file_path", "")
-        new_s = (tool_input.get("new_string") or "")[:300]
-        combined = " ".join(p for p in (path, new_s) if p)
-        return combined[:max_chars]
+        return _edit_query(tool_input.get("file_path", ""),
+                           tool_input.get("new_string") or "", max_chars)
     if tool_name == "Write":
-        path = tool_input.get("file_path", "")
-        content = (tool_input.get("content") or "")[:300]
-        combined = " ".join(p for p in (path, content) if p)
-        return combined[:max_chars]
+        return _edit_query(tool_input.get("file_path", ""),
+                           tool_input.get("content") or "", max_chars)
     if tool_name == "MultiEdit":
-        path = tool_input.get("file_path", "")
         edits = tool_input.get("edits") or []
-        new_strings = [(e.get("new_string") or "")[:100] for e in edits]
-        combined = " ".join([path, *new_strings]).strip()
-        return combined[:max_chars]
+        joined = " ".join(
+            (e.get("new_string") or "") for e in edits if isinstance(e, dict)
+        )
+        return _edit_query(tool_input.get("file_path", ""), joined, max_chars)
     if tool_name == "NotebookEdit":
         src = tool_input.get("new_source") or ""
         return src[:max_chars]
@@ -71,14 +96,14 @@ def run_recall(
     engine: Any,
     seen: Any = None,
     *,
-    fts_mode: str = "all_then_any",
+    fts_mode: str = _DEFAULT_FTS_MODE,
     log_ctx: Any = None,
 ) -> list[dict[str, Any]]:
     """Run search via injected engine, filter excluded types, dedup, trim to hit_limit.
 
     `engine` is a duck-typed object with `search(query, scope, limit, mode="gist",
-    stats=...)` returning a list of dicts with shape {path, title, scope,
-    frontmatter, gist}. `seen` is an optional duck-typed dedup store (`is_seen(path)
+    fts_mode=..., log_ctx=None, stats=...)` returning a list of dicts with shape
+    {path, title, scope, frontmatter, gist}. `seen` is an optional duck-typed dedup store (`is_seen(path)
     -> bool`, `record(paths)`); when supplied and `config.recall_dedup_enabled`,
     already-shown hits are dropped BEFORE the cap so fresh hits fill the N slots,
     then the emitted hits are recorded. Both injected so this fn stays unit-testable
@@ -109,7 +134,7 @@ def run_recall(
     stats: dict[str, Any] = {}
     t0 = time.perf_counter()
     raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist",
-                        stats=stats)
+                        fts_mode=fts_mode, log_ctx=None, stats=stats)
     latency_ms = int((time.perf_counter() - t0) * 1000)
     excluded = set(config.excluded_note_types)
     filtered = [r for r in raw if _note_type(r) not in excluded]
@@ -149,7 +174,18 @@ def run_recall(
 
 
 def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
-    """Format hits as a [recall: N hits for "..."] block. Empty if no hits."""
+    """Format hits as a [recall: N hits for "..."] block. Empty if no hits.
+
+    ★ marks a STRONG hit: the note landed in the top-3 of BOTH search halves
+    (`_strong`, I-22). It used to mark `_in_both` — "showed up in both lists" —
+    which after the AND->OR fix would have fired on 27.5 % of shown hits and
+    54.9 % of queries (measured on the real PreToolUse render profile: pool 6,
+    cap 3, 142 live queries), i.e. stopped distinguishing anything. `_in_both`
+    itself is untouched: it stays in the hit dict and in the journal.
+    This is the ONLY surface that prints ★ — the prompt-path [memory:] block is
+    rendered by `_shape_hits` (`__main__.py:223-237`) and has no stars at all.
+    See [[decisions/2026-08-26-recall-strength-mark]].
+    """
     if not hits:
         return ""
     snippet = (query or "")[:60].rstrip()
@@ -157,7 +193,7 @@ def format_recall_block(query: str, hits: list[dict[str, Any]]) -> str:
     for h in hits:
         path = h.get("path", "?")
         gist = h.get("gist") or "(no gist)"
-        mark = "★ " if h.get("_in_both") else ""
+        mark = "★ " if h.get("_strong") else ""
         lines.append(f"- {mark}{path} — {gist}")
     return "\n".join(lines)
 

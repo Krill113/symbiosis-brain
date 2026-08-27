@@ -36,23 +36,26 @@ def test_query_from_agent_uses_prompt():
     assert q == "research the plugin system"
 
 
-def test_query_from_edit_combines_path_and_new_string():
+def test_query_from_edit_combines_stem_and_new_string():
     q = build_query(
         "Edit",
         {"file_path": "/x/y.py", "new_string": "def foo(): pass"},
         max_chars=500,
     )
-    assert "/x/y.py" in q
+    # I-21: в запрос идёт ИМЯ файла без расширения, дерево каталогов — нет.
+    assert "y" in q
+    assert "/x/" not in q
     assert "def foo" in q
 
 
-def test_query_from_write_combines_path_and_content():
+def test_query_from_write_combines_stem_and_content():
     q = build_query(
         "Write",
         {"file_path": "/x/y.py", "content": "import os\nprint(1)"},
         max_chars=500,
     )
-    assert "/x/y.py" in q
+    assert "y" in q
+    assert "/x/" not in q
     assert "import os" in q
 
 
@@ -69,7 +72,34 @@ def test_query_from_multiedit_concatenates_new_strings():
         max_chars=500,
     )
     assert "A" in q and "B" in q
-    assert "/x/y.py" in q
+    assert "/x/" not in q
+
+
+def test_query_from_edit_drops_directories_entirely():
+    """C8: два файла с ОДИНАКОВЫМ хвостом каталогов дают разные запросы."""
+    q1 = build_query("Edit", {"file_path": "src/deep/nested/report.py",
+                              "new_string": "x = 1"}, max_chars=500)
+    q2 = build_query("Edit", {"file_path": "src/deep/nested/counter.py",
+                              "new_string": "x = 1"}, max_chars=500)
+    assert q1 == "report x = 1"
+    assert q2 == "counter x = 1"
+    assert "src" not in q1 and "nested" not in q1
+
+
+def test_query_from_write_collapses_whitespace_and_caps_at_400():
+    body = "слово " * 300  # 1800 символов
+    q = build_query("Write", {"file_path": "a/b/notes.md", "content": body},
+                    max_chars=500)
+    assert q.startswith("notes ")
+    head = q[len("notes "):]
+    assert len(head) == 400          # ровно кап содержимого (I-21)
+    assert "  " not in q             # схлопнутые пробелы
+
+
+def test_query_from_edit_survives_missing_fields():
+    assert build_query("Edit", {}, max_chars=500) == ""
+    assert build_query("Write", {"file_path": "x/y.md"}, max_chars=500) == "y"
+    assert build_query("Edit", {"new_string": "text"}, max_chars=500) == "text"
 
 
 def test_query_from_bash_uses_command():
@@ -789,19 +819,26 @@ def test_cli_handles_missing_vault_arg(populated_vault: Path):
 # ---------- format ★ STRONG marker (Stage 1) ----------
 
 def test_format_marks_strong_hits_with_star():
+    """I-22: ★ печатается по `_strong`, а не по `_in_both`.
+
+    Четвёртый случай — тот самый размен §4.5: `_in_both` остаётся в словаре и
+    в журнале, но звезду больше не даёт."""
     hits = [
-        {"path": "a/strong", "gist": "g1", "_in_both": True},
-        {"path": "b/weak", "gist": "g2", "_in_both": False},
-        {"path": "c/legacy", "gist": "g3"},  # missing _in_both → no star
+        {"path": "a/strong", "gist": "g1", "_in_both": True, "_strong": True},
+        {"path": "b/weak", "gist": "g2", "_in_both": False, "_strong": False},
+        {"path": "c/legacy", "gist": "g3"},  # нет ключей вовсе → нет звезды
+        {"path": "d/in-both-only", "gist": "g4", "_in_both": True, "_strong": False},
     ]
     out = format_recall_block("q", hits)
     lines = out.splitlines()
-    strong = next(l for l in lines if "a/strong" in l)
-    weak = next(l for l in lines if "b/weak" in l)
-    legacy = next(l for l in lines if "c/legacy" in l)
+    strong = next(line for line in lines if "a/strong" in line)
+    weak = next(line for line in lines if "b/weak" in line)
+    legacy = next(line for line in lines if "c/legacy" in line)
+    in_both_only = next(line for line in lines if "d/in-both-only" in line)
     assert "★" in strong
     assert "★" not in weak
     assert "★" not in legacy
+    assert "★" not in in_both_only
 
 
 # ---------- run_recall dedup (Stage 1) ----------
@@ -1105,3 +1142,154 @@ def test_task_payload_additional_context_contains_route_hint(populated_vault: Pa
     assert "[routes: 1 hints for subagent]" in out
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "- Tell each agent not to spawn children." in ctx
+
+
+# ================== CP-1: границы вызовов fts_mode (§4.2, I-8, I-19) ==================
+
+def test_run_recall_defaults_to_all_then_any():
+    cfg = PreActionConfig()
+    engine = MagicMock()
+    engine.search.return_value = []
+    run_recall(query="q", scope=None, config=cfg, engine=engine)
+    assert engine.search.call_args.kwargs["fts_mode"] == "all_then_any"
+
+
+def test_run_recall_passes_explicit_fts_mode():
+    cfg = PreActionConfig()
+    engine = MagicMock()
+    engine.search.return_value = []
+    run_recall(query="q", scope=None, config=cfg, engine=engine, fts_mode="any")
+    assert engine.search.call_args.kwargs["fts_mode"] == "any"
+
+
+def test_default_fts_mode_matches_search_constant():
+    """Локальная константа модуля (см. cp-01 §2.2) обязана совпадать с
+    канонической из search.py — иначе два источника истины разъедутся молча."""
+    from symbiosis_brain import pre_action_recall as par
+    from symbiosis_brain.search import FTS_MODE_ALL_THEN_ANY
+
+    assert par._DEFAULT_FTS_MODE == FTS_MODE_ALL_THEN_ANY
+
+
+def _fake_search_stack(monkeypatch):
+    """Подменяет тяжёлую тройку Storage/VaultSync/SearchEngine на пустышки.
+
+    Обе точки вызова импортируют их ВНУТРИ функции (`__main__.py:287-289`,
+    `453-455`), поэтому патчится атрибут модуля-источника."""
+    from types import SimpleNamespace
+
+    from symbiosis_brain import search as se
+    from symbiosis_brain import storage as st
+    from symbiosis_brain import sync as sy
+
+    class _Storage:
+        # db_path обязателен: CP-3 строит из него LogContext, а голый object()
+        # дал бы AttributeError, который fail-open проглотил бы вместе с тестом.
+        def __init__(self, db_path, *a, **k):
+            self.db_path = db_path
+
+        def close(self):
+            pass
+
+    class _Sync:
+        def __init__(self, *a, **k):
+            pass
+
+        def sync_all(self):
+            return SimpleNamespace(removed=[])
+
+    class _Engine:
+        def __init__(self, *a, **k):
+            self._vec_enabled = True
+
+        def delete_vec(self, path):
+            pass
+
+    monkeypatch.setattr(st, "Storage", _Storage)
+    monkeypatch.setattr(sy, "VaultSync", _Sync)
+    monkeypatch.setattr(se, "SearchEngine", _Engine)
+
+
+def _record_run_recall(monkeypatch) -> dict:
+    from symbiosis_brain import pre_action_recall as par
+
+    seen: dict = {}
+
+    def _fake(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(par, "run_recall", _fake)
+    return seen
+
+
+def test_prompt_recall_requests_all_then_any(tmp_path, monkeypatch):
+    """§4.2: промптовый recall (`__main__.py:314-320`) просит all_then_any ЯВНО."""
+    from symbiosis_brain import __main__ as m
+
+    vault = tmp_path / "vault"
+    (vault / ".index").mkdir(parents=True)
+    _fake_search_stack(monkeypatch)
+    seen = _record_run_recall(monkeypatch)
+
+    assert m._prompt_recall_hits(vault, "пробный промпт", None, 5, "", PreActionConfig()) == []
+    assert seen["fts_mode"] == "all_then_any"
+
+
+def test_pre_action_recall_requests_all_then_any(tmp_path, monkeypatch):
+    """§4.2: PreToolUse recall (`__main__.py:483`) просит all_then_any ЯВНО."""
+    import io
+    import json as _json
+    import sys as _sys
+
+    from symbiosis_brain import __main__ as m
+    from symbiosis_brain import pre_action_config as pac
+
+    vault = tmp_path / "vault"
+    (vault / ".index").mkdir(parents=True)
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED", raising=False)
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_SCOPE", raising=False)
+    # load_config() читает ~/.claude/... через дефолт, связанный на импорте, —
+    # подменяем саму функцию, иначе тест зависит от машины разработчика.
+    monkeypatch.setattr(pac, "load_config", lambda *a, **k: PreActionConfig())
+    _fake_search_stack(monkeypatch)
+    seen = _record_run_recall(monkeypatch)
+
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/demo/widget.py", "new_string": "def foo(): pass"},
+        "session_id": "",
+    }
+    monkeypatch.setattr(_sys, "stdin", io.StringIO(_json.dumps(payload)))
+    monkeypatch.setattr(_sys, "stdout", io.StringIO())
+
+    assert m._run_pre_action_recall(["--vault", str(vault)]) == 0
+    assert seen["fts_mode"] == "all_then_any"
+
+
+def test_legacy_gist_search_requests_all_then_any(tmp_path, monkeypatch):
+    """§4.2: legacy `_gist_search` (`__main__.py:262`) — тот же профиль."""
+    from symbiosis_brain import __main__ as m
+    from symbiosis_brain import search as se
+
+    vault = tmp_path / "vault"
+    (vault / ".index").mkdir(parents=True)
+    _fake_search_stack(monkeypatch)
+
+    seen: dict = {}
+
+    class _Engine:
+        def __init__(self, *a, **k):
+            self._vec_enabled = True
+
+        def delete_vec(self, path):
+            pass
+
+        def search(self, **kwargs):
+            seen.update(kwargs)
+            return []
+
+    monkeypatch.setattr(se, "SearchEngine", _Engine)
+
+    assert m._gist_search(vault, "запрос", None, 5) == []
+    assert seen["fts_mode"] == "all_then_any"

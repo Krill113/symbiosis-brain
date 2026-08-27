@@ -572,3 +572,19 @@ def test_the_report_prints_rerank_model_and_prefixes_when_present():
     text = eval_search.render_report(payload)
     assert "rerank" in text and "fixture/candidate-reranker" in text
     assert "prefixes" in text and "query: " in text and "passage: " in text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows counter")
+def test_peak_rss_is_actually_read_on_windows():
+    """test_peak_rss_is_a_positive_number_or_an_honest_none accepts None as a
+    pass, so it stays green even when the Windows counter is silently broken.
+    On win32 a None is not an honest answer, it is a bug: GetCurrentProcess()
+    returns a pseudo-handle that ctypes truncates to 32 bits without explicit
+    argtypes, GetProcessMemoryInfo then fails on the truncated handle, and the
+    wrapper's `except Exception: return None` swallows it. Assert the number
+    is actually read — this process (pytest, already running) is well over
+    10 MiB of working set, so a low bar like ">0" would pass on a truncated
+    zero just as easily as on a truncated garbage value."""
+    value = eval_search.peak_rss_bytes()
+    assert isinstance(value, int) and value > 0
+    assert value > 10 * 1024 * 1024, value

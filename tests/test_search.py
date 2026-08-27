@@ -520,3 +520,137 @@ def test_rank_keys_present_in_gist_mode(lexicon_engine: SearchEngine):
         assert "_fts_rank" in h and "_vec_rank" in h
         assert isinstance(h["_strong"], bool)
         assert isinstance(h["_in_both"], bool)
+
+
+# ================== CP-1b: скоуп на векторной стороне (C5, I-20) ==================
+# Векторы синтетические и вкладываются напрямую в notes_vec: только так корпус
+# ГАРАНТИРОВАННО устроен так, что скоупные ноты лежат за пределами k глобального
+# KNN (§4.4). Тест на «настоящих» эмбеддингах проверял бы модель, а не выборку.
+
+import numpy as np  # noqa: E402
+
+from symbiosis_brain.search import OVERFETCH_FACTORS  # noqa: E402
+
+_VEC_DIM = 384
+_FOREIGN_SCOPE = "beta"
+_TARGET_SCOPE = "alpha-seti"
+
+
+def _unit(index: int, value: float = 1.0, extra: tuple[int, float] | None = None) -> bytes:
+    v = np.zeros(_VEC_DIM, dtype=np.float32)
+    v[index] = value
+    if extra is not None:
+        v[extra[0]] = extra[1]
+    return v.tobytes()
+
+
+def _seed_vec_corpus(db_path: Path, *, n_foreign: int, n_target: int) -> SearchEngine:
+    """`n_foreign` чужих нот вплотную к запросу + `n_target` скоупных вдалеке.
+
+    Запрос — орт e0. Чужая нота i: e0 + i*0.001 по оси 1, то есть расстояние
+    ~0.001*i (ранги 0..n_foreign-1). Скоупная нота: орт e100, расстояние √2 —
+    гарантированно ПОСЛЕ всех чужих.
+    """
+    storage = Storage(db_path)
+    engine = SearchEngine(storage)
+    assert engine._vec_enabled, (
+        "sqlite-vec недоступен — тест голодания скоупа проверяет именно векторную "
+        "половину и без неё бессмыслен (пакет объявляет sqlite-vec обязательной "
+        "зависимостью, pyproject.toml:25)"
+    )
+    for i in range(n_foreign):
+        path = f"beta/foreign-{i:03d}.md"
+        storage.upsert_note(path=path, title=f"Foreign {i}", scope=_FOREIGN_SCOPE,
+                            note_type="wiki", content="чужая нота", tags=[])
+        storage._conn.execute(
+            "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+            (path, _unit(0, extra=(1, 0.001 * i))),
+        )
+    for j in range(n_target):
+        path = f"alpha-seti/target-{j:03d}.md"
+        storage.upsert_note(path=path, title=f"Target {j}", scope=_TARGET_SCOPE,
+                            note_type="wiki", content="скоупная нота", tags=[])
+        storage._conn.execute(
+            "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+            (path, _unit(100)),
+        )
+    storage._conn.commit()
+    return engine
+
+
+def _patch_query_vector(monkeypatch) -> None:
+    from symbiosis_brain import search as _search_mod
+
+    q = np.zeros(_VEC_DIM, dtype=np.float32)
+    q[0] = 1.0
+    monkeypatch.setattr(_search_mod, "_embed_one", lambda text: q.tolist())
+
+
+def test_overfetch_factors_are_the_measured_ladder():
+    """I-20: лестница — часть контракта, а не «настройка на вкус»."""
+    assert OVERFETCH_FACTORS == (2, 8, 32)
+
+
+def test_vector_scope_not_starved(db_path: Path, monkeypatch):
+    """C5/§4.4: скоупные ноты лежат ЗА пределами k глобального KNN, и выдача
+    всё равно набирает `limit`."""
+    limit = 5
+    engine = _seed_vec_corpus(db_path, n_foreign=40, n_target=limit)
+    _patch_query_vector(monkeypatch)
+
+    # Премисса корпуса. Без неё тест зелен при ЛЮБОЙ реализации: если скоупные
+    # ноты и так попадают в глобальный топ-limit*2, чинить нечего.
+    from symbiosis_brain.search import _embed_one
+    q_blob = np.array(_embed_one("q"), dtype=np.float32).tobytes()
+    first_k = engine.storage._conn.execute(
+        "SELECT v.path FROM notes_vec v WHERE v.embedding MATCH ?"
+        " ORDER BY v.distance LIMIT ?", (q_blob, limit * OVERFETCH_FACTORS[0]),
+    ).fetchall()
+    assert first_k, "KNN ничего не вернул — корпус собран неправильно"
+    assert all(not r[0].startswith("alpha-seti/") for r in first_k), (
+        "скоупные ноты попали в первый k — тест стал бы зелёным по построению"
+    )
+
+    results = engine.search_vector("q", scope=_TARGET_SCOPE, limit=limit)
+
+    assert len(results) == limit
+    assert {r["path"] for r in results} == {
+        f"alpha-seti/target-{j:03d}.md" for j in range(limit)
+    }
+    assert all("_distance" in r for r in results)
+
+
+def test_vector_scope_stops_when_corpus_exhausted(db_path: Path, monkeypatch):
+    """Второе стоп-условие: скоупных нот меньше, чем limit — отдаём что есть и
+    не эскалируем бесконечно."""
+    engine = _seed_vec_corpus(db_path, n_foreign=40, n_target=2)
+    _patch_query_vector(monkeypatch)
+
+    results = engine.search_vector("q", scope=_TARGET_SCOPE, limit=5)
+
+    assert len(results) == 2
+    assert {r["path"] for r in results} == {
+        "alpha-seti/target-000.md", "alpha-seti/target-001.md",
+    }
+
+
+def test_vector_without_scope_takes_the_global_top(db_path: Path, monkeypatch):
+    """Регресс: без скоупа поведение прежнее — ближайшие limit из глобального
+    пула, первым же шагом лестницы."""
+    engine = _seed_vec_corpus(db_path, n_foreign=40, n_target=5)
+    _patch_query_vector(monkeypatch)
+
+    results = engine.search_vector("q", scope=None, limit=5)
+
+    assert [r["path"] for r in results] == [f"beta/foreign-{i:03d}.md" for i in range(5)]
+
+
+def test_vector_empty_index_returns_empty(db_path: Path, monkeypatch):
+    """Пустой notes_vec: `k >= count(notes_vec)` выполняется сразу, лестница не
+    крутится вхолостую и исключения не бросает."""
+    storage = Storage(db_path)
+    engine = SearchEngine(storage)
+    assert engine._vec_enabled
+    _patch_query_vector(monkeypatch)
+
+    assert engine.search_vector("q", scope=_TARGET_SCOPE, limit=5) == []

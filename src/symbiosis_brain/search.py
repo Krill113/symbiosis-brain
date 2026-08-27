@@ -80,6 +80,19 @@ _STRONG_RANK_MAX = 3
 против 27,5 % у прежнего `_in_both`. Порог зависит от размера пула — меняя
 `hit_limit`, перечитай [[decisions/2026-08-26-recall-strength-mark]]."""
 
+OVERFETCH_FACTORS = (2, 8, 32)
+"""Множители `limit` для KNN в scoped-выдаче (I-20, §4.4).
+
+vec0 не умеет предфильтр: `notes_vec` объявлена как
+`vec0(path TEXT PRIMARY KEY, embedding FLOAT[384])` (search.py:245-254), метаданной
+для партиционирования там нет, и джойн с `notes` по scope даёт побайтно тот же
+результат, что постфильтр — замерено (EXPLAIN QUERY PLAN: SCAN v VIRTUAL TABLE,
+затем SEARCH n). Поэтому лестница: берём глобальный топ-k, фильтруем, и при
+недоборе увеличиваем k. Первый шаг равен сегодняшнему `limit * 2`, то есть
+незаскоупленная выдача поведения не меняет. Цена третьего шага честная:
+limit*32 при limit=12 — KNN на 384 кандидата, 2,3-6,3 мс против 10,2 мс всей
+векторной половины ([отчёт 03, F31]); он срабатывает только на узких скоупах."""
+
 
 def _extract_fallback_gist(content: str, max_chars: int = 80) -> str:
     """Extract first non-empty paragraph after frontmatter+heading, ≤max_chars.
@@ -480,25 +493,54 @@ class SearchEngine:
         return [self.storage._row_to_note(r) for r in rows]
 
     def search_vector(self, query: str, scope: str | None = None, limit: int = 10) -> list[dict]:
+        """Vector half. Signature unchanged (I-20) — the escalation is internal.
+
+        A scoped call cannot be pre-filtered by vec0, so we over-fetch: pull the
+        global top-k, post-filter by scope, and grow k when the scope came up
+        short. Exactly two stop conditions — `limit` collected, or the corpus
+        exhausted (`k >= count(notes_vec)`). Measured before this change: 25 %
+        of scoped queries returned fewer notes than asked ([report 03, F21]).
+        """
         if not self._vec_enabled:
             return []
-        q_emb = _embed_one(query)
-        rows = self.storage._conn.execute("""
-            SELECT v.path, v.distance
-            FROM notes_vec v
-            WHERE v.embedding MATCH ?
-            ORDER BY v.distance
-            LIMIT ?
-        """, (np.array(q_emb, dtype=np.float32).tobytes(), limit * 2)).fetchall()
+        q_blob = np.array(_embed_one(query), dtype=np.float32).tobytes()
+        try:
+            corpus = self.storage._conn.execute(
+                "SELECT COUNT(*) FROM notes_vec"
+            ).fetchone()[0]
+        except Exception:
+            # Fail-safe, not fail-open-wide: an unknown corpus size collapses the
+            # ladder to its first rung, i.e. exactly the pre-Stage-2 behaviour.
+            corpus = 0
+        # Notes are memoised across rungs: without it the third rung re-reads
+        # every path the first two already fetched.
+        notes_by_path: dict[str, dict | None] = {}
+        results: list[dict] = []
+        for factor in OVERFETCH_FACTORS:
+            k = max(1, limit * factor)
+            rows = self.storage._conn.execute("""
+                SELECT v.path, v.distance
+                FROM notes_vec v
+                WHERE v.embedding MATCH ?
+                ORDER BY v.distance
+                LIMIT ?
+            """, (q_blob, k)).fetchall()
 
-        results = []
-        for row in rows:
-            note = self.storage.get_note(row[0])
-            if note and (scope is None or note["scope"] in (scope, "global")):
-                note["_distance"] = row[1]
-                results.append(note)
-                if len(results) >= limit:
-                    break
+            results = []
+            for row in rows:
+                path = row[0]
+                if path not in notes_by_path:
+                    notes_by_path[path] = self.storage.get_note(path)
+                note = notes_by_path[path]
+                if note and (scope is None or note["scope"] in (scope, "global")):
+                    note["_distance"] = row[1]
+                    results.append(note)
+                    if len(results) >= limit:
+                        break
+            if len(results) >= limit:
+                break
+            if k >= corpus:
+                break
         return results
 
     def search(self, query: str, scope: str | None = None, limit: int = 10,

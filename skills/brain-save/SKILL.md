@@ -65,6 +65,14 @@ Decision tree:
 
 If you're saving in a session where you already searched on the same topic in Step 1 of `brain-recall` — that result counts; you don't need to re-search.
 
+**If the `brain_write` response contains a `[dedup]` line** — read the notes it names and decide
+whether they should be merged, BEFORE writing the next one.
+
+**A missing `[dedup]` line does not cancel Step 2.** The signal is narrow: it requires the candidate
+to surface in both halves of the search, it is silent when the vector index is cold or disabled, and
+it is silent on a rephrasing that shares no words. "No duplicate was found" is not "there is no
+duplicate".
+
 ### Step 3: Determine metadata
 
 - **type:** `decision` (choice with reasoning), `pattern` (recurring approach), `mistake` (bug + fix), `research` (investigation findings), `user` (preferences), `project` (facts/context), `reference` (external pointers)

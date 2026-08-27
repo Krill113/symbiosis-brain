@@ -110,7 +110,7 @@ flowchart TD
     SE -.->|next session| SS
 ```
 
-**MCP tools (13):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`.
+**MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`.
 
 **Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill), `brain-autolearn` (repetition → action rule / script / skill).
 
@@ -122,6 +122,19 @@ flowchart TD
 - `Stop` — context-threshold save reminder (default zones 25 / 35 / 45%)
 - `PreCompact` — last-chance save before `/compact`
 - `SessionEnd` — vault git sync
+
+**Every search is logged locally.** Every hit list the memory produces — from the MCP tools and from
+the hooks alike — goes into a pair of tables inside your own `<vault>/.index/brain.db`, together
+with the query, the number of hits and how long the hook took end to end. It never leaves your
+machine, it is what `brain-cli report` and `brain_report` read, and it is rotated after 90 days.
+Two switches turn it off: `SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off` in the environment (server and hooks),
+or `"retrieval_log_enabled": false` in `~/.claude/symbiosis-brain-pre-action.json` (hooks only). The
+environment variable wins over the file.
+
+**Every note the product writes is signed.** New and rewritten notes carry a `written_by:` line in
+their frontmatter — client and version, model, date. It records **who last wrote the note through the product**, not who thought it up: `brain_append` and `brain_patch` rebuild the frontmatter too,
+so the line always names the most recent write. Notes written before this release carry no such
+line, and none is invented for them.
 
 You write nothing manually. The vault grows as you work.
 
@@ -147,6 +160,9 @@ The installer seeds a behavioural env block in `~/.claude/settings.json` (non-cl
 | `SYMBIOSIS_BRAIN_RECALL_TOP_K` | `5` | Max hits returned per recall |
 | `SYMBIOSIS_BRAIN_ROUTING_MODE` | `decompose` | Tool-routing output mode (splits discipline vs tool hints) |
 | `SYMBIOSIS_BRAIN_RULES_ENABLED` | `true` | Toggle the periodic tool-roster reminder |
+| `SYMBIOSIS_BRAIN_RETRIEVAL_LOG` | `on` | Local search log in `<vault>/.index/brain.db`; `off` disables it in both the server and the hooks |
+| `SYMBIOSIS_BRAIN_DEDUP_MIN` | `0.5` | Overlap threshold for the `[dedup]` hint on `brain_write`; `0` turns the hint off entirely |
+| `SYMBIOSIS_BRAIN_DEDUP_MAX_SHOWN` | `2` | How many similar notes the hint may name; `0` also turns it off |
 
 ## Maintenance
 

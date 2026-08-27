@@ -110,7 +110,7 @@ flowchart TD
     SE -.->|next session| SS
 ```
 
-**MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`.
+**MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`. The `brain_report` text and the `[dedup]` hint on `brain_write` are Russian for now; localizing them is on the backlog.
 
 **Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill), `brain-autolearn` (repetition → action rule / script / skill).
 
@@ -125,8 +125,9 @@ flowchart TD
 
 **Every search is logged locally.** Every hit list the memory produces — from the MCP tools and from
 the hooks alike — goes into a pair of tables inside your own `<vault>/.index/brain.db`, together
-with the query, the number of hits and how long the hook took end to end. It never leaves your
-machine, it is what `brain-cli report` and `brain_report` read, and it is rotated after 90 days.
+with the query, the number of hits and how long the hook took end to end. The query is stored in
+full (on the hook path, that means your prompt text), truncated to 2000 characters. It never leaves
+your machine, it is what `brain-cli report` and `brain_report` read, and it is rotated after 90 days.
 Two switches turn it off: `SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off` in the environment (server and hooks),
 or `"retrieval_log_enabled": false` in `~/.claude/symbiosis-brain-pre-action.json` (hooks only). The
 environment variable wins over the file.
@@ -160,6 +161,13 @@ The installer seeds a behavioural env block in `~/.claude/settings.json` (non-cl
 | `SYMBIOSIS_BRAIN_RECALL_TOP_K` | `5` | Max hits returned per recall |
 | `SYMBIOSIS_BRAIN_ROUTING_MODE` | `decompose` | Tool-routing output mode (splits discipline vs tool hints) |
 | `SYMBIOSIS_BRAIN_RULES_ENABLED` | `true` | Toggle the periodic tool-roster reminder |
+
+Three more variables tune Stage 2 telemetry but are **not** seeded by the installer — their
+defaults below apply with no entry written to `settings.json`, and you only need to set them if
+you want something other than the default:
+
+| Variable | Default | What it does |
+|---|---|---|
 | `SYMBIOSIS_BRAIN_RETRIEVAL_LOG` | `on` | Local search log in `<vault>/.index/brain.db`; `off` disables it in both the server and the hooks |
 | `SYMBIOSIS_BRAIN_DEDUP_MIN` | `0.5` | Overlap threshold for the `[dedup]` hint on `brain_write`; `0` turns the hint off entirely |
 | `SYMBIOSIS_BRAIN_DEDUP_MAX_SHOWN` | `2` | How many similar notes the hint may name; `0` also turns it off |

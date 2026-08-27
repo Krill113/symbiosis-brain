@@ -122,6 +122,12 @@ class PreActionConfig:
     # MultiEdit) on a code file with Serena present get a one-line "map dependencies
     # first" nudge as additionalContext (never blocks). JSON-overridable like above. ---
     serena_advisory_enabled: bool = True
+    # --- Stage-2 retrieval log (I-6). The FILE half of the kill switch; the env
+    # var SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off wins over any value here (§2.7), so
+    # there is exactly one lever that turns telemetry off everywhere. Validated
+    # by the generic hasattr+type loop below (pre_action_config.py:140-151) —
+    # no extra code, and an unknown/mistyped value degrades to this default. ---
+    retrieval_log_enabled: bool = True
 
 
 def load_config(path: Path = CONFIG_PATH) -> PreActionConfig:

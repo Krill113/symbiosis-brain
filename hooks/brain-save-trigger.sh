@@ -223,6 +223,18 @@ EOF
     SKIP_FLAG=""
     [ "$SKIP_RECALL" = "1" ] && SKIP_FLAG="--skip-memory"
 
+    # e2e_ms telemetry (I-10, §2.8). WHOLE MICROSECONDS, no separator at all:
+    # EPOCHREALTIME prints the fraction with the CURRENT LOCALE's decimal mark
+    # (measured on bash 5.2.37: LC_ALL=C -> 1787768444.480857,
+    # LC_NUMERIC=de_DE.UTF-8 -> 1787768444,536060). The pattern eats both the
+    # dot and the comma, so what reaches argparse is digits and nothing else —
+    # a comma there means SystemExit(2), EXIT=2 below, GIST_JSON='[]' and the
+    # user's memory silently gone. EPOCHREALTIME is a bash-5 builtin (no fork);
+    # the fallback forks once, which is fine here — this is a trigger script,
+    # not the fork-free status line (hooks/sb-hooklib.sh:4-9).
+    SB_T0=${EPOCHREALTIME/[.,]/}
+    [ -n "$SB_T0" ] || SB_T0="$(date +%s)000000"
+
     # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.
     # Fixes silent failure on machines where `python -m symbiosis_brain` does
     # not resolve (e.g. system Python without the package installed). See
@@ -235,6 +247,7 @@ EOF
         --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
         --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
         --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
+        --hook-started-at "$SB_T0" \
         $SKIP_FLAG 2>>"$DEBUG_LOG")
       EXIT=$?
     else
@@ -242,6 +255,7 @@ EOF
         --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
         --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
         --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
+        --hook-started-at "$SB_T0" \
         $SKIP_FLAG 2>>"$DEBUG_LOG")
       EXIT=$?
     fi

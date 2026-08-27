@@ -2,9 +2,11 @@
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -75,8 +77,17 @@ def sb_home(tmp_path_factory) -> Path:
 
 
 def _hermetic_env(home: Path, **extra) -> dict:
-    """os.environ with Path.home() pointed at `home`, plus optional overrides."""
+    """os.environ with Path.home() pointed at `home`, plus optional overrides.
+
+    CLAUDE_CODE_CHILD_SESSION is stripped from the inherited environment: the
+    test RUNNER itself may be executing inside a subagent (that env var is the
+    §2.5 signal 1 for exactly that), which would otherwise leak straight into
+    the child CLI process and corrupt every origin='main' assertion below —
+    discovered running this suite (CP-3). Callers that want the signal pass it
+    explicitly via **extra, same as before.
+    """
     env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    env.pop("CLAUDE_CODE_CHILD_SESSION", None)
     env.update(extra)
     return env
 
@@ -669,3 +680,154 @@ def test_legacy_bare_list_shape_unchanged(tmp_path: Path):
     assert "user/prefs.md" in [h["path"] for h in first], first
     # and nothing was written into the prompt seen store
     assert not list(tmp_dir.glob("brain-prompt-recall-seen-*.json"))
+
+
+# --- CP-3: the retrieval log on the hook paths -------------------------------
+
+def _log_rows(vault: Path) -> list[dict]:
+    """Every retrieval_event row of a tmp vault, newest last."""
+    db = vault / ".index" / "brain.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM retrieval_event ORDER BY id").fetchall()]
+    finally:
+        conn.close()
+
+
+def _seed_one_note(vault: Path) -> None:
+    note = vault / "patterns" / "telemetry.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        "---\ntitle: Telemetry\ntype: pattern\nscope: global\n"
+        "gist: widgets and gadgets\ntags: []\n---\n\n## Body\n\nwidgets everywhere.\n",
+        encoding="utf-8",
+    )
+
+
+def test_legacy_bare_list_path_logs_as_legacy_gist(tmp_vault_with_taxonomy: Path,
+                                                   sb_home: Path):
+    """CP-3, source=legacy_gist: origin='unknown' and session_id NULL always (Д2)."""
+    _seed_one_note(tmp_vault_with_taxonomy)
+    micros = str(int(time.time() * 1_000_000))
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets",
+         "--limit", "5", "--hook-started-at", micros],
+        capture_output=True, text=True, timeout=120,
+        env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert isinstance(json.loads(result.stdout), list)      # byte-shape unchanged
+    rows = _log_rows(tmp_vault_with_taxonomy)
+    assert len(rows) == 1
+    assert rows[0]["source"] == "legacy_gist"
+    assert rows[0]["origin"] == "unknown"
+    assert rows[0]["session_id"] is None
+    assert rows[0]["client"] == "hook"
+    assert rows[0]["query"] == "widgets"
+    assert rows[0]["e2e_ms"] is not None and rows[0]["e2e_ms"] >= 0
+
+
+def test_envelope_path_logs_as_hook_prompt_with_session_and_origin(
+        tmp_vault_with_taxonomy: Path, sb_home: Path):
+    _seed_one_note(tmp_vault_with_taxonomy)
+    payload = {"prompt": "widgets please", "session_id": "sid-9",
+               "transcript_path": "/tmp/projects/p/sid-9.jsonl"}
+    micros = str(int(time.time() * 1_000_000))
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_vault_with_taxonomy), "--prompt-from-stdin",
+         "--session-id", "sid-9", "--limit", "5", "--hook-started-at", micros],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=120,
+        env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "memory_hits" in json.loads(result.stdout)
+    rows = _log_rows(tmp_vault_with_taxonomy)
+    assert [r["source"] for r in rows] == ["hook_prompt"]
+    assert rows[0]["session_id"] == "sid-9"
+    assert rows[0]["origin"] == "main"
+    assert rows[0]["client"] == "hook"
+    assert rows[0]["tool"] is None
+    assert rows[0]["query"] == "widgets please"
+    # Effective mode only ('any'|'all'|'fallback_any'); 'all_then_any' never
+    # reaches the column (§2.9). Exact value is pinned by CP-1's own tests.
+    assert rows[0]["fts_mode"] in ("any", "all", "fallback_any")
+    assert rows[0]["e2e_ms"] is not None
+
+
+def test_hook_started_at_garbage_leaves_e2e_null_and_recall_alive(
+        tmp_vault_with_taxonomy: Path, sb_home: Path):
+    """e2e_ms is NULL for an empty value, for garbage and for a value outside
+    the window (§11.4) — and none of the three costs a single hit."""
+    _seed_one_note(tmp_vault_with_taxonomy)
+    stale = str(int((time.time() - 7200) * 1_000_000))
+    for value in ("", "not-a-number", stale):
+        db = tmp_vault_with_taxonomy / ".index" / "brain.db"
+        if db.exists():
+            conn = sqlite3.connect(str(db))
+            conn.execute("DELETE FROM retrieval_event")
+            conn.commit()
+            conn.close()
+        result = subprocess.run(
+            [sys.executable, "-m", "symbiosis_brain", "search-gist",
+             "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets",
+             "--limit", "5", "--hook-started-at", value],
+            capture_output=True, text=True, timeout=120,
+            env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
+        )
+        assert result.returncode == 0, f"{value!r}: {result.stderr}"
+        assert len(json.loads(result.stdout)) >= 1, f"{value!r} emptied recall"
+        rows = _log_rows(tmp_vault_with_taxonomy)
+        assert rows[-1]["e2e_ms"] is None, value
+
+
+def test_unknown_flag_from_a_newer_hook_does_not_kill_recall(
+        tmp_vault_with_taxonomy: Path, sb_home: Path):
+    """New bash + old package is the only dangerous drift direction (§8.5).
+    parse_known_args makes an unknown flag a no-op instead of exit 2."""
+    _seed_one_note(tmp_vault_with_taxonomy)
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets",
+         "--limit", "5", "--some-flag-from-2027", "42"],
+        capture_output=True, text=True, timeout=120,
+        env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)) >= 1
+
+
+def test_env_switch_off_silences_the_hook_paths(tmp_vault_with_taxonomy: Path,
+                                                sb_home: Path):
+    _seed_one_note(tmp_vault_with_taxonomy)
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets", "--limit", "5"],
+        capture_output=True, text=True, timeout=120,
+        env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="off"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)) >= 1
+    assert _log_rows(tmp_vault_with_taxonomy) == []
+
+
+def test_file_switch_off_reaches_the_legacy_path_too(tmp_vault_with_taxonomy: Path,
+                                                     sb_home: Path):
+    """The file key only reaches _gist_search because config load moved ABOVE
+    the `if not envelope` return (Task 3.4, §2.7)."""
+    _seed_one_note(tmp_vault_with_taxonomy)
+    (sb_home / ".claude").mkdir(parents=True, exist_ok=True)
+    (sb_home / ".claude" / "symbiosis-brain-pre-action.json").write_text(
+        json.dumps({"retrieval_log_enabled": False}), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "symbiosis_brain", "search-gist",
+         "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets", "--limit", "5"],
+        capture_output=True, text=True, timeout=120,
+        env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)) >= 1
+    assert _log_rows(tmp_vault_with_taxonomy) == []

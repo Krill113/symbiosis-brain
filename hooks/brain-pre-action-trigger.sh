@@ -138,9 +138,17 @@ fi
 
 DEBUG_LOG="${TMPDIR:-${TEMP:-/tmp}}/brain-hook-debug.log"
 
+# e2e_ms telemetry (I-10, §2.8): whole microseconds, locale-proof. Taken HERE,
+# after the action-rule matcher above — by definition e2e_ms measures from just
+# before `uv run` to the moment the block is built, and excludes both the bash
+# prologue and the matcher (DDL comment on e2e_ms, I-1).
+SB_T0=${EPOCHREALTIME/[.,]/}
+[ -n "$SB_T0" ] || SB_T0="$(date +%s)000000"
+
 OUTPUT=$(printf '%s' "$INPUT" | timeout 30 uv run --quiet --directory "$SYMBIOSIS_BRAIN_TOOLS" \
   python -m symbiosis_brain pre-action-recall \
-  --vault "$SYMBIOSIS_BRAIN_VAULT" 2>>"$DEBUG_LOG")
+  --vault "$SYMBIOSIS_BRAIN_VAULT" \
+  --hook-started-at "$SB_T0" 2>>"$DEBUG_LOG")
 EXIT=$?
 
 if [ "$EXIT" -ne 0 ]; then

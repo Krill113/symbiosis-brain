@@ -98,6 +98,83 @@ def _load_pre_action_config():
         return PreActionConfig()
 
 
+def parse_hook_started_at(raw: str) -> float | None:
+    """`--hook-started-at` → epoch seconds, or None for "not given" (I-9).
+
+    The cost of an error here is asymmetric, and that is why the value crosses
+    the boundary as a STRING: a comma-separated float blows argparse up with
+    SystemExit(2), and downstream that is EXIT=2 in brain-save-trigger.sh:249-253,
+    where GIST_JSON is silently replaced with '[]' — telemetry would have killed
+    memory itself for every user on a ru/de locale (§2.8, measured).
+
+    Garbage is "not given", never an error. Digits only = whole microseconds
+    (I-10); a value with a dot = seconds; anything outside a sane hour-wide
+    window is treated as not given, because a stale value would poison e2e_ms.
+    """
+    import time
+
+    s = (raw or "").strip().replace(",", ".")
+    if not s:
+        return None
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    if v <= 0:
+        return None
+    t0 = v / 1_000_000 if "." not in s else v
+    now = time.time()
+    return t0 if 0 < now - t0 < 3600 else None
+
+
+def _close_retrieval_log() -> None:
+    """Flush point (в) of §2.4 п. 4 at the end of a hook process. Fail-open:
+    a telemetry teardown must never change the hook's exit code."""
+    try:
+        from symbiosis_brain import retrieval_log
+
+        retrieval_log.close()
+    except Exception:
+        pass
+
+
+def _detect_origin(payload: dict | None) -> str:
+    """Fail-open wrapper around retrieval_log.detect_origin (I-4)."""
+    try:
+        from symbiosis_brain import retrieval_log
+
+        return retrieval_log.detect_origin(payload)
+    except Exception:
+        return "unknown"
+
+
+def _hook_log_ctx(source, vault_path, cfg, *, session_id=None, origin="unknown",
+                  tool=None, started_at=None):
+    """LogContext for a hook-path retrieval, or None when the log is off.
+
+    `client` is the literal 'hook' (§2.5, Р4): a CLI process has no `app` and
+    therefore no clientInfo to report. Both switches are consulted here, and
+    the env one wins over the file one — `is_enabled` enforces that (§2.7).
+    Fail-open: telemetry that cannot even build its context stays silent.
+    """
+    try:
+        from symbiosis_brain import retrieval_log
+
+        if not retrieval_log.is_enabled(cfg):
+            return None
+        return retrieval_log.LogContext(
+            source=source,
+            db_path=vault_path / ".index" / "brain.db",
+            session_id=session_id or None,
+            origin=origin,
+            tool=tool,
+            client="hook",
+            started_at=started_at,
+        )
+    except Exception:
+        return None
+
+
 def _run_search_gist(argv: list[str]):
     import argparse
     import json
@@ -132,7 +209,20 @@ def _run_search_gist(argv: list[str]):
     parser.add_argument("--routing-mode", default="decompose")
     parser.add_argument("--monotonic-turn", type=int, default=0)
     parser.add_argument("--rules-emitted", action="store_true")
-    args = parser.parse_args(argv)
+    # str, never type=float (I-9): in a comma locale a float would not parse,
+    # argparse would exit 2 and brain-save-trigger.sh:249-253 would substitute
+    # '[]' — telemetry taking memory down with it (§2.8).
+    parser.add_argument("--hook-started-at", default="")
+    # parse_known_args + SystemExit guard: the ONLY dangerous drift direction is
+    # a NEWER bash hook against an OLDER package (§8.5). An unknown flag must be
+    # ignored, not kill recall. Today this entry has no guard at all.
+    try:
+        args, _unknown = parser.parse_known_args(argv)
+    except SystemExit:
+        # A typed option (--limit abc) can still exit. Emit the legacy empty
+        # list: the bash consumer accepts both shapes (brain-save-trigger.sh:259-265).
+        print("[]")
+        return 0
 
     # 🚨 BACKWARD-COMPAT (controller correction 2026-06-05): the DEPLOYED
     # ~/.claude bash hook calls this `search-gist` (via `uv run`) and parses the
@@ -147,35 +237,45 @@ def _run_search_gist(argv: list[str]):
     # ["prompt"] untruncated (do NOT rely on the truncated --query); embedded
     # quotes survive json.loads.
     prompt = args.query or ""
+    payload: dict = {}
     if args.prompt_from_stdin:
         try:
             raw = sys.stdin.read()
             data = json.loads(raw) if raw else {}
+            payload = data if isinstance(data, dict) else {}
             prompt = (data.get("prompt") if isinstance(data, dict) else "") or ""
         except (json.JSONDecodeError, ValueError):
             prompt = ""
 
+    started_at = parse_hook_started_at(args.hook_started_at)
     vault_path = Path(args.vault).expanduser().resolve()
+
+    # Live config knobs (routing_*, recall dedup, excluded types) — loaded ONCE
+    # for BOTH folds below AND for the legacy bare-list path. It used to be
+    # loaded after the `if not envelope` return, which made the FILE switch
+    # `retrieval_log_enabled` (§2.7) physically invisible to `_gist_search`.
+    # A load error already degraded to dataclass defaults inside the helper;
+    # None means the module itself would not import, and the memory fold then
+    # falls back to the raw legacy search.
+    cfg = _load_pre_action_config()
 
     # Legacy bare-list path: keep the exact old behavior, including the early
     # "[]" return for a missing vault. Routing is NOT run here (the deployed
-    # hook does not consume route_hints yet).
+    # hook does not consume route_hints yet). The retrieval log is the ONLY
+    # addition, and it changes no byte of the output (contract __main__.py:136-146).
     if not envelope:
         if not vault_path.exists():
             print("[]")
             return 0
-        results = _gist_search(vault_path, args.query, args.scope, args.limit)
+        results = _gist_search(
+            vault_path, args.query, args.scope, args.limit,
+            log_ctx=_hook_log_ctx("legacy_gist", vault_path, cfg, started_at=started_at),
+        )
         _emit_json(results)
         return 0
 
     # Envelope path (Phase B / opt-in). Fold the routing engine in and emit
     # {memory_hits, route_hints}. Every step is fail-open.
-    #
-    # Live config knobs (routing_*, recall dedup, excluded types) — loaded ONCE
-    # for BOTH folds below. A load error already degraded to dataclass defaults
-    # inside the helper; None means the module itself would not import, and the
-    # memory fold then falls back to the raw legacy search.
-    cfg = _load_pre_action_config()
 
     route_hint_list: list = []
     try:
@@ -210,10 +310,23 @@ def _run_search_gist(argv: list[str]):
     memory_hits: list = []
     if not args.skip_memory and vault_path.exists() and prompt:
         if cfg is None:
-            memory_hits = _gist_search(vault_path, prompt, args.scope, args.limit)
+            # Config module would not even import: the legacy raw search is the
+            # fallback, and it logs as `legacy_gist` — same source, same
+            # unknown origin, because that row means one thing everywhere (Д2).
+            memory_hits = _gist_search(
+                vault_path, prompt, args.scope, args.limit,
+                log_ctx=_hook_log_ctx("legacy_gist", vault_path, None,
+                                      started_at=started_at),
+            )
         else:
             memory_hits = _prompt_recall_hits(
                 vault_path, prompt, args.scope, args.limit, args.session_id, cfg,
+                log_ctx=_hook_log_ctx(
+                    "hook_prompt", vault_path, cfg,
+                    session_id=args.session_id,
+                    origin=_detect_origin(payload),
+                    started_at=started_at,
+                ),
             )
 
     _emit_json({"memory_hits": memory_hits, "route_hints": route_hint_list})
@@ -237,14 +350,22 @@ def _shape_hits(rows: list) -> list:
     ]
 
 
-def _gist_search(vault_path, query, scope, limit) -> list:
+def _gist_search(vault_path, query, scope, limit, *, log_ctx=None) -> list:
     """LEGACY bare-list path only: raw gist-mode top-N, no dedup, no type
     filter, no over-fetch.
 
     Kept byte-behaviour-identical on purpose — a pre-Phase-B copy of the hook
     still calls `search-gist` without `--envelope`/`--prompt-from-stdin` and
     parses exactly this. The envelope path goes through `_prompt_recall_hits`;
-    do NOT "unify" the two."""
+    do NOT "unify" the two.
+
+    `log_ctx` (§2.9): this path has NO post-processing between search() and the
+    caller, so the surfacing point IS the return of search() — unlike the two
+    recall paths, which log from run_recall after the cap. Its rows always carry
+    origin='unknown' and session_id NULL: one `legacy_gist` row means one thing
+    everywhere, and on the bare-list entry there is no payload to read at all
+    (stdin is consumed only under --prompt-from-stdin, __main__.py:150-157).
+    """
     from symbiosis_brain.storage import Storage
     from symbiosis_brain.search import SearchEngine
     from symbiosis_brain.sync import VaultSync
@@ -259,11 +380,13 @@ def _gist_search(vault_path, query, scope, limit) -> list:
     # repairs them at O(drift) via repair_index().
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
-    results = search.search(query=query, scope=scope, limit=limit, mode="gist")
+    results = search.search(query=query, scope=scope, limit=limit, mode="gist",
+                            log_ctx=log_ctx)
     return _shape_hits(results)
 
 
-def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg) -> list:
+def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg, *,
+                        log_ctx=None) -> list:
     """Envelope-path prompt recall: the SAME pipeline PreToolUse runs.
 
     Buys three things the raw `_gist_search` never had on the UserPromptSubmit
@@ -317,6 +440,11 @@ def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg) -> li
             config=replace(cfg, hit_limit=limit),
             engine=engine,
             seen=seen,
+            # Explicit on BOTH inject paths (I-8): search()'s own default is
+            # `any` (I-19), and letting it apply here would break the Q3 law
+            # silently. CP-1 gives the value teeth; CP-3 only fixes the wiring.
+            fts_mode="all_then_any",
+            log_ctx=log_ctx,
         )
     except Exception:
         return []
@@ -402,11 +530,19 @@ def _run_pre_action_recall(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="symbiosis_brain pre-action-recall")
     parser.add_argument("--vault", required=True)
+    # str, never type=float (I-9, §2.8): the comma locale would turn telemetry
+    # into an empty recall (here the failure is quiet — `except SystemExit`
+    # below returns 0 — which makes it WORSE, not better, to diagnose).
+    parser.add_argument("--hook-started-at", default="")
     try:
-        args = parser.parse_args(argv)
+        # parse_known_args: a flag added by a newer bash hook must be ignored,
+        # not kill the recall of an older package (§8.5).
+        args, _unknown = parser.parse_known_args(argv)
     except SystemExit:
         # argparse calls sys.exit(2) on bad args — convert to fail-open exit 0
         return 0
+
+    started_at = parse_hook_started_at(args.hook_started_at)
 
     # Read PreToolUse payload from stdin (piped by bash wrapper)
     try:
@@ -480,7 +616,24 @@ def _run_pre_action_recall(argv: list[str]) -> int:
             except Exception:
                 seen = None  # fail-open: dedup is best-effort, never block recall
 
-        hits = run_recall(query=query, scope=scope, config=cfg, engine=engine, seen=seen)
+        # origin is computed HERE, in the hook process of THIS tool call: the
+        # CP-3 preflight measured that PreToolUse DOES run inside a subagent
+        # for its own tool calls (review/preflight-step-b/README.md) — the
+        # payload's `agent_id` is what tells the two apart (see
+        # retrieval_log.detect_origin). `tool` carries tool_name in the row
+        # regardless, so "the hint went to Task/Agent" stays visible without a
+        # new column (I-1).
+        hits = run_recall(
+            query=query, scope=scope, config=cfg, engine=engine, seen=seen,
+            fts_mode="all_then_any",
+            log_ctx=_hook_log_ctx(
+                "hook_pre_action", vault_path, cfg,
+                session_id=session_id,
+                origin=_detect_origin(payload),
+                tool=tool_name,
+                started_at=started_at,
+            ),
+        )
         recall_block = format_recall_block(query, hits)
 
         # C3: route hints on a SUBAGENT prompt. The user's prompt has had these
@@ -579,12 +732,20 @@ def _run_compile_action_rules(argv: list[str]) -> int:
 
 def main():
     argv = sys.argv[1:]
-    if argv and argv[0] == "search-gist":
-        sys.exit(_run_search_gist(argv[1:]))
+    if argv and argv[0] in ("search-gist", "pre-action-recall"):
+        # Both hook entries are short-lived processes, and close() is flush
+        # point (в) of §2.4 п. 4: the accumulated skip delta must not die with
+        # them. One finally here covers every `return` inside the two
+        # subcommands instead of a dozen scattered try/finally blocks (Д3).
+        runner = (_run_search_gist if argv[0] == "search-gist"
+                  else _run_pre_action_recall)
+        try:
+            code = runner(argv[1:])
+        finally:
+            _close_retrieval_log()
+        sys.exit(code)
     if argv and argv[0] == "prewarm":
         sys.exit(_run_prewarm(argv[1:]))
-    if argv and argv[0] == "pre-action-recall":
-        sys.exit(_run_pre_action_recall(argv[1:]))
     if argv and argv[0] == "compile-action-rules":
         sys.exit(_run_compile_action_rules(argv[1:]))
     # Default — MCP server

@@ -555,6 +555,26 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="brain_report",
+            description=(
+                "Vault health report: what memory actually surfaced and read, "
+                "and what looks dead (archive candidates)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "window_days": {"type": "integer", "default": 30,
+                                    "description": "Analysis window in days."},
+                    "scope": {"type": "string",
+                              "description": "Limit to one project scope."},
+                    "top": {"type": "integer", "default": 10,
+                            "description": "Rows per section."},
+                    "full": {"type": "boolean", "default": False,
+                             "description": "Print full lists instead of the capped default."},
+                },
+            },
+        ),
     ]
 
 
@@ -1101,6 +1121,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "dry_run": dry_run,
         }
         return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
+
+    elif name == "brain_report":
+        # Imported inside the branch, like brain_rename (server.py:869): the module
+        # is only needed when the tool is actually called.
+        from symbiosis_brain import report as _report
+        full = bool(arguments.get("full", False))
+        data = _report.build_report(
+            _storage,
+            _vault_path,
+            days=arguments.get("window_days", 30),
+            scope=arguments.get("scope"),
+            # top=None is "no cap" — the renderer can only print what it was given
+            # (Р6.2 of cp-06).
+            top=None if full else arguments.get("top", 10),
+        )
+        return [TextContent(type="text", text=_report.render_report(data, full=full))]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

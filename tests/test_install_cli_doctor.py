@@ -100,8 +100,17 @@ def _green_install(tmp_path, monkeypatch):
 
     hooks = tmp_path / "hooks"
     hooks.mkdir(exist_ok=True)
+    packaged = install_cli._packaged_hooks_dir()
     for name in install_cli.HOOK_FILES_SH:
-        (hooks / name).write_text("ok", encoding="utf-8")
+        src = packaged / name
+        # Real packaged content, not a placeholder: doctor now compares the two
+        # installed hooks against the package (CP-6, spec §8.2), and a fixture full
+        # of "ok" describes a STALE install, not a healthy one. write_text() may
+        # translate newlines here — that is exactly why the comparison normalizes.
+        (hooks / name).write_text(
+            src.read_text(encoding="utf-8") if src.exists() else "ok",
+            encoding="utf-8",
+        )
 
     commands = tmp_path / "commands"
     commands.mkdir(exist_ok=True)
@@ -118,6 +127,11 @@ def _green_install(tmp_path, monkeypatch):
     monkeypatch.setattr(install_cli, "_command_dir", lambda: commands)
     monkeypatch.setattr(install_cli, "_resolve_vault_path", lambda: vault)
     monkeypatch.setattr(install_cli, "_check_mcp_running", lambda: True)
+    # HOME *and* USERPROFILE (Stage-0 lesson, 00-plan §0.6 п. 2): Path.home() reads
+    # USERPROFILE on Windows, and a path helper we forget to monkeypatch must not
+    # reach the developer's live ~/.claude.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return vault
 
 
@@ -253,3 +267,96 @@ def test_doctor_requires_slash_command(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "brain-sync.md" in out
+
+
+def test_doctor_names_a_missing_permission(tmp_path, monkeypatch, capsys):
+    """§8.2: len(sb_perms) >= 7 пропускал пропажу любого одного имени. Теперь —
+    строгое включение множества, с печатью недостающих имён."""
+    _green_install(tmp_path, monkeypatch)
+    settings = tmp_path / "settings.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    data["permissions"]["allow"] = [
+        p for p in install_cli.SB_PERMISSIONS
+        if p != "mcp__symbiosis-brain__brain_report"
+    ]
+    install_lib.atomic_write_json(settings, data)
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "mcp__symbiosis-brain__brain_report" in out
+    assert "--repair" in out
+
+
+def test_doctor_accepts_extra_permissions(tmp_path, monkeypatch, capsys):
+    """Строгое включение, а не равенство: чужие права в allow — не наша поломка."""
+    _green_install(tmp_path, monkeypatch)
+    settings = tmp_path / "settings.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    data["permissions"]["allow"] = list(install_cli.SB_PERMISSIONS) + ["Bash(ls:*)"]
+    install_lib.atomic_write_json(settings, data)
+
+    rc = install_cli.cmd_doctor(_args())
+    assert rc == 0
+    assert "✗" not in capsys.readouterr().out
+
+
+def test_doctor_flags_a_stale_hook(tmp_path, monkeypatch, capsys):
+    """§8.2: обновление пакета НЕ трогает ~/.claude/hooks (копирование только из
+    setup/--repair, install_cli.py:245-266), поэтому доктор обязан сказать STALE,
+    а не «All OK»."""
+    _green_install(tmp_path, monkeypatch)
+    hook = tmp_path / "hooks" / "sb-export.sh"
+    hook.write_text(hook.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "STALE" in out
+    assert "sb-export.sh" in out
+    assert "--repair" in out
+
+
+def test_doctor_flags_a_stale_session_start_hook(tmp_path, monkeypatch, capsys):
+    """Третий хук списка, и он не бонус: `brain-session-start.sh` правит CP-5
+    (Task 5.3), регистрируется он из `hook_dir` (`install_lib.py:207-213`), то
+    есть попадает в `~/.claude/hooks` только через `setup`/`--repair`. Без этой
+    строки в `STALE_CHECKED_HOOKS` обновление пакета без `--repair` оставило бы
+    старый мост модели рядом с новым python, а доктор сказал бы «All OK»."""
+    _green_install(tmp_path, monkeypatch)
+    hook = tmp_path / "hooks" / "brain-session-start.sh"
+    hook.write_text(hook.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "STALE" in out
+    assert "brain-session-start.sh" in out
+    assert "--repair" in out
+
+
+def test_doctor_stale_check_ignores_line_endings(tmp_path, monkeypatch, capsys):
+    """CRLF-безопасность (00-plan §0.6 п. 7): git может выдать хук с CRLF, это не
+    расхождение содержимого."""
+    _green_install(tmp_path, monkeypatch)
+    hook = tmp_path / "hooks" / "brain-save-trigger.sh"
+    body = hook.read_text(encoding="utf-8").replace("\r\n", "\n")
+    hook.write_bytes(body.replace("\n", "\r\n").encode("utf-8"))
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert "STALE" not in out
+    assert rc == 0
+
+
+def test_doctor_does_not_call_a_missing_hook_stale(tmp_path, monkeypatch, capsys):
+    """Отсутствующий файл — это проверка 3 (MISSING), а не STALE: две находки на
+    одну поломку читаются как две поломки."""
+    _green_install(tmp_path, monkeypatch)
+    (tmp_path / "hooks" / "sb-export.sh").unlink()
+
+    rc = install_cli.cmd_doctor(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "MISSING" in out
+    assert "STALE" not in out

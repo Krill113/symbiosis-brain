@@ -148,3 +148,110 @@ def test_acquire_lock_lockdir_unwritable(tmp_path, monkeypatch):
     res = run_cli("acquire-onboard-lock", "foo")
     assert res.returncode == 2, f"got {res.returncode}: {res.stderr}"
     assert "error:lockdir-unwritable:foo" in res.stderr
+
+
+# ---------------------------------------------------------------------------
+# CP-6 — brain-cli report (I-28)
+# ---------------------------------------------------------------------------
+# Отдельный раннер: отчёт печатает кириллицу, а `text=True` без encoding
+# декодирует stdout локальной кодовой страницей (на Windows — cp1251).
+def run_report_cli(*args, env=None):
+    import os as _os
+    e = _os.environ.copy()
+    if env:
+        e.update(env)
+    return subprocess.run([*CLI, "report", *args], capture_output=True,
+                          text=True, encoding="utf-8", env=e)
+
+
+def _report_vault(tmp_path, *, notes=3, events=0):
+    """Синтетический vault с БД: ноты выдуманные, путей машины нет."""
+    from datetime import datetime, timedelta, timezone
+
+    from symbiosis_brain.storage import Storage
+
+    vault = tmp_path / "vault"
+    (vault / ".index").mkdir(parents=True)
+    storage = Storage(vault / ".index" / "brain.db")
+    for i in range(notes):
+        storage.upsert_note(path=f"wiki/note-{i}.md", title=f"Note {i}", content="Body",
+                            note_type="wiki", scope="global", tags=[], frontmatter={})
+    now = datetime.now(timezone.utc)
+    for i in range(events):
+        storage._conn.execute(
+            "INSERT INTO retrieval_event (ts, origin, source, query, n_returned,"
+            " dedup_dropped, vec_enabled) VALUES (?,?,?,?,?,?,?)",
+            ((now - timedelta(days=1)).isoformat(), "unknown", "mcp_search", "q", 1, 0, 0),
+        )
+    storage._conn.commit()
+    storage.close()          # Windows: файл БД не должен остаться занятым
+    return vault
+
+
+def test_report_cli_prints_a_report(tmp_path):
+    vault = _report_vault(tmp_path, notes=3, events=5)
+    res = run_report_cli("--vault", str(vault))
+    assert res.returncode == 0, res.stderr
+    assert "# Отчёт памяти" in res.stdout
+    assert "нот: 3" in res.stdout
+
+
+def test_report_cli_exits_1_on_an_empty_log(tmp_path):
+    """I-28: 1 — ожидаемая пустота, не ошибка; честная строка всё равно печатается."""
+    vault = _report_vault(tmp_path, notes=3, events=0)
+    res = run_report_cli("--vault", str(vault))
+    assert res.returncode == 1, res.stderr
+    assert "Журнал выдачи накапливается" in res.stdout
+
+
+def test_report_cli_exits_1_when_the_db_was_never_created(tmp_path):
+    """Читающая команда не должна создавать brain.db в каталоге, где не было serve."""
+    vault = tmp_path / "empty-vault"
+    vault.mkdir()
+    res = run_report_cli("--vault", str(vault))
+    assert res.returncode == 1, res.stderr
+    assert not (vault / ".index" / "brain.db").exists()
+
+
+def test_report_cli_exits_2_when_the_vault_is_missing(tmp_path):
+    res = run_report_cli("--vault", str(tmp_path / "nope"))
+    assert res.returncode == 2
+    assert res.stdout.strip() == ""
+
+
+def test_report_cli_takes_the_vault_from_the_env(tmp_path):
+    vault = _report_vault(tmp_path, notes=3, events=5)
+    res = run_report_cli(env={"SYMBIOSIS_BRAIN_VAULT": str(vault)})
+    assert res.returncode == 0, res.stderr
+    assert "# Отчёт памяти" in res.stdout
+
+
+def test_report_cli_json_mode_emits_the_build_report_dict(tmp_path):
+    vault = _report_vault(tmp_path, notes=3, events=5)
+    res = run_report_cli("--vault", str(vault), "--json")
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert set(data) == {"summary", "hot", "archive_candidates", "surfaced_not_read",
+                         "by_scope", "by_type", "routing_health", "coverage"}
+    assert data["summary"]["total_notes"] == 3
+
+
+def test_report_cli_full_flag_removes_the_caps(tmp_path):
+    vault = _report_vault(tmp_path, notes=3, events=5)
+    res = run_report_cli("--vault", str(vault), "--full", "--json")
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["summary"]["top"] is None
+
+
+def test_scope_cli_does_not_import_report_at_module_level():
+    """I-28: brain-init зовёт `brain-cli scope-resolve` в начале КАЖДОЙ сессии, а
+    отчёт тянет Storage и резолвер. Импорт обязан жить внутри ветки."""
+    probe = (
+        "import sys, symbiosis_brain.scope_cli; "
+        "print(int('symbiosis_brain.report' in sys.modules), "
+        "int('symbiosis_brain.storage' in sys.modules), "
+        "int('numpy' in sys.modules))"
+    )
+    res = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.split() == ["0", "0", "0"], res.stdout

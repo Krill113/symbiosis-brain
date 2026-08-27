@@ -45,6 +45,7 @@ SB_PERMISSIONS = [
     "mcp__symbiosis-brain__brain_rename",
     "mcp__symbiosis-brain__brain_delete",
     "mcp__symbiosis-brain__brain_rotate_handoffs",
+    "mcp__symbiosis-brain__brain_report",
 ]
 
 PROMPT_TEXT = """
@@ -156,6 +157,38 @@ HOOK_FILES_SH = (
     "sb-line.sh",
     "sb-base-statusline.sh",
 )
+
+# Hooks whose CONTENT doctor compares against the package. Upgrading the package
+# does not touch ~/.claude/hooks — copying happens only from setup/--repair
+# (install_cli.py:245-266) — so an upgrade without --repair silently keeps the old
+# bash next to the new python. These are the three hooks Stage 2 changed: the model
+# bridge lives in sb-export.sh, --hook-started-at in brain-save-trigger.sh, and the
+# bridge's own startup in brain-session-start.sh (CP-5, Task 5.3).
+#
+# brain-pre-action-trigger.sh is deliberately NOT here: it is registered straight
+# out of the repo ('bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/…"', install_lib.py:226-229)
+# and therefore cannot go stale, while the three above are registered from hook_dir
+# (install_lib.py:207-213 for session-start) and only get there via --repair.
+STALE_CHECKED_HOOKS = ("sb-export.sh", "brain-save-trigger.sh",
+                       "brain-session-start.sh")
+
+
+def _hook_is_stale(name: str, hook_dir: Path) -> bool:
+    """True when the installed hook differs from the packaged one.
+
+    Line endings are normalized: git may check the repo out with CRLF, and that is
+    not a content difference. A file missing on either side is NOT stale — a
+    missing hook is check 3's finding, and reporting it twice reads as two
+    separate breakages.
+    """
+    try:
+        installed = (hook_dir / name).read_text(encoding="utf-8", errors="replace")
+        packaged = (_packaged_hooks_dir() / name).read_text(encoding="utf-8",
+                                                            errors="replace")
+    except OSError:
+        return False
+    return installed.replace("\r\n", "\n") != packaged.replace("\r\n", "\n")
+
 
 # Slash commands shipped with the package. /brain-sync used to exist only on the
 # author's machine — hooks/README.md documented the manual sync mode and a fresh
@@ -471,6 +504,9 @@ def cmd_setup(args):
 def cmd_doctor(args) -> int:
     issues = 0
     sb_perms: list[str] = []
+    # Filled only when settings.json parsed: a missing file keeps this empty, so the
+    # "file absent" case prints exactly what it printed before.
+    missing_perms: list[str] = []
 
     # 1. MCP server
     if _check_mcp_running():
@@ -489,13 +525,22 @@ def cmd_doctor(args) -> int:
             sl = (data.get("statusLine") or {}).get("command", "")
             perms = (data.get("permissions") or {}).get("allow", [])
             sb_perms = [p for p in perms if p.startswith("mcp__symbiosis-brain__")]
-            settings_ok = bool(hooks.get("SessionStart")) and "sb-statusline" in sl and len(sb_perms) >= 7
+            # Set inclusion, not a count: `len(sb_perms) >= 7` passed with any one
+            # name missing, which is exactly how a tool goes silently unusable
+            # (spec §8.2). The list is written only by setup/--repair.
+            granted = set(perms)
+            missing_perms = [p for p in SB_PERMISSIONS if p not in granted]
+            settings_ok = (bool(hooks.get("SessionStart")) and "sb-statusline" in sl
+                           and not missing_perms)
         except Exception:
             pass
     if settings_ok:
         print(f"✓ Settings.json  OK (hooks + statusLine + {len(sb_perms)} permissions)")
     else:
         print("✗ Settings.json  FAIL (missing hooks/statusLine/permissions)")
+        if missing_perms:
+            print(f"                 missing tool permissions: {', '.join(missing_perms)}")
+            print("                 run `symbiosis-brain setup claude-code --repair`")
         issues += 1
 
     # 3. Hooks
@@ -508,6 +553,17 @@ def cmd_doctor(args) -> int:
         print(f"✓ Hooks          OK ({len(required_hooks)}/{len(required_hooks)} present)")
     else:
         print(f"✗ Hooks          MISSING: {', '.join(missing_hooks)}")
+        issues += 1
+
+    # 3b. Installed hooks vs the packaged copies (spec §8.2). An upgrade without
+    # --repair keeps the OLD bash while the new python expects the new one, and
+    # doctor used to print "All OK" through exactly that. Same shape as the
+    # action-recall STALE check below (install_cli.py:586-608).
+    stale_hooks = [h for h in STALE_CHECKED_HOOKS if _hook_is_stale(h, hook_dir)]
+    if stale_hooks:
+        print(f"✗ Hooks          STALE: {', '.join(stale_hooks)} "
+              f"(differ from the packaged copy — run "
+              f"`symbiosis-brain setup claude-code --repair`)")
         issues += 1
 
     # 4. Skills

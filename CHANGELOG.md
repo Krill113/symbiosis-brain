@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-01
+
 ### Added
 - **Every search the memory serves is now recorded locally.** Both MCP tools and hooks write the query (full text, truncated to 2000 characters — on the hook path, that is your prompt text), the number of hits, the hit paths and the end-to-end hook latency into two new tables inside `<vault>/.index/brain.db`. Nothing leaves the machine; the rows are rotated after 90 days; `SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off` (server and hooks) or `"retrieval_log_enabled": false` in `~/.claude/symbiosis-brain-pre-action.json` (hooks) turn it off. The tables are what makes the next two entries measurable instead of anecdotal. **A first start on an existing vault migrates the database once.**
 - **A 14th MCP tool, `brain_report`, and a `brain-cli report` command that prints the same text.** One screen: what the memory served this month, which notes were surfaced and read, which notes nobody has opened or edited in a long time, and how complete the log itself is. Existing installs need one `symbiosis-brain setup claude-code --repair` to add the tool to `permissions.allow` — without it the tool exists but asks for permission on every call, and `doctor` now says so by name.
@@ -19,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`brain_lint` gained a `not_indexed` category** — markdown on disk that never made it into the database — and reports forward references (`[[forward:X]]`) separately from broken links.
 - **A `/brain-sync` slash command** is now part of the package instead of living only on the maintainer's machine.
 - **A GitHub Release is created from the tag** by `publish.yml`, with notes from `docs/release-notes/vX.Y.Z.md` or the matching CHANGELOG section — but only after the PyPI install has been verified.
+
+- **A search-quality harness for maintainers, `tools/eval_search.py`.** It replays a query set against a copy of a vault and reports MRR and recall per configuration — lexical mode, embedding model (with optional L2 normalisation and query/document prefixes), reranking, and the cost of a full reindex, alongside peak RSS and index counts. A small synthetic set ships in `tests/data/eval_search/` and runs in CI; the numbers behind this release's search changes came from it.
 
 ### Fixed
 - **The lexical half of search stopped demanding every word of the query.** `_sanitize_fts_query` quoted each token and joined them with a space, which FTS5 reads as AND — so a natural-language question returned nothing at all from the keyword side. Measured over 1666 real queries: **the lexical half returned zero rows on 84.5 % of them**. `brain_search` now uses OR; the two injection paths (prompt recall and pre-action recall) try AND first and fall back to OR, and the log records which of the two actually answered.

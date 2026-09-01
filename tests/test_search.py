@@ -1268,3 +1268,100 @@ def test_dedup_calib_snapshot_refuses_to_write_the_source(tmp_path: Path):
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         ro.execute("CREATE TABLE z (y)")
     ro.close()
+
+
+class TestModelDriftGuard:
+    """A long-lived process resolves its model once, at construction. A second
+    window — or a restart applying SYMBIOSIS_BRAIN_EMBED_MODEL — can migrate
+    notes_vec to a different model underneath it. Embedding a query with the
+    old model against the new vectors returns confident nonsense AND records
+    it in the retrieval log as an ordinary result, which is exactly the silent
+    bias a model benchmark cannot survive."""
+
+    def test_vector_half_shuts_off_when_the_index_migrates_underneath(
+            self, db_path: Path, monkeypatch):
+        from symbiosis_brain import search as sb_search
+
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/model-a")
+        engine = SearchEngine(storage)
+        assert engine.model_name == "fixture/model-a"
+        engine._vec_enabled = True  # sqlite-vec may be absent on the runner
+
+        def _must_not_embed(*a, **kw):
+            raise AssertionError("query embedded against a foreign index")
+        monkeypatch.setattr(sb_search, "_embed_query", _must_not_embed)
+
+        storage.set_schema_version("embedding_model", "fixture/model-b")
+        engine._drift_checked_at -= 999
+
+        assert engine.search_vector("любой запрос") == []
+        assert engine._vec_enabled is False
+        storage.close()
+
+    def test_matching_model_leaves_the_vector_half_alone(self, db_path: Path):
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/model-a")
+        engine = SearchEngine(storage)
+        engine._vec_enabled = True
+        engine._drift_checked_at -= 999
+
+        engine._check_model_drift()
+
+        assert engine._vec_enabled is True
+        storage.close()
+
+    def test_an_explicitly_pinned_model_is_never_second_guessed(self, db_path: Path):
+        """tools/eval_search.py points a copied DB at a candidate model on
+        purpose, and server.py's migration constructs the new engine before it
+        writes the name. Neither is drift."""
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/model-a")
+        engine = SearchEngine(storage, model_name="fixture/candidate")
+        engine._vec_enabled = True
+        engine._drift_checked_at -= 999
+
+        engine._check_model_drift()
+
+        assert engine._vec_enabled is True
+        storage.close()
+
+    def test_the_check_costs_one_read_per_interval(self, db_path: Path):
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/model-a")
+        engine = SearchEngine(storage)
+        engine._vec_enabled = True
+
+        reads = []
+        original = storage.get_schema_version
+
+        def counting(key):
+            reads.append(key)
+            return original(key)
+        storage.get_schema_version = counting
+
+        engine._drift_checked_at -= 999
+        engine._check_model_drift()
+        engine._check_model_drift()
+        engine._check_model_drift()
+
+        assert reads == ["embedding_model"]
+        storage.close()
+
+    def test_a_read_failure_does_not_disable_search(self, db_path: Path):
+        """Fail-open: a transient DB error must not cost the user their vector
+        half — the drift check is a guard, not a gate."""
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/model-a")
+        engine = SearchEngine(storage)
+        engine._vec_enabled = True
+
+        def boom(key):
+            raise sqlite3.OperationalError("database is locked")
+        storage.get_schema_version = boom
+        engine._drift_checked_at -= 999
+
+        engine._check_model_drift()
+
+        assert engine._vec_enabled is True
+        storage.close()

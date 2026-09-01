@@ -19,6 +19,7 @@ from symbiosis_brain.graph import GraphTraverser
 from symbiosis_brain.search import (
     FTS_MODE_ANY,
     SearchEngine,
+    _model_loadable,
     _reindex_lock,
     dedup_candidates,
 )
@@ -93,14 +94,24 @@ def _apply_targeted_index(sync_result: SyncResult) -> None:
     (re)embed added and updated ones.
 
     Single implementation shared by _init and the brain_sync tool — the loop used
-    to be copy-pasted in both (B6b) with nothing keeping the copies in step."""
-    for path in sync_result.removed:
-        _search.delete_vec(path)
-    for path in sync_result.added + sync_result.updated:
-        note = _storage.get_note(path)
-        if note is None:
-            continue
-        _search.index_note(path, f"{note['title']}\n{note['content']}")
+    to be copy-pasted in both (B6b) with nothing keeping the copies in step.
+
+    Holds _reindex_lock even though this is not a reindex — the steady-state
+    caller (stored_model == target_model, the common case on every startup)
+    never enters _init's own lock blocks at all, so without a lock HERE its
+    index_note/delete_vec calls can land between another process's
+    _recreate_vec_table() DROP and CREATE, or into a table already recreated
+    for a different dimension than the vectors these calls are about to
+    write. Cheap when uncontended (the lock is only ever actually held
+    elsewhere during a model-change migration, which is rare)."""
+    with _reindex_lock(_storage.db_path):
+        for path in sync_result.removed:
+            _search.delete_vec(path)
+        for path in sync_result.added + sync_result.updated:
+            note = _storage.get_note(path)
+            if note is None:
+                continue
+            _search.index_note(path, f"{note['title']}\n{note['content']}")
 
 
 def _rotate_retrieval_log(db_path: Path) -> None:
@@ -236,15 +247,49 @@ def _init(vault_path: Path):
                        stored_model or "unset", target_model)
         with _reindex_lock(_storage.db_path):
             stored_model = _storage.get_schema_version("embedding_model")
-            if stored_model != target_model:
-                _search = SearchEngine(_storage, model_name=target_model)
-                _search._recreate_vec_table()
-                _search.index_all()
+            if stored_model == target_model:
+                # Someone else already applied this exact change while we waited.
+                _search = SearchEngine(_storage)
+            elif _model_loadable(target_model):
+                # Proven loadable BEFORE anything durable changes: only past
+                # this point may the old, working notes_vec be dropped. A
+                # smoke-test failure (bad name, first-download network
+                # failure, full disk) falls through instead, leaving the
+                # existing _search (still pointed at the OLD, working
+                # stored_model) to serve this and every future process,
+                # unchanged, until the request is retried on the next start.
+                new_search = SearchEngine(_storage, model_name=target_model)
+                new_search._recreate_vec_table()
+                # Written BEFORE index_all(): if this process dies mid-rebuild
+                # (os._exit(0) from the parent watchdog, disk full, ...),
+                # schema_version and notes_vec's dimension are already in
+                # agreement, and the existing drift machinery
+                # (has_index_delta/repair_index) finishes the job on the next
+                # start — instead of a stale name left pointing at a table
+                # already sized for the model that never finished indexing.
                 _storage.set_schema_version("embedding_model", target_model)
-                logger.info("Embeddings indexed (full re-build, model change)")
+                _search = new_search
+                try:
+                    _search.index_all()
+                    logger.info("Embeddings indexed (full re-build, model change)")
+                except Exception:
+                    # notes_vec is already correctly sized and registered for
+                    # target_model (both writes above already happened) —
+                    # just incomplete. Degrade THIS process to FTS-only
+                    # rather than let every future search_vector/index_note
+                    # raise unguarded; the next process to start will see the
+                    # same stored_model == target_model and repair the
+                    # remaining rows through the normal targeted/drift path.
+                    logger.error(
+                        "Full re-embed under %s failed after the index was "
+                        "already migrated; disabling vector search for this "
+                        "process (FTS only) until the next restart",
+                        target_model, exc_info=True)
+                    _search._vec_enabled = False
                 return
-            # Someone else already applied this exact change while we waited.
-            _search = SearchEngine(_storage)
+            # else: target_model failed its smoke test above — fall through
+            # to the normal targeted-index / drift-repair path below, using
+            # whatever _search this function already holds.
 
     # Targeted incremental indexing — only the actual diff. Note: this MUST
     # run before the drift safety net below, otherwise the safety net

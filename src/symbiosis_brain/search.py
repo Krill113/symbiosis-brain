@@ -417,6 +417,26 @@ def _embed_query(text: str, model_name: str) -> list[float]:
     return _embed_one(prefixed)
 
 
+def _model_loadable(model_name: str) -> bool:
+    """Best-effort smoke test: can `model_name` actually be loaded and used
+    to embed something, right now? Used ONLY by server.py's model-change
+    migration, and ONLY before it touches anything durable — a bad model
+    name, a first-download network failure, or a full disk must be caught
+    here, while the OLD, working notes_vec is still intact, rather than
+    discovered by index_all() after _recreate_vec_table() has already
+    dropped it. False on any exception; the caller is expected to log and
+    abandon the migration, not propagate."""
+    try:
+        _embed_documents(["symbiosis-brain embedding model smoke test"], model_name)
+        return True
+    except Exception:
+        logger.error(
+            "Embedding model %r failed to load — aborting the model-change "
+            "migration and keeping the existing index untouched.",
+            model_name, exc_info=True)
+        return False
+
+
 DEDUP_TOP_K = 5
 """Сколько кандидатов просим у поиска. Ручкой НЕ становится (I-35): влияет на
 цену запроса, а не на шум."""

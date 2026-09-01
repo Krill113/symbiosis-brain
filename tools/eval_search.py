@@ -75,12 +75,16 @@ measure nothing: the set it reorders would be the answer itself."""
 
 E5_PREFIX_MODELS = ("intfloat/multilingual-e5-large",)
 """Models that need "query: " / "passage: " prefixes to perform as published.
-index_all builds its document text inside search.py (search.py:287) and this
-checkpoint does not touch search.py, so documents go in UNPREFIXED unless
---doc-prefix/--query-prefix are given explicitly (E2, lead directive §3).
-Without them the number for such a model is a LOWER BOUND — say so in the
-report; do not quietly compare it with the others as if it were the same
-measurement."""
+
+UPDATE (embedder-switchable): search.py now carries a built-in
+model -> (query_prefix, doc_prefix) table and applies it automatically for
+every model it knows — intfloat/multilingual-e5-large included — so running
+`--model intfloat/multilingual-e5-large` with NO --doc-prefix/--query-prefix
+is no longer a lower bound; the built-in prefix is what index_all/
+search_vector actually embed. --doc-prefix/--query-prefix remain for
+candidate models search.py does NOT yet have an entry for (E2, lead directive
+§3) — do NOT also pass them for a model search.py already prefixes, or the
+prefix is applied twice ("passage: passage: ...")."""
 
 _cross_encoder_singleton = None
 _rerank_model_name = RERANK_MODEL
@@ -279,6 +283,16 @@ def rebuild_vector_index(engine, storage, *, model: str, timings: dict | None = 
 
     model_load_started = time.perf_counter()
     apply_model_override(model)
+    # search.py resolves each SearchEngine's model ONCE, at construction
+    # (embedder-switchable, І-32 follow-up) — `engine` was built before we
+    # knew which model this call swaps in, so index_all()/search_vector()
+    # below would otherwise keep embedding under whatever model `engine` was
+    # constructed with (and, worse, _embed_documents/_embed_query would swap
+    # apply_model_override's override right back via _set_active_model, since
+    # they resolve the model from `engine.model_name`, not from the module
+    # singleton). Telling `engine` about the swap directly is what keeps this
+    # single-instance override — rather than a second SearchEngine — correct.
+    engine.model_name = model
     dim = len(sb_search._embed_one("dimension probe"))
     if timings is not None:
         timings["model_load_s"] = round(time.perf_counter() - model_load_started, 1)

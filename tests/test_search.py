@@ -378,8 +378,16 @@ class TestEmbedDocumentsAndQueryNormalize:
             )
         storage._conn.commit()
 
-        # Query embedder already returns a unit vector too.
-        monkeypatch.setattr(sb_search, "_embed_one", lambda text: [1.0] + [0.0] * (dim - 1))
+        # Query embedder already returns a unit vector too — patched at
+        # _get_embedder (below _embed's own _l2_normalize step), not at
+        # _embed_one/_embed_query, so the real _embed -> _l2_normalize call
+        # this test claims to exercise actually runs on the query side.
+        class StubEmbedder:
+            def embed(self, texts, **kwargs):
+                for _ in texts:
+                    yield np.array([1.0] + [0.0] * (dim - 1), dtype=np.float32)
+
+        monkeypatch.setattr(sb_search, "_get_embedder", lambda: StubEmbedder())
 
         results = engine.search_vector("q", limit=3)
         assert [r["path"] for r in results] == ["a.md", "b.md", "c.md"]

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The embedding model is switchable and every candidate is measured on equal footing.** Every vector — written or queried — is L2-normalised in the one low-level function both paths share, so a candidate model fastembed doesn't normalise itself is no longer scored with a distance handicap against `notes_vec`'s plain-L2 default. `notes_vec`'s vector width now follows the current model (`TextEmbedding.get_embedding_size`, no network, no weights loaded) instead of a hardcoded `FLOAT[384]`; an unrecognised model name falls back to the default dimension with a logged error instead of crashing startup. Models that need query/document prefixes to perform as published get them from a small built-in table (`intfloat/multilingual-e5-large`: `"query: "` / `"passage: "` — the document and query paths embed different text for the same note, on purpose). `schema_version.embedding_model` in the vault's own database is the single source of truth for which model is active; `SYMBIOSIS_BRAIN_EMBED_MODEL` is a *request* the server alone applies at startup, under the existing reindex lock — hook and CLI subprocesses (which get their environment from `CLAUDE_ENV_FILE`, not the server's) always defer to what the database already says, so they can never embed a query with a model the stored index doesn't match. Default install behaviour is unchanged byte-for-byte: same model, same 384-dimensional vectors, no forced reindex on upgrade.
+
 ## [0.6.0] — 2026-09-01
 
 ### Added

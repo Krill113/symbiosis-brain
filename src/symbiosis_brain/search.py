@@ -22,12 +22,103 @@ from symbiosis_brain.retrieval_log import LogContext
 logger = logging.getLogger("symbiosis-brain.search")
 
 _MODEL_NAME = "BAAI/bge-small-en-v1.5"
+"""The default model, used whenever a vault's DB has no
+schema_version.embedding_model row yet (fresh vault, or a legacy DB from
+before this row existed). Doubles as the module's *legacy* active-model
+selector: _get_embedder()/_embed()/_embed_one() read it fresh on every call,
+exactly as before this file learned to switch models. Production code never
+mutates it — SearchEngine resolves each instance's own model from the DB (see
+_resolve_model_name) and threads that name explicitly through
+_embed_documents/_embed_query, never through this global. tools/eval_search.py
+is the one place that DOES mutate it (apply_model_override): a standalone CLI
+process, never imported by the server, so its process-wide model swap can
+never race a real server's per-vault resolution."""
 _EMBED_BATCH_SIZE = 16
 """fastembed's silent default is batch_size=256. With 512-token padded
 documents that peaks the onnxruntime CPU arena at ~11 GB on a ~1300-note
 corpus; the arena is never returned to the OS. batch_size=16 measured
 identical throughput (518 vs 544 CPU-s) at ~1.1 GB peak (2026-08-10)."""
 _embedder = None
+
+_DEFAULT_EMBEDDING_DIM = 384
+"""BAAI/bge-small-en-v1.5's vector width — the fallback _embedding_dim()
+returns only when fastembed has no metadata for a model name at all."""
+
+_MODEL_PREFIXES: dict[str, tuple[str, str]] = {
+    "intfloat/multilingual-e5-large": ("query: ", "passage: "),
+}
+"""model name -> (query_prefix, doc_prefix). fastembed 0.8.0 carries prefix
+advice only as free text inside each model's metadata `description`, and
+TextEmbedding.query_embed/passage_embed (which WOULD parse it) are passthrough
+wrappers this codebase never calls (_embed_query/_embed_documents call
+.embed() directly) — so this table is filled in by hand, per model, from its
+card. A model missing here gets ("", "") — no prefix, text unchanged."""
+
+
+def _model_prefixes(model_name: str) -> tuple[str, str]:
+    return _MODEL_PREFIXES.get(model_name, ("", ""))
+
+
+def _l2_normalize(vec: np.ndarray) -> np.ndarray:
+    """v / ‖v‖₂, in place of a divide-by-zero for the zero vector (returned
+    unchanged rather than raising — reachable from a degenerate fake embedder
+    in a test, never from a real model, but cheaper to special-case than to
+    forbid). This is THE single point both the write path
+    (_embed_documents -> index_note/index_all) and the read path
+    (_embed_query -> search_vector) pass every vector through: fastembed 0.8.0
+    normalises the OUTPUT of only some models (bge-small: already unit,
+    measured 1.0000; the multilingual candidates: 2.0-28, not unit), and
+    notes_vec is declared without `distance_metric` (vec0 default: raw L2), so
+    an unnormalised candidate would be scored with a handicap unless every
+    vector that reaches notes_vec — and every query vector compared against
+    it — is rescaled here, unconditionally."""
+    norm = float(np.linalg.norm(vec))
+    if norm == 0.0:
+        return vec
+    return vec / norm
+
+
+def _resolve_model_name(storage: "Storage") -> str:
+    """The embedding model bound to this vault's index — schema_version.
+    embedding_model if the DB has it, else the default (З3).
+
+    Deliberately NOT the SYMBIOSIS_BRAIN_EMBED_MODEL env var: hook and CLI
+    subprocesses receive their environment from CLAUDE_ENV_FILE (a file the
+    SessionStart hook drops), not from the env the MCP registration launched
+    the server with, so a hook process reading the var directly could pick a
+    model the server has not (yet, or ever) migrated the index to — embedding
+    the query with a model the stored vectors were never built from, silently
+    degrading exactly the retrieval-quality signal this whole feature exists
+    to measure honestly. The var is a REQUEST, applied only by server.py at
+    startup (under _reindex_lock, alongside the migration it triggers); once
+    applied, it is written here, to the DB, where every process — server,
+    hooks, CLI — reads it from, in agreement.
+    """
+    try:
+        stored = storage.get_schema_version("embedding_model")
+    except Exception:
+        stored = None
+    return stored if isinstance(stored, str) and stored else _MODEL_NAME
+
+
+def _embedding_dim(model_name: str) -> int:
+    """Vector width for `model_name`, from fastembed's own model metadata —
+    TextEmbedding.get_embedding_size is a pure lookup: no network call, no
+    weights loaded. If fastembed has no metadata for the name (typo, a model
+    retired from its registry, a name a newer version of this package would
+    know), we log an error and fall back to _DEFAULT_EMBEDDING_DIM rather than
+    raising — notes_vec must always end up with SOME valid table, even
+    mid-upgrade, and a bad model string in the DB must not fail the whole
+    server's startup."""
+    try:
+        from fastembed import TextEmbedding
+        return TextEmbedding.get_embedding_size(model_name)
+    except Exception:
+        logger.error(
+            "Unknown embedding model %r — fastembed has no size metadata for "
+            "it. Falling back to the default dimension (%d, %s's).",
+            model_name, _DEFAULT_EMBEDDING_DIM, _MODEL_NAME, exc_info=True)
+        return _DEFAULT_EMBEDDING_DIM
 
 LOCK_DIR = Path(tempfile.gettempdir())
 _FASTEMBED_LOCK_TIMEOUT_S = 120
@@ -85,7 +176,8 @@ OVERFETCH_FACTORS = (2, 8, 32)
 """Множители `limit` для KNN в scoped-выдаче (I-20, §4.4).
 
 vec0 не умеет предфильтр: `notes_vec` объявлена как
-`vec0(path TEXT PRIMARY KEY, embedding FLOAT[384])` (search.py:245-254), метаданной
+`vec0(path TEXT PRIMARY KEY, embedding FLOAT[N])`, N — размерность текущей
+модели (_embedding_dim, 384 для дефолтной BAAI/bge-small-en-v1.5), метаданной
 для партиционирования там нет, и джойн с `notes` по scope даёт побайтно тот же
 результат, что постфильтр — замерено (EXPLAIN QUERY PLAN: SCAN v VIRTUAL TABLE,
 затем SEARCH n). Поэтому лестница: берём глобальный топ-k, фильтруем, и при
@@ -263,12 +355,59 @@ def _reindex_lock(db_path):
 
 
 def _embed(texts: list[str]) -> list[list[float]]:
+    """Legacy no-model-argument batch embed: loads/uses whichever model
+    _MODEL_NAME currently names (see its docstring) and L2-normalises every
+    vector it returns (§ _l2_normalize) before handing it back. This is the
+    function tools/eval_search.py monkeypatches wholesale to fake the model
+    out in tests; _embed_documents (below) is what production code actually
+    calls, and it delegates here after applying its own model-aware prefix,
+    which is what keeps that monkeypatch effective for both."""
     embedder = _get_embedder()
-    return [e.tolist() for e in embedder.embed(texts, batch_size=_EMBED_BATCH_SIZE)]
+    raw = embedder.embed(texts, batch_size=_EMBED_BATCH_SIZE)
+    return [_l2_normalize(np.asarray(e, dtype=np.float32)).tolist() for e in raw]
 
 
 def _embed_one(text: str) -> list[float]:
     return _embed([text])[0]
+
+
+def _set_active_model(model_name: str) -> None:
+    """Point the legacy _MODEL_NAME/_embedder singleton at `model_name`,
+    dropping the warm embedder if it names a different model than the one
+    already loaded. A no-op in the overwhelmingly common case (a process runs
+    exactly one model for its whole lifetime, so this only ever fires once,
+    if at all) — never called from __init__, only lazily from
+    _embed_documents/_embed_query, right before the first real embed call."""
+    global _MODEL_NAME, _embedder
+    if _MODEL_NAME != model_name:
+        _MODEL_NAME = model_name
+        _embedder = None
+
+
+def _embed_documents(texts: list[str], model_name: str) -> list[list[float]]:
+    """Document/write-path embedding for `model_name` (З4): its doc_prefix
+    (empty for bge-small and mpnet, "passage: " for e5-large) is prepended to
+    every text before it reaches the model; text is passed through unchanged
+    when there is no prefix, so a model with no prefix is byte-identical to
+    the pre-switchable-embedder behaviour. Delegates to _embed (normalisation
+    included) so a test/tool that monkeypatches _embed still sees every call
+    this makes."""
+    _set_active_model(model_name)
+    _, doc_prefix = _model_prefixes(model_name)
+    prefixed = [f"{doc_prefix}{t}" for t in texts] if doc_prefix else texts
+    return _embed(prefixed)
+
+
+def _embed_query(text: str, model_name: str) -> list[float]:
+    """Query/read-path embedding for `model_name` (З4) — mirrors
+    _embed_documents but with the model's query_prefix, so a prefixed model
+    never embeds a query and a document with the same text (they need
+    different prefixes; that is why this is a separate function rather than
+    _embed_documents([text], ...)[0])."""
+    _set_active_model(model_name)
+    query_prefix, _ = _model_prefixes(model_name)
+    prefixed = f"{query_prefix}{text}" if query_prefix else text
+    return _embed_one(prefixed)
 
 
 DEDUP_TOP_K = 5
@@ -423,13 +562,21 @@ def dedup_candidates(engine, storage, *, title: str, gist: str,
 
 
 class SearchEngine:
-    def __init__(self, storage: Storage):
+    def __init__(self, storage: Storage, *, model_name: str | None = None):
+        """`model_name`, when given, overrides DB resolution outright (used by
+        server.py's model-change migration, which must act on the requested
+        model before it has written that name to the DB, and by
+        tools/eval_search.py, which needs to point a work-copy DB at a
+        candidate model regardless of what its (copied-from-the-live-vault)
+        schema_version row says). Every other caller omits it and gets
+        _resolve_model_name's DB-else-default resolution (З3)."""
         self.storage = storage
+        self.model_name = model_name or _resolve_model_name(storage)
         self._vec_enabled = self._try_load_vec()
 
     @property
     def _model_name(self) -> str:
-        return _MODEL_NAME
+        return self.model_name
 
     def _try_load_vec(self) -> bool:
         try:
@@ -443,20 +590,53 @@ class SearchEngine:
             return False
 
     def _ensure_vec_table(self):
+        """Create notes_vec, sized for self.model_name, if it doesn't exist
+        yet. Never touches an EXISTING table — including one at the wrong
+        dimension for self.model_name, which only happens mid-migration and
+        is exactly what _recreate_vec_table (below) is for."""
         tables = self.storage.list_tables()
         if "notes_vec" not in tables:
-            self.storage._conn.execute("""
+            dim = _embedding_dim(self.model_name)
+            self.storage._conn.execute(f"""
                 CREATE VIRTUAL TABLE notes_vec USING vec0(
                     path TEXT PRIMARY KEY,
-                    embedding FLOAT[384]
+                    embedding FLOAT[{dim}]
                 )
             """)
             self.storage._conn.commit()
 
+    def _recreate_vec_table(self) -> None:
+        """DROP + CREATE notes_vec for self.model_name's dimension, as ONE
+        explicit transaction (BEGIN IMMEDIATE ... COMMIT) — deliberately NOT
+        the two-autocommit DROP-then-CREATE idiom tools/eval_search.py uses
+        for the same job. That idiom is fine for a one-shot CLI tool; it is
+        not fine here: _run_server force-exits via os._exit(0) whenever the
+        parent Claude window dies (server.py), and a kill landing between two
+        autocommits would leave the vault with no notes_vec table at all.
+        Used ONLY when the embedding model is CHANGING — every other case is
+        covered by _ensure_vec_table's create-if-missing."""
+        dim = _embedding_dim(self.model_name)
+        self.storage._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.storage._conn.execute("DROP TABLE IF EXISTS notes_vec")
+            self.storage._conn.execute(f"""
+                CREATE VIRTUAL TABLE notes_vec USING vec0(
+                    path TEXT PRIMARY KEY,
+                    embedding FLOAT[{dim}]
+                )
+            """)
+            self.storage._conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.storage._conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
     def index_note(self, path: str, content: str):
         if not self._vec_enabled:
             return
-        embedding = _embed_one(content)
+        embedding = _embed_documents([content], self.model_name)[0]
         # BEGIN IMMEDIATE serializes concurrent indexers on the same path.
         # vec0 does not support INSERT OR REPLACE, so DELETE + INSERT is the
         # only upsert pattern — wrapping it in an exclusive transaction prevents
@@ -486,7 +666,7 @@ class SearchEngine:
         if not notes:
             return
         texts = [f"{n['title']}\n{n['content']}" for n in notes]
-        embeddings = _embed(texts)
+        embeddings = _embed_documents(texts, self.model_name)
         # BEGIN IMMEDIATE serializes concurrent full rebuilds. Without this,
         # two parallel cold-starts both see a dirty index and both run the
         # DELETE + multi-INSERT loop, causing UNIQUE-constraint violations.
@@ -659,7 +839,7 @@ class SearchEngine:
         """
         if not self._vec_enabled:
             return []
-        q_blob = np.array(_embed_one(query), dtype=np.float32).tobytes()
+        q_blob = np.array(_embed_query(query, self.model_name), dtype=np.float32).tobytes()
         try:
             corpus = self.storage._conn.execute(
                 "SELECT COUNT(*) FROM notes_vec"

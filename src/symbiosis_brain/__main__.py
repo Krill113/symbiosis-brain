@@ -477,20 +477,32 @@ def _run_prewarm(argv: list[str]) -> int:
     debug = _debug_log_path()
 
     try:
-        # Triggers fastembed import + onnx file IO into page cache.
-        # _get_embedder() takes NO arguments — see src/symbiosis_brain/search.py:65.
-        from symbiosis_brain.search import _get_embedder
-        emb = _get_embedder()
-        list(emb.embed(["warmup"]))
+        from symbiosis_brain.storage import Storage
+        from symbiosis_brain.search import (
+            SearchEngine, _MODEL_NAME, _get_embedder, _resolve_model_name, _set_active_model,
+        )
 
         # Touch DB if it already exists, so sqlite-vec extension loads + WAL gets paged in.
         # Skip Storage init when DB doesn't exist — it would create empty tables on a
         # fresh install, which is not our job here.
         db_path = vault / ".index" / "brain.db"
-        if db_path.exists():
-            from symbiosis_brain.storage import Storage
-            from symbiosis_brain.search import SearchEngine
-            storage = Storage(db_path)
+        storage = Storage(db_path) if db_path.exists() else None
+
+        # З3: resolve the model to warm from the VAULT'S OWN DB, never from
+        # SYMBIOSIS_BRAIN_EMBED_MODEL — this hook subprocess gets its
+        # environment from CLAUDE_ENV_FILE, not from the server's MCP
+        # registration env, so it could apply a switch request the server
+        # hasn't (yet, or ever) migrated the index to, and end up warming a
+        # model the stored vectors don't match. Only the server applies that
+        # request (server.py:_init). A vault with no DB yet has nothing to
+        # resolve, so warm the default.
+        model_name = _resolve_model_name(storage) if storage is not None else _MODEL_NAME
+        # Triggers fastembed import + onnx file IO into page cache.
+        _set_active_model(model_name)
+        emb = _get_embedder()
+        list(emb.embed(["warmup"]))
+
+        if storage is not None:
             SearchEngine(storage)  # load sqlite-vec extension
     except Exception as e:
         try:

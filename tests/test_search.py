@@ -1,5 +1,6 @@
 import sqlite3
 
+import numpy as np
 import pytest
 from pathlib import Path
 from symbiosis_brain.storage import Storage
@@ -287,6 +288,322 @@ def test_get_embedder_skips_lock_when_already_loaded(tmp_path, monkeypatch):
 
     result = _search_mod._get_embedder()
     assert result is sentinel  # fast path returned the cached singleton
+
+
+# ============ embedder-switchable: З1 normalize / З2 dim / З3 model
+# source-of-truth / З4 prefixes. Model in tests: mocked, never downloaded. ==
+
+class TestL2Normalize:
+    """З1: normalization lives in one place, both paths pass through it."""
+
+    def test_non_zero_vector_becomes_unit(self):
+        from symbiosis_brain.search import _l2_normalize
+        v = np.array([3.0, 4.0], dtype=np.float32)  # norm 5
+        out = _l2_normalize(v)
+        assert out == pytest.approx([0.6, 0.8])
+        assert float(np.linalg.norm(out)) == pytest.approx(1.0)
+
+    def test_zero_vector_returned_unchanged_no_division_by_zero(self):
+        from symbiosis_brain.search import _l2_normalize
+        v = np.zeros(8, dtype=np.float32)
+        out = _l2_normalize(v)  # must not raise / produce NaN
+        assert np.array_equal(out, v)
+        assert not np.isnan(out).any()
+
+    def test_already_unit_vector_is_unchanged_by_a_second_pass(self):
+        from symbiosis_brain.search import _l2_normalize
+        v = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        once = _l2_normalize(v)
+        twice = _l2_normalize(once)
+        assert twice == pytest.approx(once, abs=1e-7)
+
+
+class TestEmbedDocumentsAndQueryNormalize:
+    def test_embed_documents_output_is_unit_norm(self, monkeypatch):
+        """The embedder itself is mocked (at _get_embedder, below _embed's own
+        normalization step) to return NON-unit vectors — a passing assertion
+        here proves _embed (called by _embed_documents) rescaled them, not
+        that they happened to already be unit."""
+        from symbiosis_brain import search as sb_search
+
+        class StubEmbedder:
+            def embed(self, texts, **kwargs):
+                for _ in texts:
+                    yield np.array([3.0, 4.0], dtype=np.float32)  # norm 5
+
+        monkeypatch.setattr(sb_search, "_get_embedder", lambda: StubEmbedder())
+        out = sb_search._embed_documents(["a", "b"], "BAAI/bge-small-en-v1.5")
+        for vec in out:
+            assert float(np.linalg.norm(vec)) == pytest.approx(1.0)
+
+    def test_embed_query_output_is_unit_norm(self, monkeypatch):
+        from symbiosis_brain import search as sb_search
+
+        class StubEmbedder:
+            def embed(self, texts, **kwargs):
+                for _ in texts:
+                    yield np.array([3.0, 4.0], dtype=np.float32)
+
+        monkeypatch.setattr(sb_search, "_get_embedder", lambda: StubEmbedder())
+        out = sb_search._embed_query("q", "BAAI/bge-small-en-v1.5")
+        assert float(np.linalg.norm(out)) == pytest.approx(1.0)
+
+    def test_search_vector_ranking_unaffected_by_normalize_when_input_already_unit(
+            self, db_path: Path, monkeypatch):
+        """For an embedder that already returns unit vectors (bge-small's real
+        behaviour), normalizing again must not perturb the ranking search_vector
+        produces — the whole point of normalizing on write AND read is that
+        relative order is preserved when nothing needed rescaling."""
+        from symbiosis_brain import search as sb_search
+
+        storage = Storage(db_path)
+        engine = SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+
+        dim = 384  # the default model's table dimension
+        vectors = {
+            "a.md": [1.0] + [0.0] * (dim - 1),          # closest to query
+            "b.md": [0.9, 0.1] + [0.0] * (dim - 2),       # second
+            "c.md": [0.0, 1.0] + [0.0] * (dim - 2),       # farthest
+        }
+        for path, vec in vectors.items():
+            storage.upsert_note(path=path, title=path, scope="global",
+                                note_type="wiki", content="body", tags=[])
+        for path, vec in vectors.items():
+            unit = (np.array(vec) / np.linalg.norm(vec)).tolist()
+            storage._conn.execute(
+                "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+                (path, np.array(unit, dtype=np.float32).tobytes()),
+            )
+        storage._conn.commit()
+
+        # Query embedder already returns a unit vector too.
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: [1.0] + [0.0] * (dim - 1))
+
+        results = engine.search_vector("q", limit=3)
+        assert [r["path"] for r in results] == ["a.md", "b.md", "c.md"]
+        storage.close()
+
+
+class TestEmbeddingDimension:
+    """З2: notes_vec's vector width follows the current model."""
+
+    def test_default_model_dimension_is_384(self, db_path: Path):
+        storage = Storage(db_path)
+        engine = SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+        declared = storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[384]" in declared
+        storage.close()
+
+    def test_ensure_vec_table_uses_a_wider_real_model(self, db_path: Path):
+        """paraphrase-multilingual-mpnet-base-v2 is dim 768 (fastembed metadata
+        lookup — no weights loaded, no network)."""
+        storage = Storage(db_path)
+        engine = SearchEngine(
+            storage, model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+        declared = storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[768]" in declared
+        storage.close()
+
+    def test_unknown_model_falls_back_to_default_dimension_and_logs(
+            self, db_path: Path, caplog):
+        storage = Storage(db_path)
+        with caplog.at_level("ERROR", logger="symbiosis-brain.search"):
+            engine = SearchEngine(storage, model_name="fixture/no-such-model")
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+        declared = storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[384]" in declared
+        assert any("fixture/no-such-model" in r.message for r in caplog.records)
+        storage.close()
+
+    def test_recreate_vec_table_redeclares_for_the_new_model(self, db_path: Path):
+        storage = Storage(db_path)
+        engine = SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+        storage._conn.execute(
+            "INSERT INTO notes_vec (path, embedding) VALUES (?, ?)",
+            ("a.md", np.zeros(384, dtype=np.float32).tobytes()),
+        )
+        storage._conn.commit()
+
+        engine.model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+        engine._recreate_vec_table()
+
+        declared = storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[768]" in declared
+        assert storage._conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0] == 0
+        storage.close()
+
+    def test_recreate_vec_table_is_one_explicit_transaction(self, db_path: Path, monkeypatch):
+        """DROP + CREATE must be BEGIN IMMEDIATE ... COMMIT, never two
+        autocommits — a kill between them must never leave notes_vec absent."""
+        storage = Storage(db_path)
+        engine = SearchEngine(storage)
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+
+        # sqlite3.Connection.execute is a read-only slot — can't monkeypatch
+        # an instance attribute directly — so wrap the connection instead.
+        real_conn = storage._conn
+        calls: list[str] = []
+
+        class _ConnSpy:
+            def execute(self, sql, *a, **kw):
+                calls.append(sql.strip().split("\n")[0].strip())
+                return real_conn.execute(sql, *a, **kw)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        monkeypatch.setattr(storage, "_conn", _ConnSpy())
+        engine._recreate_vec_table()
+
+        assert calls[0] == "BEGIN IMMEDIATE"
+        assert calls[-1] == "COMMIT"
+        assert "DROP TABLE IF EXISTS notes_vec" in calls
+        storage.close()
+
+
+class TestModelSourceOfTruth:
+    """З3: schema_version.embedding_model is authoritative; env is never read
+    inside SearchEngine — only server.py applies it, as a request."""
+
+    def test_resolve_model_name_prefers_db_over_default(self, db_path: Path):
+        from symbiosis_brain.search import _resolve_model_name
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/from-db")
+        assert _resolve_model_name(storage) == "fixture/from-db"
+        storage.close()
+
+    def test_resolve_model_name_defaults_when_db_empty(self, db_path: Path):
+        from symbiosis_brain.search import _resolve_model_name, _MODEL_NAME
+        storage = Storage(db_path)
+        assert _resolve_model_name(storage) == _MODEL_NAME
+        storage.close()
+
+    def test_search_engine_ignores_the_env_var(self, db_path: Path, monkeypatch):
+        """SYMBIOSIS_BRAIN_EMBED_MODEL is a request server.py applies — never
+        read directly by SearchEngine (hook/CLI subprocesses must never race
+        ahead of whatever the server has actually migrated the index to)."""
+        from symbiosis_brain.search import _MODEL_NAME
+        monkeypatch.setenv("SYMBIOSIS_BRAIN_EMBED_MODEL", "fixture/should-be-ignored")
+        storage = Storage(db_path)
+        engine = SearchEngine(storage)
+        assert engine.model_name == _MODEL_NAME
+        storage.close()
+
+    def test_explicit_model_name_overrides_db(self, db_path: Path):
+        """The constructor override is for server.py's own migration code and
+        tools/eval_search.py, not for env — see the two tests above."""
+        storage = Storage(db_path)
+        storage.set_schema_version("embedding_model", "fixture/from-db")
+        engine = SearchEngine(storage, model_name="fixture/explicit")
+        assert engine.model_name == "fixture/explicit"
+        storage.close()
+
+
+class TestModelPrefixes:
+    """З4: query/doc text get different, model-specific prefixes."""
+
+    def test_bge_small_has_no_prefix(self):
+        from symbiosis_brain.search import _model_prefixes
+        assert _model_prefixes("BAAI/bge-small-en-v1.5") == ("", "")
+
+    def test_mpnet_has_no_prefix(self):
+        from symbiosis_brain.search import _model_prefixes
+        assert _model_prefixes(
+            "sentence-transformers/paraphrase-multilingual-mpnet-base-v2") == ("", "")
+
+    def test_e5_large_has_query_and_passage_prefixes(self):
+        from symbiosis_brain.search import _model_prefixes
+        assert _model_prefixes("intfloat/multilingual-e5-large") == ("query: ", "passage: ")
+
+    def test_unknown_model_has_no_prefix(self):
+        from symbiosis_brain.search import _model_prefixes
+        assert _model_prefixes("fixture/unknown-model") == ("", "")
+
+    def test_embed_documents_prefixes_e5_large_texts(self, monkeypatch):
+        from symbiosis_brain import search as sb_search
+
+        received: list[list[str]] = []
+
+        def fake_embed(texts):
+            texts = list(texts)
+            received.append(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        sb_search._embed_documents(["note body"], "intfloat/multilingual-e5-large")
+        assert received[-1] == ["passage: note body"]
+
+    def test_embed_query_prefixes_e5_large_text_differently_from_documents(self, monkeypatch):
+        from symbiosis_brain import search as sb_search
+
+        received: list[str] = []
+
+        def fake_embed_one(text):
+            received.append(text)
+            return [1.0, 0.0]
+
+        monkeypatch.setattr(sb_search, "_embed_one", fake_embed_one)
+        sb_search._embed_query("a question", "intfloat/multilingual-e5-large")
+        assert received[-1] == "query: a question"
+        assert received[-1] != "passage: a question"
+
+    def test_embed_documents_leaves_bge_small_text_unchanged(self, monkeypatch):
+        from symbiosis_brain import search as sb_search
+
+        received: list[list[str]] = []
+
+        def fake_embed(texts):
+            texts = list(texts)
+            received.append(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        sb_search._embed_documents(["note body"], "BAAI/bge-small-en-v1.5")
+        assert received[-1] == ["note body"]
+
+    def test_index_note_and_search_vector_use_different_prefixes_for_the_same_text(
+            self, db_path: Path, monkeypatch):
+        """End to end through SearchEngine: writing and querying the SAME text
+        under a prefixed model must NOT call the embedder with the same
+        string — index_note gets the doc prefix, search_vector gets the query
+        prefix."""
+        from symbiosis_brain import search as sb_search
+
+        storage = Storage(db_path)
+        engine = SearchEngine(storage, model_name="intfloat/multilingual-e5-large")
+        if not engine._vec_enabled:
+            pytest.skip("sqlite-vec unavailable")
+        engine._recreate_vec_table()  # e5-large is dim 1024, table starts at 384
+
+        received: list[str] = []
+
+        def fake_embed(texts):
+            texts = list(texts)
+            received.extend(texts)
+            return [[1.0] + [0.0] * 1023 for _ in texts]
+
+        monkeypatch.setattr(sb_search, "_embed", fake_embed)
+        monkeypatch.setattr(sb_search, "_embed_one", lambda text: fake_embed([text])[0])
+
+        engine.index_note("same/text.md", "shared text")
+        engine.search_vector("shared text")
+
+        assert received == ["passage: shared text", "query: shared text"]
+        storage.close()
 
 
 # ================== CP-1: лексические режимы (I-17, I-18, I-19) ==================

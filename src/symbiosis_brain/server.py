@@ -177,17 +177,37 @@ def _init(vault_path: Path):
     except Exception:
         logger.debug("retrieval log rotation skipped", exc_info=True)
 
-    current_model = _search._model_name
-    stored_model = _storage.get_schema_version("embedding_model")
+    # SYMBIOSIS_BRAIN_EMBED_MODEL is a REQUEST to switch embedding models,
+    # applied ONLY here, at server startup (З3). SearchEngine itself never
+    # reads this var — see _resolve_model_name's docstring in search.py for
+    # why: hook and CLI subprocesses get their environment from
+    # CLAUDE_ENV_FILE, not from the env the MCP registration launched this
+    # server with, and could apply a request the server has not (yet, or
+    # ever) migrated the index to — embedding a query with a model the
+    # stored vectors don't match. Only the server, serialized under
+    # _reindex_lock below, is allowed to move the index and the DB's
+    # embedding_model pointer together; every other reader (including this
+    # process's own _search, once registered) then finds the new name
+    # already sitting in schema_version.embedding_model, in agreement.
+    requested_model = os.environ.get("SYMBIOSIS_BRAIN_EMBED_MODEL") or None
 
-    if stored_model is None or stored_model != current_model:
-        # Full-rebuild territory: serialize across processes AND re-read the
-        # decision input inside the lock — whoever held it before us has very
-        # likely just done this exact rebuild.
+    current_model = _search._model_name  # resolved from the DB by
+                                          # SearchEngine.__init__, or the
+                                          # hardcoded default when the DB has
+                                          # no embedding_model row yet
+    stored_model = _storage.get_schema_version("embedding_model")
+    target_model = requested_model or current_model
+
+    if stored_model is None and target_model == current_model:
+        # Bootstrap, no model change requested: byte-for-byte the original
+        # behaviour — register the resolved (default) model, and reindex only
+        # if the index is already dirty relative to it. Full-rebuild
+        # territory only if it turns out dirty: serialize across processes
+        # AND re-read the decision input inside the lock — whoever held it
+        # before us has very likely just done this exact bootstrap.
         with _reindex_lock(_storage.db_path):
             stored_model = _storage.get_schema_version("embedding_model")
             if stored_model is None:
-                # Bootstrap: stored_model unset → infer from current state.
                 # On legacy DBs upgraded into this code path, notes_vec was already
                 # populated by the old `index_all()`-on-every-startup behaviour. If the
                 # index is consistent with notes (no count drift), it's valid under the
@@ -201,15 +221,30 @@ def _init(vault_path: Path):
                 _storage.set_schema_version("embedding_model", current_model)
                 logger.info("Embedding model registered: %s", current_model)
                 return
-            if stored_model != current_model:
-                logger.warning("Embedding model changed (%s -> %s); rebuilding vector index",
-                               stored_model, current_model)
+            # Another process completed the bootstrap while we waited — it
+            # may have registered a different model than ours, if it also
+            # raced a since-changed env request. Re-resolve rather than keep
+            # using the _search we constructed before the lock.
+            _search = SearchEngine(_storage)
+    elif stored_model != target_model:
+        # A real model change: the DB was already registered under a
+        # different model than SYMBIOSIS_BRAIN_EMBED_MODEL now requests (or
+        # this is a fresh/legacy DB and the request names something other
+        # than the default). Either way notes_vec must be rebuilt at the new
+        # model's dimension before anything embeds with it.
+        logger.warning("Embedding model changing (%s -> %s); rebuilding vector index",
+                       stored_model or "unset", target_model)
+        with _reindex_lock(_storage.db_path):
+            stored_model = _storage.get_schema_version("embedding_model")
+            if stored_model != target_model:
+                _search = SearchEngine(_storage, model_name=target_model)
+                _search._recreate_vec_table()
                 _search.index_all()
-                _storage.set_schema_version("embedding_model", current_model)
+                _storage.set_schema_version("embedding_model", target_model)
                 logger.info("Embeddings indexed (full re-build, model change)")
                 return
-        # Another process completed the bootstrap/migration while we waited —
-        # fall through to the targeted path below.
+            # Someone else already applied this exact change while we waited.
+            _search = SearchEngine(_storage)
 
     # Targeted incremental indexing — only the actual diff. Note: this MUST
     # run before the drift safety net below, otherwise the safety net

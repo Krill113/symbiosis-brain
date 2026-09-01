@@ -135,6 +135,12 @@ _REINDEX_LOCK_WAIT_S = 180
 Giving up costs duplicated work — exactly the pre-fix behaviour — never a
 hang."""
 
+_MODEL_DRIFT_RECHECK_S = 30.0
+"""How often a live SearchEngine re-checks that the index it queries still
+belongs to the model it embeds with (SearchEngine._check_model_drift). One
+indexed read of schema_version, so the interval exists to keep the query path
+tidy, not because the read is expensive."""
+
 _REINDEX_LOCK_STALE_S = 1800
 """When an unattended lock file is broken as abandoned. Orphaned locks are
 the NORMAL case, not the exception: _run_server force-exits via os._exit(0)
@@ -599,11 +605,50 @@ class SearchEngine:
         _resolve_model_name's DB-else-default resolution (З3)."""
         self.storage = storage
         self.model_name = model_name or _resolve_model_name(storage)
+        self._model_pinned = model_name is not None
+        self._drift_checked_at = time.monotonic()
         self._vec_enabled = self._try_load_vec()
 
     @property
     def _model_name(self) -> str:
         return self.model_name
+
+    def _check_model_drift(self) -> None:
+        """Stop querying an index that no longer belongs to our model.
+
+        We resolve the model once, at construction, and a server process can
+        live for hours. Meanwhile another process — a second editor window, or
+        a restart applying SYMBIOSIS_BRAIN_EMBED_MODEL — may migrate notes_vec
+        to a different model underneath us. Embedding a query with the old
+        model against the new vectors does not fail: it returns confident
+        nonsense, and the retrieval log records it as an ordinary result. That
+        is unrecoverable for a benchmark, so the vector half shuts down for
+        this process and the search degrades to FTS until it restarts.
+
+        Cheap enough to sit in the query path: one indexed read of
+        schema_version, at most every _MODEL_DRIFT_RECHECK_S. A pinned model
+        is exempt — eval_search.py aims a copied DB at a candidate on purpose,
+        and server.py's migration builds its engine before writing the name.
+        Fail-open on a read error: this is a guard, not a gate.
+        """
+        if self._model_pinned or not self._vec_enabled:
+            return
+        now = time.monotonic()
+        if now - self._drift_checked_at < _MODEL_DRIFT_RECHECK_S:
+            return
+        self._drift_checked_at = now
+        try:
+            stored = self.storage.get_schema_version("embedding_model")
+        except Exception:
+            logger.debug("model drift check skipped", exc_info=True)
+            return
+        if isinstance(stored, str) and stored and stored != self.model_name:
+            logger.error(
+                "Vector index was migrated to %r while this process embeds "
+                "with %r; disabling vector search here (FTS only) until "
+                "restart, rather than scoring queries against foreign vectors.",
+                stored, self.model_name)
+            self._vec_enabled = False
 
     def _try_load_vec(self) -> bool:
         try:
@@ -864,6 +909,7 @@ class SearchEngine:
         exhausted (`k >= count(notes_vec)`). Measured before this change: 25 %
         of scoped queries returned fewer notes than asked ([report 03, F21]).
         """
+        self._check_model_drift()
         if not self._vec_enabled:
             return []
         q_blob = np.array(_embed_query(query, self.model_name), dtype=np.float32).tobytes()

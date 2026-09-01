@@ -123,8 +123,14 @@ def test_init_indexes_only_added_or_updated(tmp_vault, db_path, monkeypatch):
     server._storage.close()
 
 
-def test_init_full_reindex_on_model_drift(tmp_vault, db_path):
-    """If schema_version[embedding_model] differs from current, full re-index runs."""
+def test_init_db_model_mismatch_alone_does_not_reindex(tmp_vault, db_path):
+    """З3: schema_version.embedding_model is the source of truth. A DB
+    registered under a model that no longer matches the code's hardcoded
+    default (e.g. the default changed across an upgrade) must NOT trigger a
+    forced re-index on its own — only SYMBIOSIS_BRAIN_EMBED_MODEL is a
+    request to change models. This is the boundary's "no forced reindex on
+    upgrade" requirement, and the direct replacement for this suite's old
+    assumption that a bare default-vs-DB mismatch alone drove a rebuild."""
     _seed_vault(tmp_vault, n=3)
 
     from symbiosis_brain import server
@@ -133,7 +139,8 @@ def test_init_full_reindex_on_model_drift(tmp_vault, db_path):
     assert server._storage.get_schema_version("embedding_model") == _MODEL_NAME
     server._storage.close()
 
-    # Mutate stored model to simulate upgrade
+    # Mutate stored model to simulate a DB registered under a model the
+    # code's default no longer names.
     s = Storage(tmp_vault / ".index" / "brain.db")
     s.set_schema_version("embedding_model", "OLD-MODEL")
     s.close()
@@ -153,8 +160,72 @@ def test_init_full_reindex_on_model_drift(tmp_vault, db_path):
     _SE.index_all = counting_index_all
     try:
         server._init(tmp_vault)
-        assert call_count["index_all"] == 1, "model drift should trigger full re-index"
-        assert server._storage.get_schema_version("embedding_model") == _MODEL_NAME
+        assert call_count["index_all"] == 0, \
+            "a DB/default mismatch alone must not force a reindex (no env request)"
+        assert server._storage.get_schema_version("embedding_model") == "OLD-MODEL", \
+            "the DB's stored model is authoritative and must be left as-is"
+        assert server._search._model_name == "OLD-MODEL"
+    finally:
+        _SE.index_all = orig_index_all
+        server._storage.close()
+
+
+def test_init_reindexes_on_env_requested_model_change(tmp_vault, db_path, monkeypatch):
+    """З3: SYMBIOSIS_BRAIN_EMBED_MODEL is the ONLY thing that makes the server
+    rebuild notes_vec for a different model — set it to something other than
+    what's already registered and a full re-index runs, at the new model's
+    dimension, with the DB updated to match."""
+    _seed_vault(tmp_vault, n=3)
+
+    from symbiosis_brain import server
+
+    server._init(tmp_vault)
+    assert server._storage.get_schema_version("embedding_model") == _MODEL_NAME
+    server._storage.close()
+
+    for attr in ("_storage", "_search", "_sync", "_graph", "_temporal",
+                 "_linter", "_vault_path"):
+        setattr(server, attr, None)
+
+    monkeypatch.setenv("SYMBIOSIS_BRAIN_EMBED_MODEL", "fixture/model-eight")
+    # "fixture/model-eight" isn't a real fastembed model — never download one
+    # in a test. Fake the embedder out so index_all's actual embed calls stay
+    # offline; the point of this test is the migration plumbing, not vectors.
+    import symbiosis_brain.search as sb_search
+
+    def _fake_embed(texts):
+        return [[0.1] * 384 for _ in texts]
+
+    monkeypatch.setattr(sb_search, "_embed", _fake_embed)
+    monkeypatch.setattr(sb_search, "_embed_one", lambda text: _fake_embed([text])[0])
+    # index_all's _embed_documents call routes through _embed above (faked),
+    # but first swaps the legacy _MODEL_NAME/_embedder singleton to
+    # "fixture/model-eight" as a side effect (_set_active_model) — monkeypatch
+    # these too so that swap reverts at teardown instead of leaking into
+    # whichever test runs next in this session.
+    monkeypatch.setattr(sb_search, "_MODEL_NAME", sb_search._MODEL_NAME)
+    monkeypatch.setattr(sb_search, "_embedder", sb_search._embedder)
+
+    call_count = {"index_all": 0}
+    from symbiosis_brain.search import SearchEngine as _SE
+    orig_index_all = _SE.index_all
+
+    def counting_index_all(self, *a, **kw):
+        call_count["index_all"] += 1
+        return orig_index_all(self, *a, **kw)
+
+    _SE.index_all = counting_index_all
+    try:
+        server._init(tmp_vault)
+        assert call_count["index_all"] == 1, "an env-requested model change must reindex"
+        assert server._storage.get_schema_version("embedding_model") == "fixture/model-eight"
+        assert server._search._model_name == "fixture/model-eight"
+        declared = server._storage._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_vec'").fetchone()[0]
+        assert "FLOAT[384]" in declared, (
+            "fixture/model-eight has no fastembed metadata — dimension must "
+            "fall back to the default rather than crash startup: " + declared
+        )
     finally:
         _SE.index_all = orig_index_all
         server._storage.close()

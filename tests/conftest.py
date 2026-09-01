@@ -8,6 +8,32 @@ import pytest
 from symbiosis_brain.sync import VAULT_DIRS
 
 
+@pytest.fixture(autouse=True)
+def _restore_embedder_singleton():
+    """Guard against cross-test leakage of the legacy embedder singleton
+    (symbiosis_brain.search._MODEL_NAME / _embedder).
+
+    SearchEngine resolves each instance's own model from the DB (З3), but the
+    actual embed call still goes through this one process-wide singleton
+    (_get_embedder/_embed) — _set_active_model swaps it, lazily, whenever a
+    call needs a model different from whichever one is currently loaded. In
+    production that swap fires at most once per process (a server only ever
+    runs one model at a time); in a test session many different models get
+    exercised back to back, and any test that constructs a SearchEngine for a
+    non-default model — or calls _embed_documents/_embed_query with one
+    directly — would otherwise leave that model active for every test that
+    runs after it: the next SearchEngine on an empty DB resolves to it as the
+    "default" (_resolve_model_name's DB-empty fallback IS this global), and
+    its first real embed call tries to load — or download — a model nobody
+    asked it for. Snapshot/restore here, once, rather than trust every current
+    and future test to monkeypatch both names by hand.
+    """
+    import symbiosis_brain.search as _sb_search
+    model_before, embedder_before = _sb_search._MODEL_NAME, _sb_search._embedder
+    yield
+    _sb_search._MODEL_NAME, _sb_search._embedder = model_before, embedder_before
+
+
 @pytest.fixture
 def tmp_vault(tmp_path: Path) -> Path:
     """Create a temporary vault directory with standard structure."""

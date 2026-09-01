@@ -26,13 +26,20 @@ _MODEL_NAME = "BAAI/bge-small-en-v1.5"
 schema_version.embedding_model row yet (fresh vault, or a legacy DB from
 before this row existed). Doubles as the module's *legacy* active-model
 selector: _get_embedder()/_embed()/_embed_one() read it fresh on every call,
-exactly as before this file learned to switch models. Production code never
-mutates it — SearchEngine resolves each instance's own model from the DB (see
-_resolve_model_name) and threads that name explicitly through
-_embed_documents/_embed_query, never through this global. tools/eval_search.py
-is the one place that DOES mutate it (apply_model_override): a standalone CLI
-process, never imported by the server, so its process-wide model swap can
-never race a real server's per-vault resolution."""
+exactly as before this file learned to switch models. SearchEngine resolves
+each instance's own model from the DB (see _resolve_model_name) and threads
+that name explicitly through _embed_documents/_embed_query — but those DO
+mutate this global, via _set_active_model, as the bridge that keeps the
+legacy _get_embedder()/_embed() singleton pointed at whichever model the
+current call actually wants. So after a process's first real embed call this
+no longer reliably names *the default* — see _DEFAULT_MODEL_NAME below for
+that. tools/eval_search.py also mutates it directly (apply_model_override):
+a standalone CLI process, never imported by the server, so its process-wide
+model swap can never race a real server's per-vault resolution."""
+_DEFAULT_MODEL_NAME = _MODEL_NAME
+"""Frozen copy of the startup default, for messages that must name it even
+after _set_active_model has repointed the mutable _MODEL_NAME above at
+something else (see its docstring)."""
 _EMBED_BATCH_SIZE = 16
 """fastembed's silent default is batch_size=256. With 512-token padded
 documents that peaks the onnxruntime CPU arena at ~11 GB on a ~1300-note
@@ -117,7 +124,7 @@ def _embedding_dim(model_name: str) -> int:
         logger.error(
             "Unknown embedding model %r — fastembed has no size metadata for "
             "it. Falling back to the default dimension (%d, %s's).",
-            model_name, _DEFAULT_EMBEDDING_DIM, _MODEL_NAME, exc_info=True)
+            model_name, _DEFAULT_EMBEDDING_DIM, _DEFAULT_MODEL_NAME, exc_info=True)
         return _DEFAULT_EMBEDDING_DIM
 
 LOCK_DIR = Path(tempfile.gettempdir())

@@ -366,7 +366,9 @@ def _render_lint_report(report: dict, verbose: bool) -> str:
         f"Type drift: {s['type_drift_count']}  |  "
         f"Gist missing: {s.get('gist_missing_count', 0)}  |  "
         f"Gist too long: {s.get('gist_too_long_count', 0)}  |  "
-        f"Gist equals title: {s.get('gist_equals_title_count', 0)}",
+        f"Gist equals title: {s.get('gist_equals_title_count', 0)}  |  "
+        f"Scope-folder mismatch: {s.get('scope_folder_mismatch_count', 0)}  |  "
+        f"DB orphans: {s.get('db_orphans_count', 0)}",
     ]
 
     if verbose and report.get("orphans"):
@@ -403,6 +405,19 @@ def _render_lint_report(report: dict, verbose: bool) -> str:
                 f"- `{i['path']}` — type=`{i['actual_type']}`, "
                 f"expected=`{i['expected_type']}` (set `allow_type_mismatch: true` to silence)"
             )
+    if report.get("scope_folder_mismatch"):
+        lines.append(
+            f"\n## Scope-Folder Mismatch (папка ≠ frontmatter scope) — "
+            f"{s.get('scope_folder_mismatch_count', 0)}"
+        )
+        for i in report["scope_folder_mismatch"]:
+            lines.append(
+                f"- `{i['path']}` — folder=`{i['folder_scope']}`, scope=`{i['note_scope']}`"
+            )
+    if report.get("db_orphans"):
+        lines.append(f"\n## DB Orphans (строка в индексе, файла нет) — {s.get('db_orphans_count', 0)}")
+        for i in report["db_orphans"]:
+            lines.append(f"- `{i['path']}` — run brain_sync to reconcile")
     if report.get("gist_missing"):
         lines.append(f"\n## Gist Missing — {s['gist_missing_count']}")
         for i in report["gist_missing"]:
@@ -1307,7 +1322,7 @@ def main():
     if not vault_path.exists():
         vault_path.mkdir(parents=True)
         for d in VAULT_DIRS:
-            (vault_path / d).mkdir()
+            (vault_path / d).mkdir(parents=True, exist_ok=True)
 
     asyncio.run(_run_server(vault_path))
 

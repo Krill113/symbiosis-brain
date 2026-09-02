@@ -75,6 +75,7 @@ class VaultLinter:
         gist_missing: list[dict] = []
         gist_too_long: list[dict] = []
         gist_equals_title: list[dict] = []
+        scope_folder_mismatch: list[dict] = []
         audited = 0
 
         for note in notes:
@@ -145,16 +146,40 @@ class VaultLinter:
                 })
 
             fm = note.get("frontmatter") or {}
+            path = note["path"]
+            parts = path.split("/")
             if not fm.get("allow_type_mismatch"):
-                path = note["path"]
-                folder = path.split("/", 1)[0] if "/" in path else ""
-                expected = folder_type_map.get(folder)
+                # Two layouts are valid during the 2026-09 reorg transition:
+                # scope-first <scope>/<type>/note.md (the canon) and legacy
+                # top-level type folders. Flat <scope>/note.md and domain
+                # subfolders carry no folder constraint; the project card
+                # <scope>/<scope>.md and <scope>/archive/ entries are projects.
+                expected = None
+                if len(parts) >= 2 and parts[0] in valid_scopes:
+                    if len(parts) == 2 and parts[1] == f"{parts[0]}.md":
+                        expected = "project"
+                    elif len(parts) >= 3 and parts[1] == "archive":
+                        expected = "project"
+                    elif len(parts) >= 3 and parts[1] in folder_type_map:
+                        expected = folder_type_map[parts[1]]
+                elif len(parts) >= 2 and parts[0] in folder_type_map:
+                    expected = folder_type_map[parts[0]]
                 if expected and note["note_type"] != expected:
                     type_drift.append({
                         "path": path,
                         "actual_type": note["note_type"],
                         "expected_type": expected,
                     })
+
+            # Scope-first canon: the first path segment IS the scope — a note
+            # filed under another scope's folder is misplaced even when its own
+            # frontmatter scope is valid.
+            if len(parts) >= 2 and parts[0] in valid_scopes and (note.get("scope") or "") != parts[0]:
+                scope_folder_mismatch.append({
+                    "path": path,
+                    "folder_scope": parts[0],
+                    "note_scope": note.get("scope") or "",
+                })
 
             # Gist rules — skip CRITICAL_FACTS (root index, has no narrative gist)
             if note["path"] != "CRITICAL_FACTS.md":
@@ -180,6 +205,15 @@ class VaultLinter:
                             "title": note["title"],
                         })
 
+        # The mirror of not_indexed: a DB row whose file vanished from disk —
+        # exactly the state a crashed mid-call rename leaves behind. lint used
+        # to check only the disk→DB direction, so the migration acceptance
+        # criterion could not see it (skeptic finding, 2026-09-01).
+        db_orphans = sorted(
+            ({"path": n["path"]} for n in notes if not (self._vault_path / n["path"]).exists()),
+            key=lambda i: i["path"],
+        )
+
         return {
             "orphans": orphans,
             "weak_links": weak_links,
@@ -191,6 +225,8 @@ class VaultLinter:
             "gist_missing": gist_missing,
             "gist_too_long": gist_too_long,
             "gist_equals_title": gist_equals_title,
+            "scope_folder_mismatch": scope_folder_mismatch,
+            "db_orphans": db_orphans,
             "summary": {
                 # total_notes == brain_status's note count. It used to be the
                 # audited count, i.e. permanently one short (B5.2).
@@ -206,5 +242,7 @@ class VaultLinter:
                 "gist_missing_count": len(gist_missing),
                 "gist_too_long_count": len(gist_too_long),
                 "gist_equals_title_count": len(gist_equals_title),
+                "scope_folder_mismatch_count": len(scope_folder_mismatch),
+                "db_orphans_count": len(db_orphans),
             },
         }

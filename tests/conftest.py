@@ -70,7 +70,7 @@ def _clean_embed_model_env(monkeypatch):
 def tmp_vault(tmp_path: Path) -> Path:
     """Create a temporary vault directory with standard structure."""
     for d in VAULT_DIRS:
-        (tmp_path / d).mkdir()
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 

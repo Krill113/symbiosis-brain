@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -85,6 +86,23 @@ model (see each entry's `hf` for the actual HF repo, which may differ from
 the key — e5-small-int8 is exactly that case)."""
 
 
+_custom_model_registration_lock = threading.Lock()
+"""Guards _ensure_custom_model_registered's check-then-act against fastembed's
+add_custom_model, which raises ValueError('... is already registered') on a
+second call for the same name (verified against the installed fastembed
+0.8.0 source). _get_embedder() and _embedding_dim() both call into
+_ensure_custom_model_registered from independent, differently-locked (one:
+the cross-process sb-fastembed-init.lock; the other: no lock at all) paths,
+so without a lock scoped to this check-then-act itself, two threads racing
+between the list_supported_models() check and the add_custom_model() call
+could both see "not registered yet" and both call add_custom_model — the
+loser raising ValueError. Cross-process races are not possible here:
+fastembed's model registry is an in-memory, per-interpreter list, never
+shared or persisted, so a plain threading.Lock (not the file-based
+cross-process lock _get_embedder uses for the separate concern of
+concurrent cold starts) fully closes the window."""
+
+
 def _ensure_custom_model_registered(model_name: str) -> None:
     """Register `model_name` with fastembed via add_custom_model if — and
     only if — it is one of ours (_CUSTOM_MODELS) AND fastembed does not
@@ -101,11 +119,13 @@ def _ensure_custom_model_registered(model_name: str) -> None:
 
     Idempotent by construction: checked against
     TextEmbedding.list_supported_models(), never by catching the
-    already-registered exception add_custom_model raises for a repeat name.
-    fastembed's registry is process-global and this codebase calls into it
-    from more than one place (_embedding_dim, _get_embedder) across more than
-    one SearchEngine instance per process, so a call here after the first is
-    the normal case, not an edge case.
+    already-registered exception add_custom_model raises for a repeat name —
+    and the whole check-then-act runs under _custom_model_registration_lock
+    (see its docstring) so that guarantee holds even when _get_embedder and
+    _embedding_dim call in concurrently from more than one thread. fastembed's
+    registry is process-global and this codebase calls into it from more than
+    one place across more than one SearchEngine instance per process, so a
+    call here after the first is the normal case, not an edge case.
     """
     spec = _CUSTOM_MODELS.get(model_name)
     if spec is None:
@@ -113,21 +133,22 @@ def _ensure_custom_model_registered(model_name: str) -> None:
     from fastembed import TextEmbedding
     from fastembed.common.model_description import ModelSource, PoolingType
 
-    already = any(
-        m.get("model") == model_name for m in TextEmbedding.list_supported_models()
-    )
-    if already:
-        return
-    TextEmbedding.add_custom_model(
-        model=model_name,
-        pooling=PoolingType[spec["pooling"]],
-        normalization=spec["normalization"],
-        sources=ModelSource(hf=spec["hf"]),
-        dim=spec["dim"],
-        model_file=spec["model_file"],
-        description=spec.get("description", ""),
-        license=spec.get("license", ""),
-    )
+    with _custom_model_registration_lock:
+        already = any(
+            m.get("model") == model_name for m in TextEmbedding.list_supported_models()
+        )
+        if already:
+            return
+        TextEmbedding.add_custom_model(
+            model=model_name,
+            pooling=PoolingType[spec["pooling"]],
+            normalization=spec["normalization"],
+            sources=ModelSource(hf=spec["hf"]),
+            dim=spec["dim"],
+            model_file=spec["model_file"],
+            description=spec.get("description", ""),
+            license=spec.get("license", ""),
+        )
 
 
 _MODEL_PREFIXES: dict[str, tuple[str, str]] = {
@@ -196,17 +217,36 @@ def _embedding_dim(model_name: str) -> int:
     know), we log an error and fall back to _DEFAULT_EMBEDDING_DIM rather than
     raising — notes_vec must always end up with SOME valid table, even
     mid-upgrade, and a bad model string in the DB must not fail the whole
-    server's startup."""
-    try:
-        _ensure_custom_model_registered(model_name)
-        from fastembed import TextEmbedding
-        return TextEmbedding.get_embedding_size(model_name)
-    except Exception:
+    server's startup.
+
+    A ValueError from _ensure_custom_model_registered is handled separately
+    from a genuinely unknown model: _ensure_custom_model_registered's own
+    check-then-act is locked (_custom_model_registration_lock), but that lock
+    cannot cover code outside this module that might call
+    TextEmbedding.add_custom_model directly for the same name between our
+    check and our call — 'already registered' then means the model IS known,
+    just not by way of our own call, so we retry the lookup once instead of
+    treating it as an unknown model and silently returning the wrong
+    dimension for it."""
+    def _unknown_model_fallback() -> int:
         logger.error(
             "Unknown embedding model %r — fastembed has no size metadata for "
             "it. Falling back to the default dimension (%d, %s's).",
             model_name, _DEFAULT_EMBEDDING_DIM, _DEFAULT_MODEL_NAME, exc_info=True)
         return _DEFAULT_EMBEDDING_DIM
+
+    try:
+        _ensure_custom_model_registered(model_name)
+        from fastembed import TextEmbedding
+        return TextEmbedding.get_embedding_size(model_name)
+    except ValueError:
+        try:
+            from fastembed import TextEmbedding
+            return TextEmbedding.get_embedding_size(model_name)
+        except Exception:
+            return _unknown_model_fallback()
+    except Exception:
+        return _unknown_model_fallback()
 
 LOCK_DIR = Path(tempfile.gettempdir())
 _FASTEMBED_LOCK_TIMEOUT_S = 120

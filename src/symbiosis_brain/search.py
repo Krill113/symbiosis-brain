@@ -51,8 +51,88 @@ _DEFAULT_EMBEDDING_DIM = 384
 """BAAI/bge-small-en-v1.5's vector width — the fallback _embedding_dim()
 returns only when fastembed has no metadata for a model name at all."""
 
+_E5_SMALL_INT8_MODEL_NAME = "intfloat/multilingual-e5-small-int8"
+"""Alias this model lives under in schema_version.embedding_model. Not the
+bare HF repo id (intfloat/multilingual-e5-small) on purpose: fastembed's
+registry has no entry for that repo at all (see _CUSTOM_MODELS below), and an
+alias that spells out both the origin and the quantization keeps a DB row
+self-explanatory without a code lookup."""
+
+_CUSTOM_MODELS: dict[str, dict] = {
+    _E5_SMALL_INT8_MODEL_NAME: {
+        "hf": "intfloat/multilingual-e5-small",
+        "model_file": "onnx/model_qint8_avx512_vnni.onnx",
+        "dim": 384,
+        "pooling": "MEAN",
+        "normalization": True,
+        "description": (
+            "intfloat/multilingual-e5-small, int8 (avx512-vnni) quantized "
+            "ONNX weights served straight from the model's own HF repo. "
+            "Measured MRR 0.460 on Russian queries vs 0.265 for "
+            "paraphrase-multilingual-MiniLM-L12-v2 and 0.109 for "
+            "BAAI/bge-small-en-v1.5 (147 queries / 76 notes, 2026-09-02), at "
+            "483 MB resident vs 631 MB for the MiniLM model. Same 384-dim "
+            "output as both."
+        ),
+        "license": "mit",
+    },
+}
+"""Models fastembed 0.8.0's own registry (TextEmbedding.list_supported_models)
+has no entry for at all — each needs one TextEmbedding.add_custom_model call,
+made idempotently by _ensure_custom_model_registered, before its dimension or
+its weights can be looked up. Keyed by the alias this codebase calls the
+model (see each entry's `hf` for the actual HF repo, which may differ from
+the key — e5-small-int8 is exactly that case)."""
+
+
+def _ensure_custom_model_registered(model_name: str) -> None:
+    """Register `model_name` with fastembed via add_custom_model if — and
+    only if — it is one of ours (_CUSTOM_MODELS) AND fastembed does not
+    already know it. A no-op for every built-in fastembed model name (the
+    overwhelming majority of calls) and for typos/unknown names alike: those
+    are none of this function's business and _embedding_dim's own fallback
+    handles them.
+
+    MUST be called before both get_embedding_size and TextEmbedding(...) for
+    a custom name — an unregistered name silently returns _embedding_dim's
+    384-fallback (right by coincidence, since every model in this table
+    happens to be 384-dim too) or, for a bigger custom model, an outright
+    wrong dimension.
+
+    Idempotent by construction: checked against
+    TextEmbedding.list_supported_models(), never by catching the
+    already-registered exception add_custom_model raises for a repeat name.
+    fastembed's registry is process-global and this codebase calls into it
+    from more than one place (_embedding_dim, _get_embedder) across more than
+    one SearchEngine instance per process, so a call here after the first is
+    the normal case, not an edge case.
+    """
+    spec = _CUSTOM_MODELS.get(model_name)
+    if spec is None:
+        return
+    from fastembed import TextEmbedding
+    from fastembed.common.model_description import ModelSource, PoolingType
+
+    already = any(
+        m.get("model") == model_name for m in TextEmbedding.list_supported_models()
+    )
+    if already:
+        return
+    TextEmbedding.add_custom_model(
+        model=model_name,
+        pooling=PoolingType[spec["pooling"]],
+        normalization=spec["normalization"],
+        sources=ModelSource(hf=spec["hf"]),
+        dim=spec["dim"],
+        model_file=spec["model_file"],
+        description=spec.get("description", ""),
+        license=spec.get("license", ""),
+    )
+
+
 _MODEL_PREFIXES: dict[str, tuple[str, str]] = {
     "intfloat/multilingual-e5-large": ("query: ", "passage: "),
+    _E5_SMALL_INT8_MODEL_NAME: ("query: ", "passage: "),
 }
 """model name -> (query_prefix, doc_prefix). fastembed 0.8.0 carries prefix
 advice only as free text inside each model's metadata `description`, and
@@ -118,6 +198,7 @@ def _embedding_dim(model_name: str) -> int:
     mid-upgrade, and a bad model string in the DB must not fail the whole
     server's startup."""
     try:
+        _ensure_custom_model_registered(model_name)
         from fastembed import TextEmbedding
         return TextEmbedding.get_embedding_size(model_name)
     except Exception:
@@ -283,6 +364,7 @@ def _get_embedder():
 
     try:
         if _embedder is None:
+            _ensure_custom_model_registered(_MODEL_NAME)
             from fastembed import TextEmbedding
             _embedder = TextEmbedding(model_name=_MODEL_NAME)
     finally:

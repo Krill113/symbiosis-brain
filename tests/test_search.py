@@ -614,6 +614,137 @@ class TestModelPrefixes:
         storage.close()
 
 
+class TestCustomModelRegistry:
+    """З1/З2: fastembed 0.8.0's own registry (TextEmbedding.
+    list_supported_models) has no entry for intfloat/multilingual-e5-small —
+    only add_custom_model can teach it that name. Registration must be
+    idempotent (fastembed refuses a second add_custom_model for the same
+    name in-process) and checked via list_supported_models, never a blind
+    try/except around add_custom_model."""
+
+    def test_e5_small_int8_alias_is_in_the_custom_models_table(self):
+        from symbiosis_brain.search import _CUSTOM_MODELS, _E5_SMALL_INT8_MODEL_NAME
+        spec = _CUSTOM_MODELS[_E5_SMALL_INT8_MODEL_NAME]
+        assert spec["hf"] == "intfloat/multilingual-e5-small"
+        assert spec["model_file"] == "onnx/model_qint8_avx512_vnni.onnx"
+        assert spec["dim"] == 384
+        assert spec["pooling"] == "MEAN"
+        assert spec["normalization"] is True
+
+    def test_ensure_custom_model_registered_calls_add_custom_model(self, monkeypatch):
+        from symbiosis_brain import search as sb_search
+        calls = []
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.list_supported_models", staticmethod(lambda: []))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model",
+            staticmethod(lambda **kw: calls.append(kw)))
+        sb_search._ensure_custom_model_registered(sb_search._E5_SMALL_INT8_MODEL_NAME)
+        assert len(calls) == 1
+        assert calls[0]["model"] == sb_search._E5_SMALL_INT8_MODEL_NAME
+        assert calls[0]["dim"] == 384
+        assert calls[0]["normalization"] is True
+        assert calls[0]["model_file"] == "onnx/model_qint8_avx512_vnni.onnx"
+
+    def test_ensure_custom_model_registered_is_idempotent(self, monkeypatch):
+        """Second call must see the name already in list_supported_models and
+        skip add_custom_model entirely — fastembed raises if the same name is
+        registered twice in one process, and our code is called from more
+        than one place (_embedding_dim and the embedder loader)."""
+        from symbiosis_brain import search as sb_search
+        registered: list[str] = []
+
+        def fake_list():
+            return [{"model": m} for m in registered]
+
+        def fake_add(**kw):
+            registered.append(kw["model"])
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.list_supported_models", staticmethod(fake_list))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model", staticmethod(fake_add))
+        sb_search._ensure_custom_model_registered(sb_search._E5_SMALL_INT8_MODEL_NAME)
+        sb_search._ensure_custom_model_registered(sb_search._E5_SMALL_INT8_MODEL_NAME)
+        assert registered == [sb_search._E5_SMALL_INT8_MODEL_NAME]
+
+    def test_ensure_custom_model_registered_is_noop_for_unregistered_names(self, monkeypatch):
+        """A model name absent from _CUSTOM_MODELS (a built-in fastembed model,
+        or a typo) must never reach add_custom_model."""
+        from symbiosis_brain import search as sb_search
+
+        def fail_add(**kw):
+            raise AssertionError("must not call add_custom_model for a non-custom name")
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model", staticmethod(fail_add))
+        sb_search._ensure_custom_model_registered("BAAI/bge-small-en-v1.5")
+        sb_search._ensure_custom_model_registered("fixture/not-in-the-table")
+
+    def test_embedding_dim_registers_before_looking_up_the_size(self, monkeypatch):
+        """The critical ordering (З1): registration must happen before
+        get_embedding_size, not only before loading weights — otherwise an
+        unregistered custom name falls into _embedding_dim's unknown-model
+        fallback branch, which happens to also be 384 and would mask the
+        defect. Pin the fallback to a different value so the two paths are
+        distinguishable."""
+        from symbiosis_brain import search as sb_search
+        monkeypatch.setattr(sb_search, "_DEFAULT_EMBEDDING_DIM", 999)
+        registered = {"done": False}
+
+        def fake_list():
+            return [{"model": sb_search._E5_SMALL_INT8_MODEL_NAME}] if registered["done"] else []
+
+        def fake_add(**kw):
+            registered["done"] = True
+
+        def fake_get_size(name):
+            if name == sb_search._E5_SMALL_INT8_MODEL_NAME and not registered["done"]:
+                raise KeyError(name)  # unregistered: fastembed has no metadata
+            return 384
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.list_supported_models", staticmethod(fake_list))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model", staticmethod(fake_add))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.get_embedding_size", staticmethod(fake_get_size))
+        assert sb_search._embedding_dim(sb_search._E5_SMALL_INT8_MODEL_NAME) == 384
+
+    def test_get_embedder_registers_before_instantiating_text_embedding(
+            self, monkeypatch, tmp_path):
+        """The other critical ordering (З1): registration must also happen
+        before the weights are loaded via TextEmbedding(model_name=...)."""
+        from symbiosis_brain import search as sb_search
+        monkeypatch.setattr(sb_search, "LOCK_DIR", tmp_path)
+        monkeypatch.setattr(sb_search, "_embedder", None)
+        monkeypatch.setattr(sb_search, "_MODEL_NAME", "fixture/custom-model")
+        order: list[tuple] = []
+        monkeypatch.setattr(
+            sb_search, "_ensure_custom_model_registered",
+            lambda name: order.append(("register", name)))
+
+        class FakeTextEmbedding:
+            def __init__(self, model_name):
+                order.append(("load", model_name))
+
+        monkeypatch.setattr("fastembed.TextEmbedding", FakeTextEmbedding)
+        sb_search._get_embedder()
+        assert order == [("register", "fixture/custom-model"), ("load", "fixture/custom-model")]
+
+    def test_e5_small_int8_has_query_and_passage_prefixes(self):
+        from symbiosis_brain.search import _E5_SMALL_INT8_MODEL_NAME, _model_prefixes
+        assert _model_prefixes(_E5_SMALL_INT8_MODEL_NAME) == ("query: ", "passage: ")
+
+    def test_default_model_dimension_is_unchanged(self):
+        """Boundary requirement: no env var, no code touching this model's
+        registration — the default's dimension must be exactly what it always
+        was. Real fastembed metadata lookup, no network (pure registry read)."""
+        from symbiosis_brain.search import _DEFAULT_EMBEDDING_DIM, _MODEL_NAME, _embedding_dim
+        assert _MODEL_NAME == "BAAI/bge-small-en-v1.5"
+        assert _embedding_dim(_MODEL_NAME) == _DEFAULT_EMBEDDING_DIM == 384
+
+
 # ================== CP-1: лексические режимы (I-17, I-18, I-19) ==================
 # Корпус синтетический: выдуманные ноты, выдуманные пути, ни одного реального
 # имени. Русская нота нужна потому, что 94,3 % нулевых выдач режима `all`

@@ -21,7 +21,7 @@ async def test_brain_lint_shows_gist_sections(
     server._storage.upsert_note(
         path="patterns/long.md", title="Long", scope="global",
         note_type="pattern", content="Body",
-        frontmatter={"gist": "x" * 105}, tags=[],
+        frontmatter={"gist": "x" * 145}, tags=[],
     )
     server._storage.upsert_note(
         path="patterns/dup.md", title="Same Title", scope="global",
@@ -99,7 +99,7 @@ async def lint_server(tmp_vault_with_taxonomy: Path, db_path: Path):
     server._storage.upsert_note(
         path="patterns/long.md", title="Long", scope="global",
         note_type="pattern", content="Body",
-        frontmatter={"gist": "x" * 105}, tags=[],
+        frontmatter={"gist": "x" * 145}, tags=[],
     )
     server._storage.upsert_note(
         path="patterns/dup.md", title="Same Title", scope="global",

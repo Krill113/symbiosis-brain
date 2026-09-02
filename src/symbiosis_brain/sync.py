@@ -37,6 +37,16 @@ MD_GLOB = "**/*.md"  # md-only by design: .json (incl. tool-routing.local.json) 
 # every lint report (B-N5).
 SKIP_FILES = {"CLAUDE.md", "README.md", "log.md", "MEMORY.md"}
 
+# <scope>/files/** holds raw materials (reports, scripts, assets) — never notes.
+# One rule shared by the indexer scan and brain_lint; only DIRECTORY segments are
+# checked, so a note merely named files.md stays indexed.
+MATERIAL_DIRS = {"files"}
+
+
+def is_material_path(rel_path: str) -> bool:
+    return any(part in MATERIAL_DIRS for part in rel_path.split("/")[:-1])
+
+
 
 class VaultSync:
     def __init__(self, vault_path: Path, storage: Storage):
@@ -61,6 +71,8 @@ class VaultSync:
                 continue
             parts = rel.split("/")
             if parts[0].startswith("."):
+                continue
+            if is_material_path(rel):
                 continue
             disk_files[rel] = md_file
 

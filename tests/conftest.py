@@ -34,6 +34,38 @@ def _restore_embedder_singleton():
     _sb_search._MODEL_NAME, _sb_search._embedder = model_before, embedder_before
 
 
+@pytest.fixture(autouse=True)
+def _clean_embed_model_env(monkeypatch):
+    """З3 isolation: SYMBIOSIS_BRAIN_EMBED_MODEL is a real ambient variable on
+    the owner's own machine, exported PERMANENTLY in their shell to pin a
+    working model outside of tests — it is not something only a test sets.
+    server._init() reads it straight from os.environ by design (see its
+    docstring in server.py / _resolve_model_name's in search.py): the var is
+    a REQUEST applied only at server startup, so nothing here can route the
+    read through a fixture-controlled seam instead.
+
+    Any test that asserts "no env request applies" behaviour without itself
+    clearing the var was therefore silently trusting the developer's shell to
+    happen to not have it set — true in CI, false on the owner's machine,
+    where the full suite went red on exactly those tests
+    (test_concurrency.py::test_init_db_model_mismatch_alone_does_not_reindex,
+    ::test_init_reindexes_on_env_requested_model_change,
+    ::test_model_change_migration_skipped_when_target_model_fails_smoke_test;
+    test_repair_index.py::test_init_lock_recheck_prevents_stale_rebuild).
+
+    A blanket autouse clear (rather than four point-fixes) is the right
+    shape: os.environ.get("SYMBIOSIS_BRAIN_EMBED_MODEL") is read directly at
+    more than one call site (server.py, __main__.py's hook path) and only a
+    fixture that runs for literally every test guarantees none of them —
+    including ones not yet written — can pick up whatever happens to be
+    exported outside pytest. A test that wants the var present for its own
+    scenario still calls monkeypatch.setenv(...) itself, same as before;
+    monkeypatch's own undo stack applies on top of (and unwinds after) this
+    fixture's delenv, so that keeps working unchanged.
+    """
+    monkeypatch.delenv("SYMBIOSIS_BRAIN_EMBED_MODEL", raising=False)
+
+
 @pytest.fixture
 def tmp_vault(tmp_path: Path) -> Path:
     """Create a temporary vault directory with standard structure."""

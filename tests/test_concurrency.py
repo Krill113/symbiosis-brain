@@ -6,6 +6,7 @@ cross-platform compatibility (mandatory on Windows).
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -16,6 +17,33 @@ import pytest
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VaultSync
 from symbiosis_brain.search import SearchEngine, _MODEL_NAME
+
+
+def test_ambient_embed_model_env_is_isolated_from_tests():
+    """З3 isolation regression (found 2026-09-02): SYMBIOSIS_BRAIN_EMBED_MODEL
+    is exported PERMANENTLY in the owner's real shell (it pins their working
+    model outside of tests). server._init() reads it straight from
+    os.environ by design (see its docstring) — nothing in search.py's own
+    resolution touches it — so any test that asserts "no env request applies"
+    behavior, without itself clearing the var, silently depends on the
+    developer's shell happening to not have it set. On the owner's machine
+    it always IS set, so the full suite was red on exactly the tests that
+    made that assumption (test_init_db_model_mismatch_alone_does_not_reindex,
+    test_init_reindexes_on_env_requested_model_change,
+    test_model_change_migration_skipped_when_target_model_fails_smoke_test,
+    test_repair_index.py::test_init_lock_recheck_prevents_stale_rebuild).
+
+    The fix is a blanket autouse fixture (conftest.py's
+    _clean_embed_model_env) that clears the var for every test, rather than
+    patching each test site by hand: os.environ is read directly at more
+    than one call site (server.py, __main__.py's hook path) and a
+    point-fix would only cover the ones we know about today. This test
+    asserts the isolation directly, independent of any of the four tests
+    that merely depend on it — it is RED without the fixture whenever the
+    ambient var is set, and green with it regardless of the ambient value.
+    """
+    assert os.environ.get("SYMBIOSIS_BRAIN_EMBED_MODEL") is None, \
+        "the autouse fixture must clear the ambient env var for every test"
 
 
 def _seed_vault(vault_path: Path, n: int = 5) -> None:

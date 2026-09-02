@@ -304,3 +304,39 @@ def test_bash_fails_on_ci_when_unresolved(monkeypatch):
     monkeypatch.setattr(_resolver_module(), '_BASH', None)
     with pytest.raises(pytest.fail.Exception):
         _bash()
+
+
+# The bash scope resolver runs on the owner's Windows box, where tests/test-scope-*.sh
+# are skipped by CI (they run on Linux only). These two exercise it through the status
+# line, which needs no CLI stub.
+LINE = pathlib.Path(__file__).resolve().parents[1] / 'hooks' / 'sb-line.sh'
+
+
+@pytest.mark.skipif(_BASH is None, reason='no usable bash')
+def test_statusline_resolves_scope_from_payload_cwd():
+    with tempfile.TemporaryDirectory() as sb:
+        proj = pathlib.Path(sb) / 'proj' / 'sub'
+        proj.mkdir(parents=True)
+        (proj.parent / 'CLAUDE.md').write_text(
+            '<!-- symbiosis-brain v1: scope=fixture-net -->' + chr(10), encoding='utf-8')
+        env = dict(os.environ)
+        env['TMPDIR'] = sb; env['TEMP'] = sb
+        env.pop('SYMBIOSIS_BRAIN_SCOPE', None)
+        payload = json.dumps({'session_id': 'win-scope', 'cwd': str(proj)})
+        out = subprocess.run([_bash(), str(LINE)], input=payload, text=True, encoding='utf-8',
+                             env=env, capture_output=True).stdout
+        assert 'scope: fixture-net' in out, out
+
+
+@pytest.mark.skipif(_BASH is None, reason='no usable bash')
+def test_statusline_marks_unresolved_scope():
+    with tempfile.TemporaryDirectory() as sb:
+        bare = pathlib.Path(sb) / 'bare' / 'sub'
+        bare.mkdir(parents=True)
+        env = dict(os.environ)
+        env['TMPDIR'] = sb; env['TEMP'] = sb
+        env.pop('SYMBIOSIS_BRAIN_SCOPE', None)
+        payload = json.dumps({'session_id': 'win-none', 'cwd': str(bare)})
+        out = subprocess.run([_bash(), str(LINE)], input=payload, text=True, encoding='utf-8',
+                             env=env, capture_output=True).stdout
+        assert 'scope: all*' in out, out

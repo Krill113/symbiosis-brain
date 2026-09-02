@@ -120,6 +120,8 @@ jobs:
                    tests/test-prompt-check-hook.sh \
                    tests/test-save-marker-hook.sh \
                    tests/test-sb-statusline.sh \
+                   tests/test-scope-resolve.sh \
+                   tests/test-scope-propagation-e2e.sh \
                    tests/test-stop-hook.sh \
                    tests/test_packaging.sh; do
             echo "::group::$t"

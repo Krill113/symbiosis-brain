@@ -491,6 +491,83 @@ test_prompt_recall_seen_files_gc_when_stale
 test_roster_prime_skipped_when_roster_is_fresh
 test_session_start_shows_sync_alarm
 
+# === Scope ladder: taxonomy gate, ancestor walk, per-session bridge file ===
+# The hook can no longer hand its scope to the other hooks through CLAUDE_ENV_FILE
+# (Claude Code sources that only before Bash TOOL commands), so it publishes a
+# per-session file — and it must refuse to invent a scope nobody registered.
+
+setup_vault
+mkdir -p "$VAULT/reference"
+cat > "$VAULT/reference/scope-taxonomy.md" <<'TAX'
+| Scope | Тип | Что хранит |
+|---|---|---|
+| `global` | cross-project | patterns |
+| `beta` | product | product notes |
+| `alpha` | **зонтик** (cross-ecosystem only) | umbrella notes |
+| `wsroot` | workspace-root | container folder |
+TAX
+
+# A basename the taxonomy knows is still accepted.
+OUT=$(run_hook "$FAKE_ROOT/My/beta")
+assert_contains "taxonomy: registered basename accepted" "$OUT" '\[scope: beta\]'
+
+# One it does not know is refused: an invented scope reads as a valid filter and
+# silently narrows every search to global-only.
+mkdir -p "$FAKE_ROOT/My/UnknownThing"
+OUT=$(run_hook "$FAKE_ROOT/My/UnknownThing")
+assert_contains "taxonomy: unregistered basename refused" "$OUT" '\[scope: unresolved -> all scopes\]'
+
+# The marker is found from a subdirectory, not only in the session's own directory.
+WALK="$FAKE_ROOT/My/walkproj"
+mkdir -p "$WALK/src/deep"
+cat > "$WALK/CLAUDE.md" <<'EOF'
+<!-- symbiosis-brain v1: scope=beta -->
+EOF
+OUT=$(run_hook "$WALK/src/deep")
+assert_contains "walk-up: marker found two levels above the cwd" "$OUT" '\[scope: beta\]'
+
+# A CLAUDE.md without a marker declares no scope — the walk stops there instead of
+# inheriting the workspace-root scope of an ancestor.
+WSROOT="$FAKE_ROOT/wsroot-case"
+mkdir -p "$WSROOT/child/sub"
+cat > "$WSROOT/CLAUDE.md" <<'EOF'
+<!-- symbiosis-brain v1: scope=wsroot -->
+EOF
+printf '# child project, no marker
+' > "$WSROOT/child/CLAUDE.md"
+OUT=$(run_hook "$WSROOT/child/sub")
+assert_contains "walk-up: markerless CLAUDE.md stops the walk" "$OUT" '\[scope: unresolved -> all scopes\]'
+
+# Even without a CLAUDE.md of its own, a child must not inherit a workspace-root scope.
+mkdir -p "$WSROOT/bare/sub"
+OUT=$(run_hook "$WSROOT/bare/sub")
+assert_not_contains "walk-up: workspace-root scope not inherited" "$OUT" '\[scope: wsroot\]'
+
+# The bridge file the other hooks actually read.
+BRIDGE_SID="scope-bridge-$$"
+( cd "$FAKE_ROOT/My/beta" &&   echo "{\"session_id\":\"$BRIDGE_SID\",\"source\":\"startup\"}" |   SYMBIOSIS_BRAIN_VAULT="$VAULT" CLAUDE_ENV_FILE="" bash "$HOOK" >/dev/null )
+BRIDGE_FILE="$TMPDIR/brain-scope-${BRIDGE_SID}"
+if [ -r "$BRIDGE_FILE" ] && [ "$(cat "$BRIDGE_FILE")" = "beta" ]; then
+  echo "PASS: bridge: per-session scope file written"
+else
+  echo "FAIL: bridge: per-session scope file written — got '$(cat "$BRIDGE_FILE" 2>/dev/null)'"
+  FAILED=$((FAILED + 1))
+fi
+rm -f "$BRIDGE_FILE"
+
+# GC sweeps stale bridge files (24h window, unlike the 60min counters).
+STALE="$TMPDIR/brain-scope-stale-sid"
+: > "$STALE"
+touch -d '2 days ago' "$STALE" 2>/dev/null || touch -t 202001010000 "$STALE"
+run_hook "$FAKE_ROOT/My/beta" >/dev/null
+if [ ! -f "$STALE" ]; then
+  echo "PASS: gc: stale scope bridge file swept"
+else
+  echo "FAIL: gc: stale scope bridge file swept"
+  FAILED=$((FAILED + 1))
+  rm -f "$STALE"
+fi
+
 # Cleanup
 rm -rf "$VAULT" "$FAKE_ROOT"
 

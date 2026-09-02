@@ -32,8 +32,10 @@ if [ "$1" = "--source-only-normalize" ]; then return 0 2>/dev/null || exit 0; fi
 # to disagree about whitespace after the colon, so half of the payloads the harness
 # sends parsed as an empty session id. Fail-open: without the library the hook goes
 # silent instead of guessing.
-DIR=${BASH_SOURCE[0]%/*}
-[ "$DIR" = "${BASH_SOURCE[0]}" ] && DIR=.
+DIR=${BASH_SOURCE[0]}
+# Both separators: bash invoked with a Windows-style path leaves no '/' to cut on,
+# and the library then silently fails to load.
+case $DIR in *[/\\]*) DIR=${DIR%[/\\]*} ;; *) DIR=. ;; esac
 . "$DIR/sb-hooklib.sh" 2>/dev/null || exit 0
 
 INPUT=$(cat)
@@ -43,20 +45,21 @@ sb_tmp_dir
 
 VAULT="${SYMBIOSIS_BRAIN_VAULT:-$HOME/symbiosis-brain-vault}"
 TOOLS="${SYMBIOSIS_BRAIN_TOOLS}"
-SCOPE=$(normalize_scope "$(basename "$PWD")")
-[ -z "$SCOPE" ] && SCOPE="global"
+# L1: the CLAUDE.md marker, walked up from $PWD (sb_scope_from_dir). The marker is the
+# only authoritative source of a scope; a CLAUDE.md without one stops the walk instead
+# of letting a project inherit an unrelated ancestor's scope.
+sb_scope_from_dir "$PWD"
+SCOPE="$SB_SCOPE"
+if [ -n "$SCOPE" ] && [ "${SB_SCOPE_DEPTH:-0}" -gt 0 ] && sb_scope_is_broad "$SCOPE"; then
+  SCOPE=""   # an umbrella or workspace-root scope is never inherited downwards
+fi
 
-# L2: marker override. The basename heuristic above is wrong whenever the
-# folder name doesn't kebab-match the vault scope (e.g. LWhisperer → l-whisperer
-# but vault scope is "lwhisper"). The skill brain-init resolves this into the
-# model's context, but the recall/rules/save hooks read SYMBIOSIS_BRAIN_SCOPE,
-# so the marker must win HERE too. Pure-bash (no uv) to stay within the 5s
-# timeout. Mirrors scope_resolver.parse_marker: last marker wins, scope= required.
-if [ -f "$PWD/CLAUDE.md" ]; then
-  MARKER_SCOPE=$(grep -oE '<!--[[:space:]]*symbiosis-brain[[:space:]]+v[0-9]+[[:space:]]*:.*-->' "$PWD/CLAUDE.md" 2>/dev/null \
-    | tail -1 \
-    | sed -nE 's/.*[[:space:],:]scope[[:space:]]*=[[:space:]]*([A-Za-z0-9_-]+).*/\1/p')
-  [ -n "$MARKER_SCOPE" ] && SCOPE="$MARKER_SCOPE"
+# L2: the basename guess, accepted only when the vault taxonomy knows that scope.
+# An invented scope is not a milder failure than none: as a search filter it silently
+# degenerates to global-only and hides every project note.
+if [ -z "$SCOPE" ]; then
+  CAND=$(normalize_scope "$(basename "$PWD")")
+  if [ -n "$CAND" ] && sb_scope_registered "$CAND"; then SCOPE="$CAND"; fi
 fi
 
 # Set env vars for other hooks, brain-init skill, and bash commands in this session
@@ -65,6 +68,15 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   echo "export SYMBIOSIS_BRAIN_TOOLS=\"$TOOLS\"" >> "$CLAUDE_ENV_FILE"
   echo "export SYMBIOSIS_BRAIN_SCOPE=\"$SCOPE\"" >> "$CLAUDE_ENV_FILE"
   [ -n "$SESSION_ID" ] && echo "export CLAUDE_SESSION_ID=\"$SESSION_ID\"" >> "$CLAUDE_ENV_FILE"
+fi
+
+# Bridge for the other hooks. They cannot read CLAUDE_ENV_FILE — Claude Code sources it
+# before Bash TOOL commands, not before hook or status-line processes — so the resolved
+# scope is published as a per-session file, like every other cross-hook value here.
+# Written even when empty: an empty file means "resolved to nothing", which a reader
+# must not confuse with "not written yet".
+if [ -n "$SESSION_ID" ]; then
+  printf '%s\n' "$SCOPE" > "$SB_TMP/brain-scope-${SESSION_ID}" 2>/dev/null || true
 fi
 
 # L0: inject critical facts
@@ -89,7 +101,11 @@ fi
 echo "Available tools: brain_search/brain_read/brain_write (memory), Serena (find_symbol/replace_symbol_body), subagents (Explore/general-purpose), screenshot."
 echo ""
 
-echo "[scope: $SCOPE]"
+if [ -n "$SCOPE" ]; then
+  echo "[scope: $SCOPE]"
+else
+  echo "[scope: unresolved -> all scopes]"
+fi
 
 # Background pre-warm: fastembed + sqlite-vec page-cache priming.
 # Fire-and-forget — must not block session start (hook timeout is 5s).
@@ -156,6 +172,9 @@ if command -v find >/dev/null 2>&1; then
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-turn-*' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-roster-*' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-model-*' -mmin +60 -delete 2>/dev/null || true
+  # 24h, not 60min like the counters above: this one is written once per session and
+  # must outlive a long session, not be refreshed by every turn.
+  find "$SB_TMP" -maxdepth 1 -name 'brain-scope-*' -mmin +1440 -delete 2>/dev/null || true
 fi
 
 exit 0

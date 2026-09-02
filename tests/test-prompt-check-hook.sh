@@ -212,6 +212,54 @@ else
 fi
 rm -rf "$TMPBIN"
 
+# Test 14: the scope handed to search-gist comes from the resolver, not from a
+# fallback. The env var these hooks used to trust is never set in a hook process.
+cleanup
+echo "10" > "$PCT_FILE"
+TMPBIN="$(mktemp -d)"
+ARGS_FILE="$TMPBIN/args"
+cat > "$TMPBIN/uv" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
+echo '{"memory_hits":[{"path":"x.md","title":"X","scope":"s","gist":"g"}],"route_hints":[]}'
+EOF
+chmod +x "$TMPBIN/uv"
+PROJ_DIR="$TMPBIN/proj/sub"
+mkdir -p "$PROJ_DIR"
+printf '<!-- symbiosis-brain v1: scope=alpha-net -->\n' > "$TMPBIN/proj/CLAUDE.md"
+cwd_input="{\"session_id\":\"${SESSION_ID}\",\"cwd\":\"$PROJ_DIR\",\"prompt\":\"a prompt long enough to clear the short-prompt guard\"}"
+out=$(echo "$cwd_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
+  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_RULES_ENABLED=false SYMBIOSIS_BRAIN_SCOPE= \
+  SB_TEST_ARGS_FILE="$ARGS_FILE" PATH="$TMPBIN:$PATH" bash "$HOOK" prompt-check 2>/dev/null)
+if grep -q -- "--scope alpha-net" "$ARGS_FILE" 2>/dev/null; then t "scope resolved from payload cwd is passed to search-gist" PASS; else t "scope resolved from payload cwd is passed to search-gist" FAIL; fi
+if [[ "$out" == *"scope=alpha-net"* ]]; then t "header names the resolved scope" PASS; else t "header names the resolved scope" FAIL; fi
+rm -rf "$TMPBIN"
+
+# Test 15: nothing resolvable -> no --scope flag at all (search every scope) and a
+# header that says so. The old code passed --scope global here, a hard filter that
+# hid every project note.
+cleanup
+echo "10" > "$PCT_FILE"
+TMPBIN="$(mktemp -d)"
+ARGS_FILE="$TMPBIN/args"
+cat > "$TMPBIN/uv" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
+echo '{"memory_hits":[{"path":"x.md","title":"X","scope":"s","gist":"g"}],"route_hints":[]}'
+EOF
+chmod +x "$TMPBIN/uv"
+BARE_DIR="$TMPBIN/bare/sub"
+mkdir -p "$BARE_DIR"
+bare_input="{\"session_id\":\"no-bridge-$$\",\"cwd\":\"$BARE_DIR\",\"prompt\":\"a prompt long enough to clear the short-prompt guard\"}"
+out=$(echo "$bare_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
+  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_RULES_ENABLED=false SYMBIOSIS_BRAIN_SCOPE= \
+  SB_TEST_ARGS_FILE="$ARGS_FILE" PATH="$TMPBIN:$PATH" bash "$HOOK" prompt-check 2>/dev/null)
+if [ -s "$ARGS_FILE" ] && ! grep -q -- "--scope" "$ARGS_FILE"; then t "unresolved scope omits the --scope flag" PASS; else t "unresolved scope omits the --scope flag" FAIL; fi
+if [[ "$out" == *"scope=all*"* ]]; then t "header marks an unresolved scope" PASS; else t "header marks an unresolved scope" FAIL; fi
+rm -rf "$TMPBIN"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

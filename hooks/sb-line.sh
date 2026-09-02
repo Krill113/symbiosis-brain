@@ -15,8 +15,10 @@ fi
 
 # One session-id parser for every hook (sb-hooklib.sh). Fail-open: without the library
 # SESSION_ID stays empty, the line still renders, only the markers are skipped.
-sb_dir=${BASH_SOURCE[0]%/*}
-[ "$sb_dir" = "${BASH_SOURCE[0]}" ] && sb_dir=.
+sb_dir=${BASH_SOURCE[0]}
+# Both separators: bash invoked with a Windows-style path leaves no '/' to cut on,
+# and the library then silently fails to load.
+case $sb_dir in *[/\\]*) sb_dir=${sb_dir%[/\\]*} ;; *) sb_dir=. ;; esac
 if ! declare -F sb_session_id >/dev/null 2>&1; then
   . "$sb_dir/sb-hooklib.sh" 2>/dev/null || true
 fi
@@ -29,7 +31,17 @@ if declare -F sb_session_id >/dev/null 2>&1; then
   SESSION_ID=$SB_SESSION_ID
 fi
 
-SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
+# The same ladder the recall hook walks (sb-hooklib.sh), so this line shows the scope
+# that will actually be searched rather than a hopeful default. 'all*' means
+# unresolved — no marker up the tree, no session bridge file — and recall then
+# searches every scope instead of silently narrowing to global.
+SCOPE='all*'
+if declare -F sb_resolve_scope >/dev/null 2>&1; then
+  sb_resolve_scope "$INPUT" "$SESSION_ID"
+  SCOPE="${SB_SCOPE:-all*}"
+elif [ -n "${SYMBIOSIS_BRAIN_SCOPE:-}" ]; then
+  SCOPE="$SYMBIOSIS_BRAIN_SCOPE"
+fi
 # Defaults MUST match brain-save-trigger.sh:13 (25,35,45) and :144 (30,60,85) — this
 # line advertises the thresholds the Stop-hook actually fires on. It shipped 40/70/90
 # for months, visible only on installs that don't set the env explicitly.

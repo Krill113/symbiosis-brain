@@ -682,7 +682,12 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
              k: int = K_DEFAULT, model: str | None = None,
              rerank_model: str | None = None,
              query_prefix: str | None = None, doc_prefix: str | None = None,
-             normalize: bool = False) -> dict[str, Any]:
+             normalize: bool = False,
+             collect_per_query: bool = False) -> dict[str, Any]:
+    """`collect_per_query` adds a `per_query` list to the payload: one row per
+    (config, query) with its own recall/rr/nDCG. Off by default because a large
+    set multiplies it by the config count; on when two runs must be compared as
+    PAIRS over the same queries, which averages cannot express."""
     from symbiosis_brain import search as sb_search
 
     if (query_prefix or doc_prefix) and not model:
@@ -726,6 +731,7 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
         try:
             lexical = lexical_zero_hit_rate(engine, rows, k)
             results: list[dict[str, Any]] = []
+            per_query: list[dict[str, Any]] = []
             fallback_share: dict[str, float] = {}
             for name in config_names:
                 cfg = known[name]
@@ -746,6 +752,26 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
                                     if run.effective_fts_mode == "fallback_any")
                     fallback_share[result["config"]] = round(fell_back / len(runs), 4)
                 results.append(result)
+                if collect_per_query:
+                    # Aggregates alone cannot answer "is A worse than B on the
+                    # SAME queries": a paired test needs the per-query outcome,
+                    # and evaluate() computes it only to throw it away. Reuse
+                    # the very functions the aggregates come from, so a row here
+                    # can never disagree with the table above it.
+                    for run in runs:
+                        grades = grades_for(run.row)
+                        per_query.append({
+                            "config": result["config"],
+                            "query_id": run.row.get("query_id"),
+                            "source_note": run.row.get("source_note"),
+                            "lang": run.row.get("lang"),
+                            "note_type": run.row.get("note_type"),
+                            "recall_at_k": recall_at_k(run.ranked, grades, k),
+                            "rr": reciprocal_rank(run.ranked, grades, k),
+                            "ndcg": ndcg_at_k(run.ranked, grades, k),
+                            "ranked": run.ranked[:k],
+                            "latency_ms": round(run.latency_ms, 3),
+                        })
 
             judged = sum(1 for row in rows if _relevant(grades_for(row)))
             meta = {
@@ -793,7 +819,10 @@ def run_eval(*, vault: Path, work_dir: Path, queries: Path, config_names: list[s
                 meta["doc_prefix"] = doc_prefix
             if normalize:
                 meta["normalize"] = True
-            return {"meta": meta, "results": results}
+            payload: dict[str, Any] = {"meta": meta, "results": results}
+            if collect_per_query:
+                payload["per_query"] = per_query
+            return payload
         finally:
             storage.close()
     finally:
@@ -927,6 +956,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="L2-normalise every embedding the harness produces (E3). Needs "
                              "--model — the installed index holds raw vectors, so normalising "
                              "only the query would compare unlike with unlike.")
+    parser.add_argument("--out-runs",
+                        help="Write per-query outcomes (config, query_id, source_note, "
+                             "recall/rr/nDCG, ranked paths) here as JSON. Required to compare "
+                             "two runs as PAIRS over the same queries — averages cannot.")
     args = parser.parse_args(argv)
 
     config_names = [name.strip() for name in args.configs.split(",") if name.strip()]
@@ -939,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
                            config_names=config_names, k=args.k, model=args.model,
                            rerank_model=args.rerank_model,
                            query_prefix=args.query_prefix, doc_prefix=args.doc_prefix,
-                           normalize=args.normalize)
+                           normalize=args.normalize,
+                           collect_per_query=bool(args.out_runs))
     except EvalError as e:
         print(f"eval_search: {e}", file=sys.stderr)
         return 1
@@ -949,6 +983,13 @@ def main(argv: list[str] | None = None) -> int:
         from symbiosis_brain.atomic_write import atomic_write_text
         atomic_write_text(args.out, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         print(f"\nJSON written to {args.out}")
+    if args.out_runs:
+        from symbiosis_brain.atomic_write import atomic_write_text
+        rows_out = payload.get("per_query", [])
+        atomic_write_text(args.out_runs,
+                          json.dumps({"meta": payload["meta"], "per_query": rows_out},
+                                     ensure_ascii=False, indent=2) + "\n")
+        print(f"Per-query outcomes written to {args.out_runs} ({len(rows_out)} rows)")
     return 0
 
 

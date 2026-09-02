@@ -10,7 +10,7 @@ from symbiosis_brain.resolver import (
 )
 # Reused, not re-derived: not_indexed only means anything if it scans the disk by
 # exactly the rules VaultSync ingests by. (No import cycle — sync does not import lint.)
-from symbiosis_brain.sync import MD_GLOB, SKIP_FILES
+from symbiosis_brain.sync import MD_GLOB, SKIP_FILES, is_material_path
 from symbiosis_brain.taxonomy import load_valid_scopes, load_folder_type_map
 
 _TAXONOMY_PATH = "reference/scope-taxonomy.md"
@@ -39,6 +39,8 @@ class VaultLinter:
                     continue
                 rel = md_file.relative_to(self._vault_path).as_posix()
                 if rel.split("/")[0].startswith("."):
+                    continue
+                if is_material_path(rel):
                     continue
                 if rel not in db_paths:
                     out.append({"path": rel})

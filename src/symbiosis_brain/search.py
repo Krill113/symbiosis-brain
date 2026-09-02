@@ -191,8 +191,8 @@ def _resolve_model_name(storage: "Storage") -> str:
     embedding_model if the DB has it, else the default (З3).
 
     Deliberately NOT the SYMBIOSIS_BRAIN_EMBED_MODEL env var: hook and CLI
-    subprocesses receive their environment from CLAUDE_ENV_FILE (a file the
-    SessionStart hook drops), not from the env the MCP registration launched
+    subprocesses receive their environment from settings.json's env block, not
+    from the env the MCP registration launched
     the server with, so a hook process reading the var directly could pick a
     model the server has not (yet, or ever) migrated the index to — embedding
     the query with a model the stored vectors were never built from, silently
@@ -1063,7 +1063,10 @@ class SearchEngine:
                 if path not in notes_by_path:
                     notes_by_path[path] = self.storage.get_note(path)
                 note = notes_by_path[path]
-                if note and (scope is None or note["scope"] in (scope, "global")):
+                # `not scope`, not `scope is None`: the FTS half gates on `if scope:`,
+                # so an empty string there means unscoped. Keeping `is None` here made
+                # the same call unscoped in one half and global-only in the other.
+                if note and (not scope or note["scope"] in (scope, "global")):
                     note["_distance"] = row[1]
                     results.append(note)
                     if len(results) >= limit:

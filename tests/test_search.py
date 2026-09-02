@@ -46,6 +46,24 @@ class TestFTSSearch:
         # (FTS5 with porter stemmer: "logging" stem matches "logging" tag, not "orm")
 
 
+class TestEmptyScopeIsUnscoped:
+    """An empty scope string must mean "every scope" in BOTH halves.
+
+    The hooks build the CLI call without a --scope flag when they cannot resolve one,
+    but any caller passing "" used to get an unscoped FTS half (`if scope:`) and a
+    global-only vector half (`scope is None`) — the same silent narrowing that hid
+    every project note from the prompt recall for three months.
+    """
+
+    def test_fts_empty_scope_sees_project_notes(self, search_engine: SearchEngine):
+        titles = [r["title"] for r in search_engine.search_fts("Dapper", scope="")]
+        assert "Dapper Choice" in titles
+
+    def test_vector_empty_scope_sees_project_notes(self, search_engine: SearchEngine):
+        titles = [r["title"] for r in search_engine.search_vector("Dapper over EF Core", scope="")]
+        assert "Dapper Choice" in titles
+
+
 class TestHybridSearch:
     def test_hybrid_returns_results(self, search_engine: SearchEngine):
         results = search_engine.search("database ORM choice")

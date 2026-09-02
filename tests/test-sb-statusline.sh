@@ -143,6 +143,31 @@ else
   t "statusline helpers stay fork-free" PASS
 fi
 
+# ── scope ladder on the status line ──────────────────────────────────────────
+# The line must show the scope recall will actually use. Before the ladder it read
+# SYMBIOSIS_BRAIN_SCOPE only — a variable no hook process ever receives — and showed
+# "global" in every session on the machine.
+SB_PROJ="$SB_WORK/proj/sub"
+mkdir -p "$SB_PROJ"
+printf '<!-- symbiosis-brain v1: scope=fixture-net -->\n' > "$SB_WORK/proj/CLAUDE.md"
+CWD_INPUT="{\"session_id\":\"${SESSION_ID}\",\"cwd\":\"$SB_PROJ\"}"
+out=$(echo "$CWD_INPUT" | bash "$LINE" 2>/dev/null)
+if [[ "$out" == *"scope: fixture-net"* ]]; then t "sb-line resolves scope from the payload cwd" PASS; else t "sb-line resolves scope from the payload cwd" FAIL; fi
+
+# Nothing resolvable: the line says so instead of naming a scope it did not resolve.
+BARE="$SB_WORK/bare/sub"
+mkdir -p "$BARE"
+BARE_INPUT="{\"session_id\":\"none-$$\",\"cwd\":\"$BARE\"}"
+out=$(echo "$BARE_INPUT" | SYMBIOSIS_BRAIN_SCOPE= bash "$LINE" 2>/dev/null)
+if [[ "$out" == *"scope: all*"* ]]; then t "sb-line marks an unresolved scope" PASS; else t "sb-line marks an unresolved scope" FAIL; fi
+
+# The per-session bridge file written by SessionStart is the second rung.
+BR_SID="bridge-$$"
+printf 'bridged-net\n' > "$SB_WORK/brain-scope-${BR_SID}"
+BR_INPUT="{\"session_id\":\"${BR_SID}\",\"cwd\":\"$BARE\"}"
+out=$(echo "$BR_INPUT" | SYMBIOSIS_BRAIN_SCOPE= bash "$LINE" 2>/dev/null)
+if [[ "$out" == *"scope: bridged-net"* ]]; then t "sb-line falls back to the session bridge file" PASS; else t "sb-line falls back to the session bridge file" FAIL; fi
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

@@ -43,8 +43,10 @@ SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 # which sb-statusline.sh runs BEFORE it decides whose first line to render. When this
 # file is invoked on its own (a supported entry point), run them here instead.
 if [ -z "${SB_EXPORT_DONE:-}" ]; then
-  sb_dir=${BASH_SOURCE[0]%/*}
-  [ "$sb_dir" = "${BASH_SOURCE[0]}" ] && sb_dir=.
+  sb_dir=${BASH_SOURCE[0]}
+  # Both separators: bash invoked with a Windows-style path leaves no '/' to cut on,
+  # and the library then silently fails to load.
+  case $sb_dir in *[/\\]*) sb_dir=${sb_dir%[/\\]*} ;; *) sb_dir=. ;; esac
   SB_STATUSLINE_INPUT=$data
   . "$sb_dir/sb-hooklib.sh" 2>/dev/null || true
   . "$sb_dir/sb-export.sh" 2>/dev/null || true

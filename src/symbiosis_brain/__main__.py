@@ -490,7 +490,7 @@ def _run_prewarm(argv: list[str]) -> int:
 
         # З3: resolve the model to warm from the VAULT'S OWN DB, never from
         # SYMBIOSIS_BRAIN_EMBED_MODEL — this hook subprocess gets its
-        # environment from CLAUDE_ENV_FILE, not from the server's MCP
+        # environment from settings.json's env block, not from the server's MCP
         # registration env, so it could apply a switch request the server
         # hasn't (yet, or ever) migrated the index to, and end up warming a
         # model the stored vectors don't match. Only the server applies that
@@ -589,8 +589,11 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     if not query:
         return 0
 
-    # Scope from env var (set by SessionStart hook via CLAUDE_ENV_FILE,
-    # propagated to this subprocess by uv run; not a bridge file).
+    # Scope from the env var. NOTE: a hook subprocess does NOT receive what the
+    # SessionStart hook writes into CLAUDE_ENV_FILE — Claude Code sources that file
+    # before Bash TOOL commands only. This path therefore usually sees nothing and
+    # searches every scope. The prompt-recall path resolves the scope properly
+    # (hooks/sb-hooklib.sh, sb_resolve_scope); wiring it in here is a separate step.
     scope = os.environ.get("SYMBIOSIS_BRAIN_SCOPE") or None
 
     # Plug SearchEngine. Wrapped in try/except per fail-open principle —

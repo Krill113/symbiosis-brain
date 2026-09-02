@@ -138,7 +138,30 @@ EOF
     PROMPT_LEN=${#PROMPT}
   fi
   case "$PROMPT_LEN" in ''|*[!0-9]*) PROMPT_LEN=${#PROMPT} ;; esac
-  SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-global}"
+  # Scope for the recall below. It cannot come from SYMBIOSIS_BRAIN_SCOPE alone:
+  # SessionStart writes that into CLAUDE_ENV_FILE, which Claude Code sources before
+  # Bash TOOL commands only — never before a hook — so the variable is empty here and
+  # the old `:-global` fallback silently searched global-only, hiding every project
+  # note behind a hard SQL filter. sb_resolve_scope walks the ladder instead:
+  # cwd marker -> per-session bridge file -> env -> unresolved.
+  # Sourced HERE, not at the top of the file: the stop and precompact modes must keep
+  # working even when this library is missing or unreadable.
+  SB_DIR=${BASH_SOURCE[0]}
+  # Both separators: bash invoked with a Windows-style path leaves no '/' to cut on,
+  # and the library then silently fails to load.
+  case $SB_DIR in *[/\\]*) SB_DIR=${SB_DIR%[/\\]*} ;; *) SB_DIR=. ;; esac
+  . "$SB_DIR/sb-hooklib.sh" 2>/dev/null || true
+  if declare -F sb_resolve_scope >/dev/null 2>&1; then
+    sb_resolve_scope "$INPUT" "$SESSION_ID"
+    SCOPE="$SB_SCOPE"; SCOPE_SRC="$SB_SCOPE_SRC"
+  else
+    SCOPE="${SYMBIOSIS_BRAIN_SCOPE:-}"; SCOPE_SRC=env
+  fi
+  # An unresolved scope searches EVERY scope (the flag is omitted below) instead of
+  # pretending to be global. The header says so, and the debug log keeps one line.
+  SCOPE_LABEL="${SCOPE:-all*}"
+  SCOPE_ARG=()
+  [ -n "$SCOPE" ] && SCOPE_ARG=(--scope "$SCOPE")
 
   # ── Monotonic turn-counter (C5 §6.2) — UNCONDITIONAL, increment-only ──
   # Written EVERY prompt-check turn, outside SKIP_RECALL / RULES_ENABLED /
@@ -244,7 +267,7 @@ EOF
       # 30s timeout absorbs cold uv-run start (~25s); warm path is <2s.
       GIST_JSON=$(printf '%s' "$INPUT" | timeout 30 uv run --quiet --directory "$GIST_TOOLS" \
         python -m symbiosis_brain search-gist \
-        --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
+        --vault "$VAULT" --prompt-from-stdin "${SCOPE_ARG[@]}" \
         --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
         --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
         --hook-started-at "$SB_T0" \
@@ -252,7 +275,7 @@ EOF
       EXIT=$?
     else
       GIST_JSON=$(printf '%s' "$INPUT" | timeout 12 "$PY_BIN" -m symbiosis_brain search-gist \
-        --vault "$VAULT" --prompt-from-stdin --scope "$SCOPE" \
+        --vault "$VAULT" --prompt-from-stdin "${SCOPE_ARG[@]}" \
         --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
         --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
         --hook-started-at "$SB_T0" \
@@ -261,8 +284,8 @@ EOF
     fi
 
     if [ "$EXIT" -ne 0 ] || [ -z "$GIST_JSON" ]; then
-      printf '[%s] search-gist EXIT=%s VAULT=%s SCOPE=%s\n' \
-        "$(date -Iseconds 2>/dev/null || date)" "$EXIT" "$VAULT" "$SCOPE" >> "$DEBUG_LOG"
+      printf '[%s] search-gist EXIT=%s VAULT=%s SCOPE=%s SRC=%s\n' \
+        "$(date -Iseconds 2>/dev/null || date)" "$EXIT" "$VAULT" "${SCOPE:-<unresolved>}" "$SCOPE_SRC" >> "$DEBUG_LOG"
       GIST_JSON="[]"
     fi
 
@@ -281,7 +304,7 @@ except Exception:
 " 2>/dev/null)
     if [ -n "$HITS" ]; then
       HIT_COUNT=$(echo "$HITS" | grep -c '^- ')
-      MEMORY_BLOCK="[memory: ${HIT_COUNT} hits, scope=${SCOPE}]
+      MEMORY_BLOCK="[memory: ${HIT_COUNT} hits, scope=${SCOPE_LABEL}]
 $HITS"
     fi
 

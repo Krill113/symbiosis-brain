@@ -392,5 +392,7 @@ def test_gist_limits_come_from_single_module():
         assert "from symbiosis_brain.gist_limits import" in src, \
             f"{mod.__name__} must import its limits, not restate them"
 
-    assert "> GIST_SOFT_LIMIT" in inspect.getsource(lint_mod), \
-        "lint.py must compare against GIST_SOFT_LIMIT, not the literal 100"
+    # Owner decision 2026-09-02: lint flags only past the HARD write-limit — the
+    # 101-140 zone is the legitimate tail of a living vault (512 real notes measured).
+    assert "> GIST_HARD_LIMIT" in inspect.getsource(lint_mod), \
+        "lint.py must compare against GIST_HARD_LIMIT, not the literal 140"

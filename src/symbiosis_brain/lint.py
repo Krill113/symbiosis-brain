@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from symbiosis_brain.gist_limits import GIST_SOFT_LIMIT
+from symbiosis_brain.gist_limits import GIST_HARD_LIMIT
 from symbiosis_brain.storage import Storage
 from symbiosis_brain.resolver import (
     resolve_target,
@@ -165,7 +165,10 @@ class VaultLinter:
                         "title": note["title"],
                     })
                 else:
-                    if len(gist_value) > GIST_SOFT_LIMIT:
+                    # Flag only past the HARD write-limit: a third of a living vault
+                    # legitimately sits at 101-140 (512 notes measured 2026-09-02), so
+                    # flagging the soft recommendation made this category pure noise.
+                    if len(gist_value) > GIST_HARD_LIMIT:
                         gist_too_long.append({
                             "path": note["path"],
                             "title": note["title"],

@@ -616,7 +616,7 @@ class TestGistRules:
 
     def test_gist_too_long_warns(self, tmp_vault_with_taxonomy: Path, db_path: Path):
         storage = Storage(db_path)
-        long_gist = "x" * 105  # > 100 chars
+        long_gist = "x" * 145  # > GIST_HARD_LIMIT (140)
         storage.upsert_note(
             path="patterns/long-gist.md", title="Long Gist", scope="global",
             note_type="pattern",
@@ -624,9 +624,19 @@ class TestGistRules:
             frontmatter={"gist": long_gist},
             tags=[],
         )
+        # 101-140 is the legitimate tail of a living vault (a third of real notes);
+        # lint flags only past the hard write-limit, not the soft recommendation
+        storage.upsert_note(
+            path="patterns/soft-zone.md", title="Soft Zone", scope="global",
+            note_type="pattern",
+            content="Body",
+            frontmatter={"gist": "y" * 120},
+            tags=[],
+        )
         linter = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy)
         report = linter.lint()
         assert any(item["path"] == "patterns/long-gist.md" for item in report["gist_too_long"])
+        assert not any(item["path"] == "patterns/soft-zone.md" for item in report["gist_too_long"])
 
     def test_gist_equals_title_warns(self, tmp_vault_with_taxonomy: Path, db_path: Path):
         storage = Storage(db_path)

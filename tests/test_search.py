@@ -711,6 +711,93 @@ class TestCustomModelRegistry:
             "fastembed.TextEmbedding.get_embedding_size", staticmethod(fake_get_size))
         assert sb_search._embedding_dim(sb_search._E5_SMALL_INT8_MODEL_NAME) == 384
 
+    def test_ensure_custom_model_registered_is_thread_safe(self, monkeypatch):
+        """_get_embedder() and _embedding_dim() call _ensure_custom_model_
+        registered from independently-locked (one cross-process file lock,
+        the other none) paths. The check-then-act inside
+        _ensure_custom_model_registered itself must therefore serialize two
+        threads racing to register the same not-yet-known name for the first
+        time, or both could observe list_supported_models() as empty and
+        both call add_custom_model — the loser raising ValueError. Widen the
+        race window with a small sleep inside the fakes rather than a
+        barrier: a barrier would itself deadlock once the fix correctly
+        keeps the second thread out until the first is done."""
+        import threading
+        import time
+        from symbiosis_brain import search as sb_search
+
+        registered: list[str] = []
+        add_calls: list[str] = []
+
+        def fake_list():
+            time.sleep(0.05)
+            return [{"model": m} for m in registered]
+
+        def fake_add(**kw):
+            time.sleep(0.05)
+            add_calls.append(kw["model"])
+            registered.append(kw["model"])
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.list_supported_models", staticmethod(fake_list))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model", staticmethod(fake_add))
+
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                sb_search._ensure_custom_model_registered(sb_search._E5_SMALL_INT8_MODEL_NAME)
+            except Exception as exc:  # pragma: no cover - only on regression
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors
+        assert add_calls == [sb_search._E5_SMALL_INT8_MODEL_NAME]
+
+    def test_embedding_dim_retries_once_on_lost_registration_race(self, monkeypatch):
+        """If add_custom_model still raises 'already registered' (ValueError)
+        -- e.g. something outside _custom_model_registration_lock's reach
+        registered the same name concurrently -- _embedding_dim must retry
+        the lookup instead of treating the name as genuinely unknown: it IS
+        now known, just not through our own add_custom_model call, so the
+        384-fallback (wrong for a non-384 custom model, and right only by
+        coincidence here) must not fire."""
+        from symbiosis_brain import search as sb_search
+        monkeypatch.setattr(sb_search, "_DEFAULT_EMBEDDING_DIM", 999)
+
+        def fake_add(**kw):
+            raise ValueError(f"Model {kw['model']} is already registered")
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.list_supported_models", staticmethod(lambda: []))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.add_custom_model", staticmethod(fake_add))
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.get_embedding_size", staticmethod(lambda name: 384))
+
+        assert sb_search._embedding_dim(sb_search._E5_SMALL_INT8_MODEL_NAME) == 384
+
+    def test_embedding_dim_still_falls_back_for_a_genuinely_unknown_model(self, monkeypatch):
+        """The ValueError-retry path (above) must not swallow a real unknown-
+        model failure: a name fastembed has no metadata for at all (KeyError,
+        not the 'already registered' ValueError) still hits the
+        _DEFAULT_EMBEDDING_DIM fallback."""
+        from symbiosis_brain import search as sb_search
+        monkeypatch.setattr(sb_search, "_DEFAULT_EMBEDDING_DIM", 999)
+
+        def fake_get_size(name):
+            raise KeyError(name)
+
+        monkeypatch.setattr(
+            "fastembed.TextEmbedding.get_embedding_size", staticmethod(fake_get_size))
+        assert sb_search._embedding_dim("fixture/not-in-the-table") == 999
+
     def test_get_embedder_registers_before_instantiating_text_embedding(
             self, monkeypatch, tmp_path):
         """The other critical ordering (З1): registration must also happen

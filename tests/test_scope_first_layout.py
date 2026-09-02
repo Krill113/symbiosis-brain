@@ -93,7 +93,7 @@ class TestLintDbOrphans:
 CARD = (
     "# Alpha Seti\n\n"
     "## Handoff 2020-01-05\n\n"
-    "- **Shipped:** old stuff, see [[wiki/some-note]] for details\n"
+    "- **Shipped:** old stuff, see [[demo-docs/some-note]] for details\n"
     "- **Next-step:** nothing\n\n"
     "## Handoff 2020-01-06\n\n"
     "- **Shipped:** newer\n\n"

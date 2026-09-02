@@ -316,11 +316,12 @@ def render_archive_index_entry(
     scope: str,
     slug: Optional[str],
     gist: str,
+    link_prefix: str = "archive/handoffs",
 ) -> str:
     """One '## Archive' index line."""
     date_str = section.date.isoformat()
     slug_part = f"-{slug}" if slug else ""
-    link = f"archive/handoffs/{scope}-{date_str}{slug_part}"
+    link = f"{link_prefix}/{scope}-{date_str}{slug_part}"
     oneliner = _plain_snippet(gist, GIST_INDEX_ONELINER_MAX)
     return f"- {date_str}: [[{link}]] — {oneliner}"
 
@@ -439,7 +440,12 @@ def _rotate_one_card(
     section_to_slug = {id(s): slugs[i] for i, s in enumerate(sections)}
 
     archived: list[tuple[HandoffSection, str]] = []
-    archive_dir = vault / "archive" / "handoffs"
+    # A card living at <scope>/<scope>.md (scope-first canon, 2026-09 reorg)
+    # archives next to itself; a legacy projects/<scope>.md card keeps the
+    # shared archive/handoffs/ so pre-migration vaults stay consistent.
+    new_layout = card_path.parent == vault / scope
+    archive_dir = (vault / scope / "archive") if new_layout else (vault / "archive" / "handoffs")
+    link_prefix = f"{scope}/archive" if new_layout else "archive/handoffs"
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     for s in candidates:
@@ -466,7 +472,8 @@ def _rotate_one_card(
                     atomic_write_text(archive_path, archive_content)
             report.archive_files_created.append(rel_archive)
 
-        entry = render_archive_index_entry(s, scope=scope, slug=slug, gist=gist)
+        entry = render_archive_index_entry(s, scope=scope, slug=slug, gist=gist,
+                                           link_prefix=link_prefix)
         archived.append((s, entry))
         report.sections_archived += 1
 
@@ -488,8 +495,10 @@ def rotate_handoffs(
 ) -> RotationReport:
     """Rotate stale handoffs from project cards into archive/handoffs/.
 
-    If scope is None — walks all projects/*.md (auto-discovery).
-    If scope is given — operates only on projects/<scope>.md.
+    If scope is None — walks every card: <scope>/<scope>.md (scope-first canon)
+    plus legacy projects/*.md (auto-discovery across both layouts).
+    If scope is given — operates on <scope>/<scope>.md, falling back to
+    projects/<scope>.md.
 
     Note: this function is the pure-Python core. The MCP wrapper (server.py)
     is responsible for calling _sync.sync_one(rel_path) on modified files
@@ -501,25 +510,42 @@ def rotate_handoffs(
     vault = Path(vault)
     report = RotationReport()
     projects_dir = vault / "projects"
-    if not projects_dir.exists():
-        return report
+
+    def _new_layout_cards() -> list[Path]:
+        """Cards at <scope>/<scope>.md — the scope-first canon (2026-09 reorg)."""
+        found: list[Path] = []
+        try:
+            for d in sorted(vault.iterdir()):
+                if d.is_dir() and not d.name.startswith(".") and d.name != "projects":
+                    card = d / f"{d.name}.md"
+                    if card.exists():
+                        found.append(card)
+        except OSError:
+            pass
+        return found
 
     if scope:
-        direct = projects_dir / f"{scope}.md"
-        if direct.exists():
+        direct = next(
+            (p for p in (vault / scope / f"{scope}.md", projects_dir / f"{scope}.md")
+             if p.exists()),
+            None,
+        )
+        if direct is not None:
             targets = [direct]
         else:
             # Card filename may differ from its scope (card renamed) — resolve by
             # frontmatter scope across all cards. (backlog 2026-05-21)
-            targets = [
-                p for p in sorted(projects_dir.glob("*.md"))
-                if _frontmatter_scope(_safe_read(p)) == scope
-            ]
+            pool = _new_layout_cards()
+            if projects_dir.exists():
+                pool += sorted(projects_dir.glob("*.md"))
+            targets = [p for p in pool if _frontmatter_scope(_safe_read(p)) == scope]
             if not targets:
                 report.skipped.append(SkipReason(card=f"{scope}.md", reason="card not found"))
                 return report
     else:
-        targets = sorted(projects_dir.glob("*.md"))
+        targets = _new_layout_cards()
+        if projects_dir.exists():
+            targets += sorted(projects_dir.glob("*.md"))
 
     for card_path in targets:
         if not card_path.exists():

@@ -30,7 +30,13 @@ class SyncResult:
             return self.skipped
         raise KeyError(key)
 
-VAULT_DIRS = ["projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference", "archive"]
+VAULT_DIRS = [
+    "projects", "wiki", "research", "user", "decisions", "patterns", "mistakes", "feedback", "reference", "archive",
+    # Scope-first canon (2026-09 reorg): the global scope tree. Legacy top-level
+    # dirs above stay during the transition — both layouts are valid.
+    "global/wiki", "global/research", "global/user", "global/decisions", "global/patterns",
+    "global/mistakes", "global/feedback", "global/reference", "global/projects", "global/archive",
+]
 MD_GLOB = "**/*.md"  # md-only by design: .json (incl. tool-routing.local.json) stays out of the index
 # MEMORY.md is the auto-memory bootstrap/fallback file, not a vault note — it has
 # no gist and never will, so indexing it parked a permanent gist_missing entry in

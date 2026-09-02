@@ -77,7 +77,10 @@ def has_marker(path: Path, marker: str) -> bool:
 
 
 VAULT_FOLDERS = ("projects", "wiki", "decisions", "patterns",
-                 "mistakes", "feedback", "research", "reference")
+                 "mistakes", "feedback", "research", "reference",
+                 # scope-first canon (2026-09 reorg); legacy dirs stay for transition
+                 "global/wiki", "global/decisions", "global/patterns", "global/mistakes",
+                 "global/feedback", "global/research", "global/reference", "global/projects")
 
 
 def packaged_dir(pkg_file: str, name: str) -> Path:
@@ -120,7 +123,7 @@ def scaffold_vault(vault_path: Path) -> None:
             # не должна из-за этого падать. Симметрично chmod хуков в install_cli.
             print(f"WARN: could not set 0700 on {vault_path}: {e}")
     for folder in VAULT_FOLDERS:
-        (vault_path / folder).mkdir(exist_ok=True)
+        (vault_path / folder).mkdir(parents=True, exist_ok=True)
 
     readme = vault_path / "README.md"
     if not readme.exists():

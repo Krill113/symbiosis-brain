@@ -76,6 +76,7 @@ class VaultLinter:
         gist_too_long: list[dict] = []
         gist_equals_title: list[dict] = []
         scope_folder_mismatch: list[dict] = []
+        undated: list[dict] = []
         audited = 0
 
         for note in notes:
@@ -181,6 +182,17 @@ class VaultLinter:
                     "note_scope": note.get("scope") or "",
                 })
 
+            # A note with no `valid_from` has no age the system can read, so it
+            # never triggers a staleness warning. That is the honest answer —
+            # guessing an age from the write stamps was the previous behaviour
+            # and it reported every note as fresh — but silence has to be
+            # countable, or the blind spot looks exactly like a clean vault.
+            if not (note.get("valid_from") or "").strip():
+                undated.append({
+                    "path": note["path"],
+                    "title": note["title"],
+                })
+
             # Gist rules — skip CRITICAL_FACTS (root index, has no narrative gist)
             if note["path"] != "CRITICAL_FACTS.md":
                 gist_value = (fm.get("gist") or "").strip() if isinstance(fm, dict) else ""
@@ -226,6 +238,7 @@ class VaultLinter:
             "gist_too_long": gist_too_long,
             "gist_equals_title": gist_equals_title,
             "scope_folder_mismatch": scope_folder_mismatch,
+            "undated": undated,
             "db_orphans": db_orphans,
             "summary": {
                 # total_notes == brain_status's note count. It used to be the
@@ -243,6 +256,8 @@ class VaultLinter:
                 "gist_too_long_count": len(gist_too_long),
                 "gist_equals_title_count": len(gist_equals_title),
                 "scope_folder_mismatch_count": len(scope_folder_mismatch),
+                # How many notes the staleness check cannot see at all.
+                "undated_count": len(undated),
                 "db_orphans_count": len(db_orphans),
             },
         }

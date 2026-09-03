@@ -5,6 +5,34 @@ from symbiosis_brain.storage import Storage
 from symbiosis_brain.sync import VaultSync
 
 
+class TestUndatedNotes:
+    """A note with no `valid_from` has no age the system can read, so the
+    staleness check never speaks about it. That silence has to be countable:
+    on the live vault it covers 282 notes of 1649, and a blind spot that size
+    looks exactly like a healthy vault if nobody counts it."""
+
+    def test_undated_note_is_counted(self, tmp_vault_with_taxonomy: Path, db_path: Path):
+        (tmp_vault_with_taxonomy / "wiki" / "undated.md").write_text(
+            "---\ntitle: Undated\ntype: wiki\nscope: global\ngist: no date on this one\n---\n\n"
+            "Body with a [[link]].\n",
+            encoding="utf-8",
+        )
+        (tmp_vault_with_taxonomy / "wiki" / "dated.md").write_text(
+            "---\ntitle: Dated\ntype: wiki\nscope: global\ngist: this one is dated\n"
+            "valid_from: 2025-01-01\n---\n\nBody with a [[link]].\n",
+            encoding="utf-8",
+        )
+        storage = Storage(db_path)
+        VaultSync(tmp_vault_with_taxonomy, storage).sync_all()
+
+        report = VaultLinter(storage, vault_path=tmp_vault_with_taxonomy).lint()
+
+        undated = {i["path"] for i in report["undated"]}
+        assert "wiki/undated.md" in undated
+        assert "wiki/dated.md" not in undated
+        assert report["summary"]["undated_count"] == len(report["undated"])
+
+
 class TestVaultLinter:
     def test_orphan_note_detected(self, tmp_vault_with_taxonomy: Path, db_path: Path):
         """A note no one links to is reported as orphan (no incoming edges)."""

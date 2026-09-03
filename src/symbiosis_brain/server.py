@@ -569,14 +569,26 @@ async def list_tools() -> list[Tool]:
             },
             "required": ["path", "section", "content"],
         }),
-        Tool(name="brain_patch", description="Replace a unique anchor substring in a note's body. For pinpoint edits (flip status, fix a line). Anchor must be unique in the body.", inputSchema={
+        Tool(name="brain_patch", description="Pinpoint edit of a note: replace a unique anchor in the BODY, and/or set frontmatter fields (gist, tags, valid_to, …). Body and fields are independent — pass either or both.", inputSchema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative path in vault"},
-                "anchor": {"type": "string", "description": "Exact substring to replace. Must be unique in the body. May span multiple lines."},
+                "anchor": {"type": "string", "description": "Exact substring to replace. Must be unique in the body. May span multiple lines. Never matches inside frontmatter."},
                 "replacement": {"type": "string", "description": "New content. Empty string deletes the anchor."},
+                # Frontmatter is reached ONLY through these named fields, never
+                # through `anchor`. Letting an anchor match inside the YAML block
+                # would be ambiguous (`gist:` occurs in bodies too) and would
+                # break on quoting and folded values — while still producing a
+                # file that parses, i.e. failing silently.
+                "title": {"type": "string", "description": "New title. Empty = unchanged. Note: inbound [[links]] written as the OLD title stop resolving — the response lists them."},
+                "note_type": {"type": "string", "description": "New type. Empty = unchanged."},
+                "scope": {"type": "string", "description": "New scope. Empty = unchanged."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "New tags. Omit = unchanged, [] = clear."},
+                "gist": {"type": "string", "description": "New gist. Omit = unchanged, empty = clear."},
+                "valid_from": {"type": "string", "description": "ISO date the claim became true. Omit = unchanged, empty = clear."},
+                "valid_to": {"type": "string", "description": "ISO date the claim stopped holding. Setting it in the past closes the note: it stays findable via brain_search but is no longer injected into prompts. Omit = unchanged, empty = clear."},
             },
-            "required": ["path", "anchor", "replacement"],
+            "required": ["path"],
         }),
         Tool(name="brain_context", description="Traverse knowledge graph from an entity. Returns connected facts at N hops depth. By default stops expansion at well-known hubs and high-in-degree nodes to prevent fan-out — pass include_hubs=true to disable.", inputSchema={
             "type": "object",
@@ -1033,22 +1045,60 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not file_path.exists():
             return [TextContent(type="text", text=f"Error: note not found: {rel_path}")]
 
+        # Body and frontmatter are two independent edits, either or both. They
+        # cannot be confused: the body is reachable ONLY through `anchor`, a
+        # field ONLY through its own named argument. `title` is not in
+        # ARG_TO_FM (render_note takes it as its own parameter) but here it is
+        # an ordinary frontmatter key — non-erasable for the same reason type
+        # and scope are, since a note without one has no name.
+        patch_fm = {**ARG_TO_FM, "title": "title"}
+        patch_non_erasable = set(NON_ERASABLE) | {"title"}
+        field_args = [a for a in patch_fm if a in arguments]
+        has_body_edit = "anchor" in arguments and "replacement" in arguments
+        if not has_body_edit and not field_args:
+            return [TextContent(type="text", text=(
+                "Error: nothing to patch — pass anchor+replacement to edit the "
+                "body, or at least one field (title, note_type, scope, tags, "
+                "gist, valid_from, valid_to), or both"))]
+        if ("anchor" in arguments) != ("replacement" in arguments):
+            return [TextContent(type="text", text=(
+                "Error: anchor and replacement go together — one without the "
+                "other is not an edit"))]
+
         # Read-modify-write must be atomic: hold the per-note lock for the
         # entire cycle so a concurrent patch cannot read stale content and
         # clobber the first writer's changes (mirrors brain_append).
         with note_write_lock(_vault_path, rel_path):
             raw = file_path.read_text(encoding="utf-8")
             post = frontmatter.loads(raw)
-            try:
-                new_body = replace_anchor(
-                    post.content,
-                    arguments["anchor"],
-                    arguments["replacement"],
-                )
-            except AnchorNotFoundError as e:
-                return [TextContent(type="text", text=f"Error: {e}")]
-            except AnchorAmbiguousError as e:
-                return [TextContent(type="text", text=f"Error: {e}")]
+            previous_title = str(post.metadata.get("title") or "")
+            new_body = post.content
+            if has_body_edit:
+                try:
+                    new_body = replace_anchor(
+                        post.content,
+                        arguments["anchor"],
+                        arguments["replacement"],
+                    )
+                except AnchorNotFoundError as e:
+                    return [TextContent(type="text", text=f"Error: {e}")]
+                except AnchorAmbiguousError as e:
+                    return [TextContent(type="text", text=f"Error: {e}")]
+
+            # Applied BEFORE validation so the checks see the note as it will be
+            # written, not as it was. "Present and empty means clear" is not
+            # restated here: EMPTY_VALUES and NON_ERASABLE are the same objects
+            # brain_write uses, because two sets of rules for one semantic drift
+            # apart, and drift apart quietly (I-13).
+            for arg in field_args:
+                value = arguments[arg]
+                key = patch_fm[arg]
+                if value in EMPTY_VALUES:
+                    if arg in patch_non_erasable:
+                        continue                      # empty == not passed
+                    post.metadata.pop(key, None)
+                else:
+                    post.metadata[key] = value
 
             if new_links_introduced(post.content, new_body):
                 try:
@@ -1075,7 +1125,31 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             broken_before = _storage.count_broken_outgoing(canonical)
             _write_note_body_unlocked(rel_path, new_text, "patch",
                                       post.metadata.get("title", ""))
+
         msg = f"Patched {rel_path}"
+        # Renaming the title is the one field change with a blast radius:
+        # [[links]] resolve by title as well as by path, so every inbound link
+        # written as the OLD title stops resolving. brain_rename rewrites
+        # inbound refs when a PATH moves; nothing does that for a title, so the
+        # least we can do is say which notes just lost their link — a count
+        # would report that a problem exists while withholding where it is.
+        new_title = str(post.metadata.get("title") or "")
+        if previous_title and new_title != previous_title:
+            was = previous_title.strip().lower()
+            broken_by_rename = sorted({
+                rel["from_name"]
+                for rel in _storage.get_relations(canonical, "incoming")
+                if (rel.get("raw_target") or "").replace(r"\|", "|")
+                   .split("|", 1)[0].strip().lower() == was
+            })
+            if broken_by_rename:
+                shown = ", ".join(broken_by_rename[:5])
+                more = len(broken_by_rename) - 5
+                msg += (f"\n\nwarning: {len(broken_by_rename)} inbound link(s) "
+                        f"were written as [[{previous_title}]] and no longer "
+                        f"resolve: {shown}")
+                if more > 0:
+                    msg += f", and {more} more"
         msg += _write_counter(canonical, broken_before)
         return [TextContent(type="text", text=msg)]
 

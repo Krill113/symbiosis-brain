@@ -529,7 +529,7 @@ async def list_tools() -> list[Tool]:
             },
             "required": ["query"],
         }),
-        Tool(name="brain_read", description="Read a specific note by path (e.g. 'projects/beta.md')", inputSchema={
+        Tool(name="brain_read", description="Read a specific note by path (e.g. 'acme-net/decisions/beta.md'; project card: 'acme-net/acme-net.md')", inputSchema={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative path in vault"},
@@ -673,7 +673,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "description": "Target project scope (e.g. 'symbiosis-brain'). Omit for auto-discovery walk of all projects/*.md.",
+                        "description": "Target project scope (e.g. 'symbiosis-brain'). Omit to auto-discover every project card across both layouts: <scope>/<scope>.md and legacy projects/*.md.",
                     },
                     "dry_run": {
                         "type": "boolean",

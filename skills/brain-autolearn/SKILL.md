@@ -98,7 +98,7 @@ Follow the matching recipe. Whatever the tier, the artifact is not done until:
 
 ## Step 6: Count what is not ripe yet
 
-A finding seen once or twice goes to `projects/autolearn-inbox.md` (create on first
+A finding seen once or twice goes to `global/projects/autolearn-inbox.md` (create on first
 use) as one line: `- YYYY-MM-DD ×N <what> — evidence: <moment>`. Same finding already
 there → increment N and refresh the date. At ×3 it is ripe: act on it next pass.
 

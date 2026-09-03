@@ -348,9 +348,12 @@ def test_persistent_skip_counter_is_readable_from_another_process(db_path: Path)
         "s.close()"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", script, str(db_path)],
-        capture_output=True, text=True, timeout=120,
-    )
+        # -X utf8 pins the CHILD's encoder. Passing encoding= alone fixes only
+        # the parent's decoder, and this child is not our CLI — it has no
+        # stdout.reconfigure, so without -X utf8 it writes in the machine's
+        # locale and the pair only agrees by luck on ASCII output.
+        [sys.executable, "-X", "utf8", "-c", script, str(db_path)],
+        capture_output=True, text=True, timeout=120, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "5"
 

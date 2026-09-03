@@ -19,7 +19,7 @@ CLI = [sys.executable, "-m", "symbiosis_brain.scope_cli"]
 
 
 def run_cli(*args, cwd=None):
-    return subprocess.run([*CLI, *args], capture_output=True, text=True, cwd=cwd)
+    return subprocess.run([*CLI, *args], capture_output=True, text=True, cwd=cwd, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ def test_acquire_lock_lockdir_unwritable(tmp_path, monkeypatch):
     """OSError → exit 2 + error:lockdir-unwritable in stderr."""
     # Point LOCK_DIR at a path that doesn't exist and can't be created (file, not dir).
     bad = tmp_path / "not-a-directory"
-    bad.write_text("file blocking dir creation\n")
+    bad.write_text("file blocking dir creation\n", encoding="utf-8")
     bad_subpath = bad / "subdir-cant-make"
     monkeypatch.setenv("SYMBIOSIS_BRAIN_LOCK_DIR", str(bad_subpath))
     res = run_cli("acquire-onboard-lock", "foo")
@@ -252,6 +252,10 @@ def test_scope_cli_does_not_import_report_at_module_level():
         "int('symbiosis_brain.storage' in sys.modules), "
         "int('numpy' in sys.modules))"
     )
-    res = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    # -X utf8 pins the child's encoder (it is not our CLI, so it has no
+    # stdout.reconfigure); encoding= pins the parent's decoder. Both halves or
+    # neither — one alone agrees only while the output happens to be ASCII.
+    res = subprocess.run([sys.executable, "-X", "utf8", "-c", probe],
+                         capture_output=True, text=True, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     assert res.stdout.split() == ["0", "0", "0"], res.stdout

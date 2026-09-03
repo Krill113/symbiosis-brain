@@ -73,7 +73,7 @@ def test_brain_rename_skips_links_in_code_regions(tmp_path):
 
     brain_rename("wiki/b.md", "wiki/b-renamed.md", storage=storage, sync=sync, vault_path=vault)
 
-    a_body = (vault / "wiki" / "a.md").read_text()
+    a_body = (vault / "wiki" / "a.md").read_text(encoding="utf-8")
     # Prose link rewritten:
     assert "Real link [[wiki/b-renamed]]." in a_body
     # Code-region links untouched:
@@ -86,7 +86,7 @@ def test_brain_delete_cascade_skips_links_in_code_regions(tmp_path):
 
     brain_delete("wiki/b.md", mode="cascade", storage=storage, sync=sync, vault_path=vault)
 
-    a_body = (vault / "wiki" / "a.md").read_text()
+    a_body = (vault / "wiki" / "a.md").read_text(encoding="utf-8")
     # Prose link replaced by a stub; the two code-region links remain literal.
     assert "Real link [[wiki/b]]." not in a_body
     assert a_body.count("[[wiki/b]]") == 2  # inline + fenced survive
@@ -101,7 +101,7 @@ def test_brain_rename_rewrites_inbound_refs(tmp_path):
     assert not (vault / "wiki" / "b.md").exists()
     assert (vault / "wiki" / "b-renamed.md").exists()
 
-    a_body = (vault / "wiki" / "a.md").read_text()
+    a_body = (vault / "wiki" / "a.md").read_text(encoding="utf-8")
     assert "[[wiki/b-renamed]]" in a_body
     assert "[[wiki/b-renamed|B-alias]]" in a_body
     assert "[[wiki/b]]" not in a_body
@@ -127,7 +127,7 @@ def test_brain_delete_cascade_replaces_refs_with_stub(tmp_path):
     brain_delete("wiki/b.md", mode="cascade", storage=storage, sync=sync, vault_path=vault)
 
     assert not (vault / "wiki" / "b.md").exists()
-    a_body = (vault / "wiki" / "a.md").read_text()
+    a_body = (vault / "wiki" / "a.md").read_text(encoding="utf-8")
     assert "[[wiki/b]]" not in a_body
     assert "[[wiki/b|B-alias]]" not in a_body
     assert "~~wiki/b~~" in a_body

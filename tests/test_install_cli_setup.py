@@ -29,7 +29,7 @@ def test_setup_with_explicit_vault_creates_structure_and_settings(tmp_path, monk
     install_cli.cmd_setup(args)
 
     assert (vault / "reference" / "scope-taxonomy.md").exists()
-    assert json.loads(settings.read_text())["statusLine"]["command"]
+    assert json.loads(settings.read_text(encoding="utf-8"))["statusLine"]["command"]
     assert "<!-- symbiosis-brain v1: global -->" in claude_md.read_text(encoding="utf-8")
 
 
@@ -210,7 +210,7 @@ def test_setup_rollback_restores_settings_on_failure(tmp_path, monkeypatch):
         pass  # expected
 
     # settings.json and CLAUDE.md restored from backup
-    assert json.loads(settings.read_text())["existing"] == "data"
+    assert json.loads(settings.read_text(encoding="utf-8"))["existing"] == "data"
     assert claude_md.read_text(encoding="utf-8") == "# original\n"
 
 

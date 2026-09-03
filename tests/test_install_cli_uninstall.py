@@ -39,8 +39,8 @@ def test_uninstall_restores_settings_and_claude_md(tmp_path, monkeypatch):
     args = type("A", (), {})()
     install_cli.cmd_uninstall(args)
 
-    assert json.loads(settings.read_text())["original"] is True
-    assert claude_md.read_text() == "# original\n"
+    assert json.loads(settings.read_text(encoding="utf-8"))["original"] is True
+    assert claude_md.read_text(encoding="utf-8") == "# original\n"
     for s in install_cli.SKILL_NAMES:
         assert not (skills / s / "SKILL.md").exists()
     for h in ("brain-session-start.sh", "brain-save-trigger.sh", "brain-sync.sh"):

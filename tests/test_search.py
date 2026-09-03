@@ -302,7 +302,7 @@ def test_get_embedder_skips_lock_when_already_loaded(tmp_path, monkeypatch):
     sentinel = object()
     monkeypatch.setattr(_search_mod, "_embedder", sentinel)
     # Pre-create a fresh lockfile to assert it's NOT touched
-    (tmp_path / "sb-fastembed-init.lock").write_text("99999\n0\n")
+    (tmp_path / "sb-fastembed-init.lock").write_text("99999\n0\n", encoding="utf-8")
 
     result = _search_mod._get_embedder()
     assert result is sentinel  # fast path returned the cached singleton

@@ -30,11 +30,11 @@ def test_counter_increments_across_gates():
     try:
         ctr = pathlib.Path(sb) / 'brain-route-turn-s1'
         _run('a long enough normal prompt here', sb_tmp=sb)
-        assert ctr.read_text().strip() == '1'
+        assert ctr.read_text(encoding="utf-8").strip() == '1'
         _run('hi', sb_tmp=sb)
-        assert ctr.read_text().strip() == '2'
+        assert ctr.read_text(encoding="utf-8").strip() == '2'
         _run('/compact', sb_tmp=sb)
-        assert ctr.read_text().strip() == '3'
+        assert ctr.read_text(encoding="utf-8").strip() == '3'
     finally:
         shutil.rmtree(sb, ignore_errors=True)
 
@@ -56,11 +56,11 @@ def test_route_turn_excluded_from_sessionstart_rm():
         p = json.dumps({'session_id': 'sX', 'prompt': 'a normal length prompt'})
         subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
         ctr = pathlib.Path(sb) / 'brain-route-turn-sX'
-        assert ctr.read_text().strip() == '1'
+        assert ctr.read_text(encoding="utf-8").strip() == '1'
         subprocess.run([_bash(), str(START)], input=json.dumps({'session_id': 'sX'}), text=True, encoding='utf-8', env=env, capture_output=True)
         assert ctr.exists(), 'route-turn counter must survive SessionStart/compact'
         subprocess.run([_bash(), str(HOOK), 'prompt-check'], input=p, text=True, encoding='utf-8', env=env, capture_output=True)
-        assert ctr.read_text().strip() == '2'
+        assert ctr.read_text(encoding="utf-8").strip() == '2'
     finally:
         shutil.rmtree(sb, ignore_errors=True)
         shutil.rmtree(stub, ignore_errors=True)
@@ -95,14 +95,14 @@ def test_silent_turn_no_system_reminder():
             input=json.dumps({'session_id': 'q', 'prompt': 'just a normal prompt'}),
             text=True, encoding='utf-8', env=env, capture_output=True)
         assert '<system-reminder>' not in r.stdout
-        assert (pathlib.Path(sb) / 'brain-route-turn-q').read_text().strip() == '1'
+        assert (pathlib.Path(sb) / 'brain-route-turn-q').read_text(encoding="utf-8").strip() == '1'
     finally:
         shutil.rmtree(sb, ignore_errors=True)
 
 def _stub_search_gist(sb, envelope):
     bindir = pathlib.Path(sb) / 'bin'; bindir.mkdir(exist_ok=True)
     uv = bindir / 'uv'
-    uv.write_text('#!/bin/bash\ncat <<\'EOF\'\n' + json.dumps(envelope) + '\nEOF\n')
+    uv.write_text('#!/bin/bash\ncat <<\'EOF\'\n' + json.dumps(envelope) + '\nEOF\n', encoding="utf-8")
     uv.chmod(0o755)
     return str(bindir)
 
@@ -158,8 +158,8 @@ def test_routing_gate_not_recall_gate():
 def test_hook_syntax_valid():
     import subprocess, pathlib
     root = pathlib.Path(__file__).resolve().parents[1]
-    r = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-save-trigger.sh')], capture_output=True, text=True)
-    r2 = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-session-start.sh')], capture_output=True, text=True)
+    r = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-save-trigger.sh')], capture_output=True, text=True, encoding="utf-8")
+    r2 = subprocess.run([_bash(), '-n', str(root / 'hooks' / 'brain-session-start.sh')], capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0 and r2.returncode == 0, (r.stderr, r2.stderr)
 
 
@@ -174,10 +174,10 @@ def test_find_bash_derives_from_git_location(tmp_path):
     root = tmp_path / 'GitRoot'
     (root / 'cmd').mkdir(parents=True)
     git_exe = root / 'cmd' / 'git.exe'
-    git_exe.write_text('')
+    git_exe.write_text('', encoding="utf-8")
     (root / 'bin').mkdir(parents=True)
     bash_exe = root / 'bin' / 'bash.exe'
-    bash_exe.write_text('')
+    bash_exe.write_text('', encoding="utf-8")
     result = _find_bash(
         which=lambda name: str(git_exe) if name == 'git' else None,
         exists=os.path.exists, environ={}, windows=True, works=lambda p: True,
@@ -201,7 +201,7 @@ def test_find_bash_falls_back_to_program_files(tmp_path):
     pf = tmp_path / 'ProgramFiles'
     (pf / 'Git' / 'bin').mkdir(parents=True)
     bash_exe = pf / 'Git' / 'bin' / 'bash.exe'
-    bash_exe.write_text('')
+    bash_exe.write_text('', encoding="utf-8")
     result = _find_bash(
         which=lambda name: None,
         exists=os.path.exists,
@@ -216,13 +216,13 @@ def test_find_bash_prefers_bin_over_usr_bin(tmp_path):
     root = tmp_path / 'SameRoot'
     (root / 'cmd').mkdir(parents=True)
     git_exe = root / 'cmd' / 'git.exe'
-    git_exe.write_text('')
+    git_exe.write_text('', encoding="utf-8")
     (root / 'bin').mkdir(parents=True)
     bin_bash = root / 'bin' / 'bash.exe'
-    bin_bash.write_text('')
+    bin_bash.write_text('', encoding="utf-8")
     (root / 'usr' / 'bin').mkdir(parents=True)
     usr_bin_bash = root / 'usr' / 'bin' / 'bash.exe'
-    usr_bin_bash.write_text('')
+    usr_bin_bash.write_text('', encoding="utf-8")
     result = _find_bash(
         which=lambda name: str(git_exe) if name == 'git' else None,
         exists=os.path.exists, environ={}, windows=True, works=lambda p: True,
@@ -237,17 +237,17 @@ def test_find_bash_prefers_bin_over_usr_bin(tmp_path):
     root_a = tmp_path / 'RootA'
     (root_a / 'cmd').mkdir(parents=True)
     git_a = root_a / 'cmd' / 'git.exe'
-    git_a.write_text('')
+    git_a.write_text('', encoding="utf-8")
     (root_a / 'bin').mkdir(parents=True)
     a_bin = root_a / 'bin' / 'bash.exe'
-    a_bin.write_text('')
+    a_bin.write_text('', encoding="utf-8")
     (root_a / 'usr' / 'bin').mkdir(parents=True)
     a_usr_bin = root_a / 'usr' / 'bin' / 'bash.exe'
-    a_usr_bin.write_text('')
+    a_usr_bin.write_text('', encoding="utf-8")
     root_b = tmp_path / 'RootB'
     (root_b / 'Git' / 'bin').mkdir(parents=True)
     b_bin = root_b / 'Git' / 'bin' / 'bash.exe'
-    b_bin.write_text('')
+    b_bin.write_text('', encoding="utf-8")
 
     def works(p):
         return p not in (str(a_bin), str(a_usr_bin))

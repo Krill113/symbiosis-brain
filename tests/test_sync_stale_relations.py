@@ -34,7 +34,7 @@ def test_inbound_broken_relation_resolves_when_target_created(tmp_path):
 
     # 1. Write A referencing B (B doesn't exist yet)
     a = vault / "wiki" / "a.md"
-    a.write_text("---\ntitle: A\ntype: wiki\nscope: global\n---\n# A\n[[wiki/b]]\n")
+    a.write_text("---\ntitle: A\ntype: wiki\nscope: global\n---\n# A\n[[wiki/b]]\n", encoding="utf-8")
     sync.sync_one("wiki/a.md")
 
     # Verify A→B relation is currently broken
@@ -45,7 +45,7 @@ def test_inbound_broken_relation_resolves_when_target_created(tmp_path):
 
     # 2. Now create B
     b = vault / "wiki" / "b.md"
-    b.write_text("---\ntitle: B\ntype: wiki\nscope: global\n---\n# B\n")
+    b.write_text("---\ntitle: B\ntype: wiki\nscope: global\n---\n# B\n", encoding="utf-8")
     sync.sync_one("wiki/b.md")
 
     # 3. Assert: A→B is no longer broken
@@ -61,11 +61,11 @@ def test_inbound_broken_relations_with_anchor_resolve(tmp_path):
     vault, storage, sync = _build_vault(tmp_path)
 
     a = vault / "wiki" / "a.md"
-    a.write_text("---\ntitle: A\ntype: wiki\nscope: global\n---\n# A\n[[wiki/b#sec]]\n")
+    a.write_text("---\ntitle: A\ntype: wiki\nscope: global\n---\n# A\n[[wiki/b#sec]]\n", encoding="utf-8")
     sync.sync_one("wiki/a.md")
 
     b = vault / "wiki" / "b.md"
-    b.write_text("---\ntitle: B\ntype: wiki\nscope: global\n---\n# B\n")
+    b.write_text("---\ntitle: B\ntype: wiki\nscope: global\n---\n# B\n", encoding="utf-8")
     sync.sync_one("wiki/b.md")
 
     rels = storage.get_relations("wiki/a", direction="outgoing")

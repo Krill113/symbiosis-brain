@@ -163,7 +163,7 @@ def test_the_bash_idiom_eats_both_decimal_marks(tmp_path: Path):
         encoding="utf-8", newline="\n",
     )
     proc = subprocess.run([bash, str(script)], capture_output=True, text=True,
-                          timeout=60)
+                          timeout=60, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout.split()
     assert out[0] == "1756200000123456"
@@ -185,7 +185,7 @@ def test_bash_under_a_real_comma_locale_still_emits_digits_only(tmp_path: Path):
     probe = tmp_path / "probe.sh"
     probe.write_text('printf %s "$EPOCHREALTIME"\n', encoding="utf-8", newline="\n")
     raw = subprocess.run([bash, str(probe)], capture_output=True, text=True,
-                         timeout=60, env=env).stdout
+                         timeout=60, env=env, encoding="utf-8").stdout
     if "," not in raw:
         pytest.skip(f"de_DE.UTF-8 не даёт запятую в этой системе (сырое: {raw!r})")
 
@@ -197,7 +197,7 @@ def test_bash_under_a_real_comma_locale_still_emits_digits_only(tmp_path: Path):
         encoding="utf-8", newline="\n",
     )
     proc = subprocess.run([bash, str(script)], capture_output=True, text=True,
-                          timeout=60, env=env)
+                          timeout=60, env=env, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     value = proc.stdout.strip()
     assert value.isdigit(), f"separator leaked into the timestamp: {value!r}"
@@ -234,5 +234,5 @@ def test_trigger_script_still_parses(name):
     bash = _bash()
     root = Path(__file__).resolve().parents[1]
     proc = subprocess.run([bash, "-n", str(root / "hooks" / name)],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr

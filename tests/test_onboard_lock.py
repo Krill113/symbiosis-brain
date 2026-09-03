@@ -42,7 +42,7 @@ def test_acquire_when_stale_lock_returns_true(tmp_path):
     # New caller should grab it
     assert acquire_lock("foo", timeout_s=30) is True
     # Verify the lockfile was rewritten with current PID, not appended
-    contents = lockfile.read_text()
+    contents = lockfile.read_text(encoding="utf-8")
     assert str(os.getpid()) in contents
     assert contents.count("\n") == 2  # exactly PID + timestamp lines
 

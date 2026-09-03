@@ -83,7 +83,7 @@ def test_server_exits_when_parent_terminated(tmp_path):
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if pid_file.exists():
-                content = pid_file.read_text().strip()
+                content = pid_file.read_text(encoding="utf-8").strip()
                 if content.isdigit():
                     server_pid = int(content)
                     break
@@ -118,7 +118,7 @@ def test_server_exits_when_parent_terminated(tmp_path):
             launcher.kill()
         if pid_file.exists():
             try:
-                pid = int(pid_file.read_text().strip())
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
                 if _process_alive(pid):
                     subprocess.run(
                         ["taskkill", "/F", "/PID", str(pid)],

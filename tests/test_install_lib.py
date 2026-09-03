@@ -108,6 +108,25 @@ def test_scaffold_vault_creates_scope_first_layout(tmp_path):
     assert (vault / "global" / "decisions").is_dir()
 
 
+def test_scaffold_vault_leaves_a_pre_reorg_vault_untouched(tmp_path):
+    """A vault that already has the old layout keeps it, contents and all.
+
+    Seeding changed for fresh vaults only. Nothing removes what a vault built
+    before the 2026-09 reorg contains, and scaffold_vault runs again on every
+    repair — so this is a promise about someone else's notes, which makes it
+    worth a test rather than a sentence in a description.
+    """
+    vault = tmp_path / "v"
+    legacy_note = vault / "projects" / "alpha-seti.md"
+    legacy_note.parent.mkdir(parents=True)
+    legacy_note.write_text("# card", encoding="utf-8")
+
+    install_lib.scaffold_vault(vault)
+
+    assert legacy_note.read_text(encoding="utf-8") == "# card"
+    assert (vault / "projects").is_dir()
+
+
 def test_scaffold_vault_seeds_a_taxonomy_every_loader_can_read(tmp_path):
     """The starter taxonomy has to satisfy both loaders, not just the scope one.
 

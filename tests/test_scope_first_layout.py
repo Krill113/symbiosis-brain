@@ -139,6 +139,38 @@ class TestRotationScopeFirst:
         assert report.sections_archived == 1
         assert list((vault / "archive" / "handoffs").glob("alpha-seti-2020-01-05*.md"))
 
+    def test_new_layout_archive_footer_links_to_scope_first_card(self, tmp_path):
+        """The archive footer must point back at the card that actually exists.
+
+        A scope-first vault has no root projects/ folder, so a footer hardcoded
+        to [[projects/<scope>]] writes a broken wiki-link into every handoff
+        archived after the 2026-09 reorg.
+        """
+        vault = tmp_path
+        card = vault / "alpha-seti" / "alpha-seti.md"
+        card.parent.mkdir(parents=True)
+        card.write_text(CARD, encoding="utf-8")
+
+        rotate_handoffs(vault, scope="alpha-seti", inline_days=2)
+
+        archived = list((vault / "alpha-seti" / "archive").glob("alpha-seti-2020-01-05*.md"))
+        footer = archived[0].read_text(encoding="utf-8")
+        assert "[[alpha-seti/alpha-seti]]" in footer
+        assert "[[projects/alpha-seti]]" not in footer
+
+    def test_legacy_layout_archive_footer_still_links_to_legacy_card(self, tmp_path):
+        """A pre-migration vault must keep linking to projects/<scope>.md."""
+        vault = tmp_path
+        card = vault / "projects" / "alpha-seti.md"
+        card.parent.mkdir(parents=True)
+        card.write_text(CARD, encoding="utf-8")
+
+        rotate_handoffs(vault, scope="alpha-seti", inline_days=2)
+
+        archived = list((vault / "archive" / "handoffs").glob("alpha-seti-2020-01-05*.md"))
+        footer = archived[0].read_text(encoding="utf-8")
+        assert "[[projects/alpha-seti]]" in footer
+
 
 class TestScaffold:
     def test_vault_dirs_include_global_scope_tree(self):

@@ -270,8 +270,13 @@ def render_archive_file(
     gist: str,
     *,
     written_by: Optional[str] = None,
+    new_layout: bool = False,
 ) -> str:
     """Render full archive file content (frontmatter + body + footer).
+
+    `new_layout` selects the card the footer links back to: the scope-first
+    canon <scope>/<scope>.md (2026-09 reorg) or the legacy projects/<scope>.md.
+    It defaults to the legacy path so a pre-migration vault keeps working links.
 
     `written_by` (I-16, §3.2) is printed only when non-empty, and always through
     _yaml_quote_string so a colon or a quote in the value cannot break the YAML.
@@ -307,7 +312,8 @@ def render_archive_file(
     if written_by:
         frontmatter += f"written_by: {_yaml_quote_string(written_by)}\n"
     frontmatter += "---\n"
-    footer = f"\n---\n*Архивный handoff. Свежие — в [[projects/{scope}]] §«Handoff …».*\n"
+    card_link = f"{scope}/{scope}" if new_layout else f"projects/{scope}"
+    footer = f"\n---\n*Архивный handoff. Свежие — в [[{card_link}]] §«Handoff …».*\n"
     return f"{frontmatter}\n# {title}\n\n{body_content}\n{footer}"
 
 
@@ -452,7 +458,7 @@ def _rotate_one_card(
         slug = section_to_slug[id(s)]
         gist = extract_gist(s.body)
         archive_content = render_archive_file(s, scope=scope, slug=slug, gist=gist,
-                                              written_by=written_by)
+                                              written_by=written_by, new_layout=new_layout)
         slug_part = f"-{slug}" if slug else ""
         archive_path = archive_dir / f"{scope}-{s.date.isoformat()}{slug_part}.md"
         rel_archive = archive_path.relative_to(vault).as_posix()

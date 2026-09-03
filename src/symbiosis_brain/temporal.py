@@ -63,5 +63,27 @@ class TemporalManager:
         months = int(days / 30)
         return f"This {note['note_type']} is ~{months} months old (threshold: {threshold} days) — may be outdated"
 
-    def is_superseded(self, note: dict) -> bool:
-        return note.get("valid_to") is not None
+    def is_superseded(self, note: dict, *, now: datetime | None = None) -> bool:
+        """Whether the note's own claim has stopped being true.
+
+        `valid_to` is the date a claim STOPS holding, so a value still in the
+        future means it holds right now. Testing `is not None` got that exactly
+        backwards and would close a note deliberately marked as valid until a
+        known date. The method had no production caller until now, so the
+        mistake had never had a chance to show.
+
+        An unparsable date leaves the note open. Between the two errors — a live
+        note hidden by a typo, and a closed note still shown — only the first is
+        silent, and it is the one that costs the reader something they cannot
+        see is missing.
+        """
+        closed_at = note.get("valid_to")
+        if not closed_at:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(closed_at))
+        except (ValueError, TypeError):
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt <= (now or datetime.now(timezone.utc))

@@ -553,11 +553,16 @@ def _run_one(engine, cfg: Config, row: dict[str, Any], k: int) -> Run:
     elif cfg.kind == "vector":
         hits = engine.search_vector(query, scope=scope, limit=k)
     elif cfg.kind == "rerank":
+        # Benchmarks measure the whole corpus. Excluding closed notes here
+        # would move the numbers for a reason unrelated to retrieval
+        # quality, and nothing in the output would say so.
         pool = engine.search(query, scope=scope, limit=k * RERANK_OVERFETCH,
-                             fts_mode=cfg.fts_mode, stats=stats)
+                             fts_mode=cfg.fts_mode, include_closed=True,
+                             stats=stats)
         hits = _rerank(query, pool, k)
     else:
-        hits = engine.search(query, scope=scope, limit=k, fts_mode=cfg.fts_mode, stats=stats)
+        hits = engine.search(query, scope=scope, limit=k, fts_mode=cfg.fts_mode,
+                             include_closed=True, stats=stats)
     latency_ms = (time.perf_counter() - started) * 1000.0
     return Run(
         row=row,

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from symbiosis_brain import retrieval_log
 from symbiosis_brain.retrieval_log import LogContext
+from symbiosis_brain.temporal import TemporalManager
 
 logger = logging.getLogger("symbiosis-brain.search")
 
@@ -688,9 +689,23 @@ def dedup_candidates(engine, storage, *, title: str, gist: str,
         if not mine:
             return []
         self_key = _dedup_canonical(self_path)
+        # Built from `storage` rather than read off the engine: `is_superseded`
+        # needs only the note dict, and reaching into engine internals here
+        # would make this function depend on a shape the caller does not
+        # promise — the whole body runs under a fail-open `except`, so that kind
+        # of mismatch would surface as "no duplicates found", not as an error.
+        temporal = TemporalManager(storage)
         found: list[dict] = []
+        # Closed notes MUST be visible here, and the reason is the opposite of
+        # the one that hides them from the hook paths. This runs when someone is
+        # about to WRITE. If a note on this subject exists but was deliberately
+        # closed, hiding it means writing a duplicate of a superseded claim with
+        # no link back to it — the exact thing `valid_to` was set to prevent,
+        # arrived at from the other side. And the failure is silent: no hint at
+        # all is indistinguishable from "there is nothing like this".
         for hit in engine.search(query=query, scope=None, limit=top_k,
-                                 mode="gist", fts_mode=FTS_MODE_ANY):
+                                 mode="gist", fts_mode=FTS_MODE_ANY,
+                                 include_closed=True):
             path = hit.get("path") or ""
             if not path or _dedup_canonical(path) == self_key:
                 continue
@@ -707,7 +722,14 @@ def dedup_candidates(engine, storage, *, title: str, gist: str,
             score = containment(mine, _dedup_tokens(f"{their_title} {their_gist}"))
             if score < min_containment:
                 continue
-            found.append({"path": path, "gist": their_gist, "containment": score})
+            # Marked, not just included. "A live note already says this" (do
+            # not write) and "a closed note used to say this" (write, but link
+            # it) call for opposite actions; showing them identically would
+            # trade one silent failure for another — the author reads a
+            # tombstone as a living duplicate and does not write the note that
+            # was needed.
+            found.append({"path": path, "gist": their_gist, "containment": score,
+                          "closed": temporal.is_superseded(hit)})
         found.sort(key=lambda c: (-c["containment"], c["path"]))
         return found[:max_shown]
     except Exception:
@@ -726,6 +748,10 @@ class SearchEngine:
         schema_version row says). Every other caller omits it and gets
         _resolve_model_name's DB-else-default resolution (З3)."""
         self.storage = storage
+        # One definition of "this note is closed", shared with brain_read and
+        # brain_search rather than restated here: two rules for the same thing
+        # drift apart, and they drift apart quietly.
+        self._temporal = TemporalManager(storage)
         self.model_name = model_name or _resolve_model_name(storage)
         self._model_pinned = model_name is not None
         self._drift_checked_at = time.monotonic()
@@ -1079,6 +1105,7 @@ class SearchEngine:
 
     def search(self, query: str, scope: str | None = None, limit: int = 10,
                mode: str = "preview", *, fts_mode: str = FTS_MODE_ANY,
+               include_closed: bool = True,
                log_ctx: "LogContext | None" = None,
                stats: dict | None = None) -> list[dict]:
         """Hybrid search: FTS5 + vector with Reciprocal Rank Fusion.
@@ -1133,6 +1160,23 @@ class SearchEngine:
             scores[note["path"]] = scores.get(note["path"], 0) + 1.0 / (k + rank + 1)
 
         all_notes = {n["path"]: n for n in fts_results + vec_results}
+
+        # A note whose `valid_to` has passed is closed: it stated something that
+        # no longer holds. It stays findable on purpose — `brain_search` and the
+        # duplicate check both need it — but it has no business being injected
+        # into a prompt as if it were current.
+        #
+        # Filtered here, once, rather than in the two SQL queries and the vector
+        # post-filter: one condition instead of three, and it cannot drift
+        # between the lexical and the vector half. The cost is honest — a closed
+        # note occupies a slot in each half's top-N before being dropped, so a
+        # query whose top hits are all closed comes back shorter. With 19 closed
+        # notes in 1649 that is theoretical, but it is a cost, not zero.
+        if not include_closed:
+            for path, note in list(all_notes.items()):
+                if self._temporal.is_superseded(note):
+                    all_notes.pop(path, None)
+                    scores.pop(path, None)
 
         if scope and scope != "global":
             for path in scores:

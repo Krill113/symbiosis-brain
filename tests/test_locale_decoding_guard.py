@@ -44,10 +44,9 @@ import ast
 from pathlib import Path
 
 import pytest
+from conftest import iter_source_files
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCANNED_DIRS = ("src", "scripts", "tools", "tests")
-SKIP_PARTS = {"__pycache__", ".venv", ".worktrees", ".git"}
 
 SUBPROCESS_FUNCS = {"run", "Popen", "check_output", "check_call", "call",
                     "getoutput", "getstatusoutput"}
@@ -63,14 +62,10 @@ UTF8_STDOUT_ENTRY_POINTS = (
 
 
 def _python_files():
-    for d in SCANNED_DIRS:
-        root = REPO_ROOT / d
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*.py")):
-            if SKIP_PARTS & set(path.parts):
-                continue
-            yield path
+    # Area comes from conftest, shared with every other static guard: two guards
+    # disagreeing about where our code lives is how the previous version of this
+    # one reported clean for as long as it existed.
+    return iter_source_files(include_tests=True)
 
 
 def _subprocess_bindings(tree):

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from symbiosis_brain.storage import Storage
@@ -95,3 +95,30 @@ class TestValidFromTo:
         tm = TemporalManager(storage)
         note = storage.get_note("d/old.md")
         assert tm.is_superseded(note)
+
+    def test_valid_to_in_the_future_is_not_superseded_yet(self, db_path: Path):
+        """`valid_to` says when the claim STOPS being true. A date still ahead
+        means it holds right now, so treating any non-empty value as "closed"
+        gets it exactly backwards — and would hide a note that is deliberately
+        marked as valid until a known future date."""
+        storage = Storage(db_path)
+        future = (datetime.now(timezone.utc) + timedelta(days=90)).date().isoformat()
+        storage.upsert_note(path="d/expires.md", title="Expires later",
+                            content="valid until the licence renews",
+                            note_type="decision", scope="beta",
+                            valid_from="2026-01-01", valid_to=future)
+        tm = TemporalManager(storage)
+        assert not tm.is_superseded(storage.get_note("d/expires.md"))
+
+    def test_unparsable_valid_to_leaves_the_note_open(self, db_path: Path):
+        """A hand-edited date that does not parse must not close a note: hiding
+        a live note because of a typo is the worse of the two errors, and it is
+        the silent one."""
+        storage = Storage(db_path)
+        storage.upsert_note(path="d/typo.md", title="Typo", content="x",
+                            note_type="decision", scope="beta")
+        storage._conn.execute(
+            "UPDATE notes SET valid_to='soon-ish' WHERE path='d/typo.md'")
+        storage._conn.commit()
+        tm = TemporalManager(storage)
+        assert not tm.is_superseded(storage.get_note("d/typo.md"))

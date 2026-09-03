@@ -133,8 +133,10 @@ def run_recall(
     over_limit = min(max(config.hit_limit * 2, 5), 50)
     stats: dict[str, Any] = {}
     t0 = time.perf_counter()
+    # Same reason as the prompt path: this is injected, not requested.
     raw = engine.search(query=query, scope=scope, limit=over_limit, mode="gist",
-                        fts_mode=fts_mode, log_ctx=None, stats=stats)
+                        fts_mode=fts_mode, include_closed=False,
+                        log_ctx=None, stats=stats)
     latency_ms = int((time.perf_counter() - t0) * 1000)
     excluded = set(config.excluded_note_types)
     filtered = [r for r in raw if _note_type(r) not in excluded]

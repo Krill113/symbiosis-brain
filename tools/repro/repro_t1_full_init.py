@@ -45,7 +45,7 @@ def main():
 
     results = server._search.search(
         "test query for parallel cold-start measurement",
-        limit=3, mode="gist",
+        limit=3, mode="gist", include_closed=True,
     )
     mark("first_search_s", t0)
 

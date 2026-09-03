@@ -67,8 +67,12 @@ def measure(storage, engine, notes: list[dict], *, top_k: int) -> dict[tuple[str
             continue
         best_plain = 0.0
         best_in_both = 0.0
+        # Mirrors dedup_candidates, which sees closed notes on purpose:
+        # calibrating the threshold against a different corpus than the
+        # one it will run on tunes it for a population that does not exist.
         for hit in engine.search(query=query, scope=None, limit=top_k,
-                                 mode="gist", fts_mode=FTS_MODE_ANY):
+                                 mode="gist", fts_mode=FTS_MODE_ANY,
+                                 include_closed=True):
             if hit.get("path") == note.get("path"):
                 continue        # себя не считаем — ровно как dedup_candidates
             theirs = _dedup_tokens(f"{hit.get('title') or ''} {hit.get('gist') or ''}")

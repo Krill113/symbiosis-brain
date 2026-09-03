@@ -380,8 +380,11 @@ def _gist_search(vault_path, query, scope, limit, *, log_ctx=None) -> list:
     # repairs them at O(drift) via repair_index().
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
     # Fall back to FTS-only if vector index isn't fresh.
+    # Injected into a prompt without anyone asking: a superseded claim shown
+    # there reads as current, and the reader has no reason to doubt it.
     results = search.search(query=query, scope=scope, limit=limit, mode="gist",
-                            fts_mode=FTS_MODE_ALL_THEN_ANY, log_ctx=log_ctx)
+                            fts_mode=FTS_MODE_ALL_THEN_ANY, include_closed=False,
+                            log_ctx=log_ctx)
     return _shape_hits(results)
 
 

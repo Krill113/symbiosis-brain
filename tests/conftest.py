@@ -7,6 +7,33 @@ import pytest
 
 from symbiosis_brain.sync import VAULT_DIRS
 
+# --------------------------------------------------------------------------
+# One definition of "our source", shared by every static guard.
+#
+# The guards that walk the tree looking for a banned shape are only as good as
+# the ground they walk. The first of them scanned the package directory alone
+# and reported clean for as long as it existed, while 82 violations sat in
+# `tests/` and `tools/` where it never looked. Two guards disagreeing about
+# where our code lives would recreate that hole one guard at a time, so the
+# answer is given once, here.
+# --------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_DIRS = ("src", "scripts", "tools")
+_SKIP_PARTS = {"__pycache__", ".venv", ".worktrees", ".git"}
+
+
+def iter_source_files(*, include_tests: bool = False):
+    """Every .py file a static guard should look at."""
+    roots = SOURCE_DIRS + (("tests",) if include_tests else ())
+    for name in roots:
+        root = REPO_ROOT / name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if _SKIP_PARTS & set(path.parts):
+                continue
+            yield path
+
 
 @pytest.fixture(autouse=True)
 def _restore_embedder_singleton():

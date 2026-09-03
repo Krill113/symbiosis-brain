@@ -504,8 +504,13 @@ def _dedup_line(*, title: str, gist: str, self_path: str) -> str:
         )
         if not found:
             return ""
+        # The marker changes what the author should DO: a live match means "do
+        # not write this", a closed one means "write it, but say what it
+        # supersedes". Rendered identically, the second reads as the first and
+        # the needed note never gets written.
         parts = [
-            f"{c['path']} — {' '.join((c.get('gist') or '').split())[:_DEDUP_GIST_MAX]}"
+            f"{c['path']}{' [закрыта]' if c.get('closed') else ''} — "
+            f"{' '.join((c.get('gist') or '').split())[:_DEDUP_GIST_MAX]}"
             for c in found
         ]
         return "\n\n[dedup] похоже на: " + "; ".join(parts)
@@ -758,6 +763,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # с дефолтом search(), но стоит здесь буквой: границы режимов читаются
             # на месте вызова, а не выводятся из дефолта (§4.2).
             fts_mode=FTS_MODE_ANY,
+            # A person asked for this one, so a closed note is an answer, not
+            # noise: "there was a decision and it was superseded" is exactly
+            # what someone searching their own memory needs to see. The hook
+            # paths, which nobody asked, exclude them.
+            include_closed=True,
             log_ctx=_log_ctx("mcp_search"),
         )
         output_parts = []

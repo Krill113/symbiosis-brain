@@ -19,7 +19,7 @@ Whitelist валидных scope-ов. Дополняется по мере он
 | scope | kind | описание | проект-карточка |
 |---|---|---|---|
 | `global` | base | глобальные правила и принципы | — |
-| `symbiosis-brain` | product | сам Symbiosis Brain | [[projects/symbiosis-brain]] |
+| `symbiosis-brain` | product | сам Symbiosis Brain | [[symbiosis-brain/symbiosis-brain]] |
 
 ## Антипаттерны
 

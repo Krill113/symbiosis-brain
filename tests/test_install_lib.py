@@ -108,6 +108,21 @@ def test_scaffold_vault_creates_scope_first_layout(tmp_path):
     assert (vault / "global" / "decisions").is_dir()
 
 
+def test_scaffold_vault_seeds_a_taxonomy_every_loader_can_read(tmp_path):
+    """The starter taxonomy has to satisfy both loaders, not just the scope one.
+
+    lint reads the folder-to-type table on every run, so a starter file without
+    that section made brain_lint raise ValueError on a brand-new vault.
+    """
+    from symbiosis_brain import taxonomy
+
+    vault = tmp_path / "v"
+    install_lib.scaffold_vault(vault)
+
+    assert "global" in taxonomy.load_valid_scopes(vault)
+    assert taxonomy.load_folder_type_map(vault)["decisions"] == "decision"
+
+
 def test_scaffold_vault_idempotent_preserves_existing_content(tmp_path):
     vault = tmp_path / "v"
     install_lib.scaffold_vault(vault)

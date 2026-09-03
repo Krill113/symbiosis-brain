@@ -368,6 +368,9 @@ def _render_lint_report(report: dict, verbose: bool) -> str:
         f"Gist too long: {s.get('gist_too_long_count', 0)}  |  "
         f"Gist equals title: {s.get('gist_equals_title_count', 0)}  |  "
         f"Scope-folder mismatch: {s.get('scope_folder_mismatch_count', 0)}  |  "
+        # Notes with no `valid_from`: the staleness check cannot read their age
+        # and stays silent on them. Counted here so the silence is visible.
+        f"Undated: {s.get('undated_count', 0)}  |  "
         f"DB orphans: {s.get('db_orphans_count', 0)}",
     ]
 

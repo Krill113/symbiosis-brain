@@ -57,9 +57,16 @@ Implements [[MVVM]] pattern.
     assert "decisions/dapper" in neighbor_names
     assert "wiki/wpf" in neighbor_names
 
-    # Temporal
+    # Temporal. The age comes from `valid_from` — what the note says about
+    # itself — so a note that carries no date has no readable age and stays
+    # silent, while a dated old one warns. This used to assert silence for every
+    # note, which held only because the age was read from the row's write stamp:
+    # those are refreshed by any sync, so nothing was ever old.
     temporal = TemporalManager(storage)
+    warned, silent = [], []
     for note in storage.list_notes():
-        warning = temporal.staleness_warning(note)
-        # All notes are fresh, no warnings expected
-        assert warning is None
+        (warned if temporal.staleness_warning(note) else silent).append(note)
+
+    assert all(not (n.get("valid_from") or "") for n in silent), \
+        "a note with no valid_from has no readable age and must stay silent"
+    assert warned, "the fixture carries a dated decision old enough to warn"

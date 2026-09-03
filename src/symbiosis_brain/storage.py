@@ -292,7 +292,14 @@ class Storage:
         if note_type:
             query += " AND note_type=?"
             params.append(note_type)
-        query += " ORDER BY updated_at DESC"
+        # Newest CLAIM first, not newest row. `updated_at` says when the row was
+        # last written, and a re-sync rewrites it for every note it touches — on
+        # the live vault it holds 4 distinct values across 1632 notes, so it
+        # ordered nothing. `valid_from` lives in the file and survives. SQLite
+        # sorts NULL below every value, so DESC already puts undated notes last;
+        # NULLIF folds the empty string into that same bucket. `updated_at` stays
+        # as the tiebreaker, which is all it was ever fit for.
+        query += " ORDER BY NULLIF(valid_from, '') DESC, updated_at DESC"
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_note(r) for r in rows]
 

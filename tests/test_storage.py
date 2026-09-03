@@ -92,6 +92,33 @@ class TestNotesCRUD:
         assert {n["path"] for n in all_strict} == {"global/a.md", "alpha-seti/b.md"}
 
 
+class TestListNotesOrdering:
+    """The order `brain_list` returns had no test at all, and `ORDER BY
+    updated_at DESC` had quietly stopped ordering anything: that column records
+    when the row was last written, and a re-sync rewrites it for every note it
+    touches — 4 distinct values across 1632 notes on the live vault. Newest
+    claim first is what a reader asks for, and `valid_from` is the only stamp
+    that survives, so it leads and `updated_at` is left as the tiebreaker."""
+
+    def test_newest_claim_first_undated_last(self, db_path: Path):
+        storage = Storage(db_path)
+        for path, valid_from in (
+            ("w/older.md", "2025-01-01"),
+            ("w/newest.md", "2026-06-01"),
+            ("w/undated.md", None),
+            ("w/middle.md", "2025-09-01"),
+        ):
+            storage.upsert_note(path=path, title=path, content="x",
+                                note_type="wiki", scope="global",
+                                valid_from=valid_from)
+        # Every row was written within the same instant, so `updated_at` cannot
+        # be what separates them — which is exactly the state the whole vault is
+        # in after a rebuild.
+        order = [n["path"] for n in storage.list_notes()]
+        assert order[:3] == ["w/newest.md", "w/middle.md", "w/older.md"]
+        assert order[3] == "w/undated.md", "a note with no date sorts last, not first"
+
+
 class TestEntitiesAndRelations:
     def test_upsert_entities_from_wikilinks(self, db_path: Path):
         storage = Storage(db_path)

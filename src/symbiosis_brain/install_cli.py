@@ -102,7 +102,8 @@ def _resolve_vault_path() -> Path | None:
 
     try:
         proc = subprocess.run(
-            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10
+            ["claude", "mcp", "list"], capture_output=True, timeout=10,
+            text=True, encoding="utf-8", errors="replace",
         )
         for line in proc.stdout.splitlines():
             if "symbiosis-brain" not in line or "--vault" not in line:
@@ -218,8 +219,16 @@ def _packaged_commands_dir() -> Path:
 def _register_mcp(vault_path: Path) -> None:
     """Run `claude mcp add -s user symbiosis-brain ...` if not already registered."""
     try:
+        # encoding is explicit on purpose. `text=True` alone decodes with the
+        # locale's preferred encoding, and `claude mcp list` emits UTF-8: on a
+        # localised Windows (cp1251 here) a single unmapped byte killed the
+        # reader thread, and subprocess handed back an EMPTY stdout instead of
+        # raising. The check below then found no "symbiosis-brain", ran the add
+        # anyway, and setup died on "already exists" and rolled itself back —
+        # the idempotency guard was present the whole time, just fed nothing.
         listing = subprocess.run(
-            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=30,
+            ["claude", "mcp", "list"], capture_output=True, timeout=30,
+            text=True, encoding="utf-8", errors="replace",
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         # `claude mcp list` health-checks every registered server, so 10s was simply
@@ -238,7 +247,7 @@ def _register_mcp(vault_path: Path) -> None:
     add = subprocess.run(
         ["claude", "mcp", "add", "-s", "user", "symbiosis-brain", "--",
          "symbiosis-brain", "serve", "--vault", str(vault_path)],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
     )
     if add.returncode != 0:
         raise RuntimeError(f"`claude mcp add` failed: {add.stderr}")
@@ -491,7 +500,7 @@ def cmd_setup(args):
         if mcp_registered:
             try:
                 subprocess.run(["claude", "mcp", "remove", "symbiosis-brain"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
@@ -708,7 +717,7 @@ def cmd_uninstall(args) -> int:
     # Unregister MCP
     try:
         subprocess.run(["claude", "mcp", "remove", "symbiosis-brain"],
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 

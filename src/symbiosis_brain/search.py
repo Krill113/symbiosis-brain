@@ -370,7 +370,7 @@ def _get_embedder():
     while not acquired:
         try:
             fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(f"{os.getpid()}\n{int(time.time())}\n")
             acquired = True
         except FileExistsError:
@@ -437,7 +437,7 @@ def _reindex_lock(db_path):
     while not acquired:
         try:
             fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(f"{os.getpid()}\n{int(time.time())}\n")
             acquired = True
         except FileExistsError:

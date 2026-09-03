@@ -596,7 +596,7 @@ def _run_cli(stdin_payload: dict, vault: Path) -> tuple[int, str, str]:
         input=json.dumps(stdin_payload),
         capture_output=True, text=True, timeout=30,
         env={**os.environ, "HOME": str(home), "USERPROFILE": str(home)},
-    )
+     encoding="utf-8")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -670,7 +670,7 @@ def _run_cli_with(payload: dict, vault: Path, *, extra_args=None, env_extra=None
          "--vault", str(vault), *(extra_args or [])],
         input=json.dumps(payload), capture_output=True, text=True, timeout=120,
         env=env,
-    )
+     encoding="utf-8")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -768,7 +768,7 @@ def test_cli_pre_action_broken_payload_stays_silent(populated_vault: Path):
         input="{not json at all", capture_output=True, text=True, timeout=120,
         env={**os.environ, "HOME": str(home), "USERPROFILE": str(home),
              "SYMBIOSIS_BRAIN_RETRIEVAL_LOG": "on"},
-    )
+     encoding="utf-8")
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""
     assert _events(populated_vault) == []
@@ -790,7 +790,7 @@ def test_cli_handles_malformed_stdin_json(populated_vault: Path):
          "--vault", str(populated_vault)],
         input="{not valid",
         capture_output=True, text=True, timeout=10,
-    )
+     encoding="utf-8")
     assert proc.returncode == 0  # fail-open
     assert proc.stdout.strip() == ""  # silent skip
 
@@ -802,7 +802,7 @@ def test_cli_handles_bad_argparse_args(populated_vault: Path):
          "--unknown-flag", "xyz"],
         input="{}",
         capture_output=True, text=True, timeout=10,
-    )
+     encoding="utf-8")
     assert proc.returncode == 0  # NOT 2
     assert proc.stdout.strip() == ""
 
@@ -813,7 +813,7 @@ def test_cli_handles_missing_vault_arg(populated_vault: Path):
         [sys.executable, "-m", "symbiosis_brain", "pre-action-recall"],
         input="{}",
         capture_output=True, text=True, timeout=10,
-    )
+     encoding="utf-8")
     assert proc.returncode == 0  # NOT 2
     assert proc.stdout.strip() == ""
 

@@ -31,7 +31,7 @@ def run_one(worker_path: Path, worker_idx: int) -> dict:
             text=True,
             timeout=TIMEOUT_S,
             cwd=str(worker_path.parent),
-        )
+         encoding="utf-8")
         wall = round(time.perf_counter() - t_spawn, 3)
         if proc.returncode != 0:
             return {

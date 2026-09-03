@@ -78,13 +78,13 @@ def test_stale_lock_is_reclaimed(tmp_path):
     lockfile = _lock_path_for(vault, "wiki/n.md")
     # Pre-create a stale lock (mtime 120s old)
     lockfile.parent.mkdir(parents=True, exist_ok=True)
-    lockfile.write_text("99999\n0\n")
+    lockfile.write_text("99999\n0\n", encoding="utf-8")
     old = time.time() - 120
     os.utime(lockfile, (old, old))
 
     # Acquire with timeout_s=60 should succeed (stale)
     with note_write_lock(vault, "wiki/n.md", timeout_s=60):
-        contents = lockfile.read_text()
+        contents = lockfile.read_text(encoding="utf-8")
         assert str(os.getpid()) in contents
     assert not lockfile.exists()
 

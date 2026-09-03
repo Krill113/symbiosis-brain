@@ -52,7 +52,7 @@ def acquire_lock(scope: str, timeout_s: int = 30) -> bool:
         fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return False  # another process won the race
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(f"{os.getpid()}\n{int(time.time())}\n")
     return True
 

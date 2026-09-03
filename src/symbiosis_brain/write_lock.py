@@ -70,7 +70,7 @@ def note_write_lock(
             continue
 
         # Acquired
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(f"{os.getpid()}\n{int(time.time())}\n")
         try:
             yield

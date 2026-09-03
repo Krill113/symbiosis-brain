@@ -22,16 +22,21 @@ import pytest
 # drops BOTH memory and route hits.
 #
 # This is an OS-independent unit test of the EMIT path: it monkeypatches
-# sys.stdout to a STRICT utf-8 text wrapper (mirroring the production
-# stdout.reconfigure(encoding="utf-8") whose errors default to 'strict'), feeds
-# a payload whose one hit's gist contains a lone surrogate plus a SECOND clean
-# hit, and asserts the emit does not raise AND the clean hit survives.
+# sys.stdout to a STRICT utf-8 text wrapper, feeds a payload whose one hit's
+# gist contains a lone surrogate plus a SECOND clean hit, and asserts the emit
+# does not raise AND the clean hit survives.
+#
+# The fixture is deliberately STRICTER than production: __main__.py:190 uses
+# errors="backslashreplace", which never raises on a lone surrogate. Proving the
+# emit survives errors='strict' therefore proves it under the real policy too —
+# but the two are not the same thing, and an earlier version of this comment
+# claimed production defaults to 'strict', which it does not.
 
 
 def test_emit_json_with_lone_surrogate_does_not_crash_and_keeps_clean_hit(monkeypatch):
     from symbiosis_brain.__main__ import _emit_json
 
-    # Strict utf-8 stdout, exactly like the production reconfigure (errors='strict').
+    # Strict utf-8 stdout — stricter than production (see the module comment).
     buf = io.BytesIO()
     fake_stdout = io.TextIOWrapper(buf, encoding="utf-8", errors="strict",
                                    write_through=True)
@@ -108,7 +113,7 @@ def test_cli_search_gist_returns_json(tmp_vault_with_taxonomy: Path, sb_home: Pa
          "--query", "X",
          "--limit", "5"],
         capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
     assert isinstance(data, list)
@@ -126,7 +131,7 @@ def test_cli_search_gist_empty_vault_returns_empty_list(tmp_vault_with_taxonomy:
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "nothing", "--limit", "5"],
         capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data == []
@@ -190,7 +195,7 @@ def test_search_gist_no_flag_returns_bare_list(tmp_vault_with_taxonomy: Path,
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "BC", "--limit", "5"],
         capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
     # Bare list, NOT an envelope dict.
@@ -211,7 +216,7 @@ def test_search_gist_missing_vault_no_flag_returns_bare_empty_list(tmp_path: Pat
          "--vault", str(tmp_path / "does-not-exist"),
          "--query", "x"],
         capture_output=True, text=True, timeout=30, env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert json.loads(result.stdout) == []
 
@@ -232,7 +237,7 @@ def test_search_gist_envelope_under_prompt_from_stdin(tmp_vault_with_taxonomy: P
          "--prompt-from-stdin", "--limit", "5"],
         input=payload, capture_output=True, text=True, timeout=60,
         env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
     assert isinstance(out, dict)
@@ -250,7 +255,7 @@ def test_search_gist_envelope_under_explicit_envelope_flag(tmp_vault_with_taxono
          "--vault", str(tmp_vault_with_taxonomy),
          "--query", "anything", "--envelope"],
         capture_output=True, text=True, timeout=60, env=_hermetic_env(sb_home),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
     assert isinstance(out, dict)
@@ -272,7 +277,7 @@ def test_search_gist_stdin_prompt_not_truncated_with_embedded_quote(tmp_path: Pa
          "--vault", str(tmp_path), "--prompt-from-stdin", "--skip-memory"],
         input=payload, capture_output=True, text=True, timeout=30,
         env=_hermetic_env(sb_home, OSTYPE="win32"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
     assert isinstance(out, dict)
@@ -311,7 +316,7 @@ def _run_envelope_with_home_config(tmp_path, cfg_overrides):
         [sys.executable, "-m", "symbiosis_brain", "search-gist",
          "--vault", str(tmp_path), "--prompt-from-stdin", "--skip-memory"],
         input=payload, capture_output=True, text=True, timeout=30, env=env,
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
     assert isinstance(out, dict)
@@ -562,7 +567,7 @@ def _run_envelope_recall(vault: Path, tmp_path: Path, tmp_dir: Path, *,
         input=json.dumps({"prompt": prompt}),
         capture_output=True, text=True, timeout=180,
         env=_isolated_env(tmp_path, tmp_dir),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     out = json.loads(result.stdout)
     assert isinstance(out, dict), out
@@ -663,7 +668,7 @@ def test_legacy_bare_list_shape_unchanged(tmp_path: Path):
              "--vault", str(vault), "--query", _RECALL_TOKEN,
              "--limit", "2", "--session-id", "legacy-sess"],
             capture_output=True, text=True, timeout=180, env=env,
-        )
+         encoding="utf-8")
         assert r.returncode == 0, f"stderr: {r.stderr}"
         data = json.loads(r.stdout)
         assert isinstance(data, list), data
@@ -717,7 +722,7 @@ def test_legacy_bare_list_path_logs_as_legacy_gist(tmp_vault_with_taxonomy: Path
          "--limit", "5", "--hook-started-at", micros],
         capture_output=True, text=True, timeout=120,
         env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert isinstance(json.loads(result.stdout), list)      # byte-shape unchanged
     rows = _log_rows(tmp_vault_with_taxonomy)
@@ -742,7 +747,7 @@ def test_envelope_path_logs_as_hook_prompt_with_session_and_origin(
          "--session-id", "sid-9", "--limit", "5", "--hook-started-at", micros],
         input=json.dumps(payload), capture_output=True, text=True, timeout=120,
         env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert "memory_hits" in json.loads(result.stdout)
     rows = _log_rows(tmp_vault_with_taxonomy)
@@ -777,7 +782,7 @@ def test_hook_started_at_garbage_leaves_e2e_null_and_recall_alive(
              "--limit", "5", "--hook-started-at", value],
             capture_output=True, text=True, timeout=120,
             env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
-        )
+         encoding="utf-8")
         assert result.returncode == 0, f"{value!r}: {result.stderr}"
         assert len(json.loads(result.stdout)) >= 1, f"{value!r} emptied recall"
         rows = _log_rows(tmp_vault_with_taxonomy)
@@ -795,7 +800,7 @@ def test_unknown_flag_from_a_newer_hook_does_not_kill_recall(
          "--limit", "5", "--some-flag-from-2027", "42"],
         capture_output=True, text=True, timeout=120,
         env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert len(json.loads(result.stdout)) >= 1
 
@@ -808,7 +813,7 @@ def test_env_switch_off_silences_the_hook_paths(tmp_vault_with_taxonomy: Path,
          "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets", "--limit", "5"],
         capture_output=True, text=True, timeout=120,
         env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="off"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert len(json.loads(result.stdout)) >= 1
     assert _log_rows(tmp_vault_with_taxonomy) == []
@@ -827,7 +832,7 @@ def test_file_switch_off_reaches_the_legacy_path_too(tmp_vault_with_taxonomy: Pa
          "--vault", str(tmp_vault_with_taxonomy), "--query", "widgets", "--limit", "5"],
         capture_output=True, text=True, timeout=120,
         env=_hermetic_env(sb_home, SYMBIOSIS_BRAIN_RETRIEVAL_LOG="on"),
-    )
+     encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert len(json.loads(result.stdout)) >= 1
     assert _log_rows(tmp_vault_with_taxonomy) == []

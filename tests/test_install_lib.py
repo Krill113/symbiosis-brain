@@ -151,8 +151,8 @@ def test_scaffold_vault_idempotent_preserves_existing_content(tmp_path):
     (vault / "README.md").write_text(custom_readme, encoding="utf-8")
 
     install_lib.scaffold_vault(vault)  # second call
-    assert (vault / "global" / "decisions" / "foo.md").read_text() == "# Foo"
-    assert (vault / "README.md").read_text() == custom_readme
+    assert (vault / "global" / "decisions" / "foo.md").read_text(encoding="utf-8") == "# Foo"
+    assert (vault / "README.md").read_text(encoding="utf-8") == custom_readme
 
 
 def test_merge_settings_writes_full_block_in_empty_settings(tmp_path):
@@ -164,7 +164,7 @@ def test_merge_settings_writes_full_block_in_empty_settings(tmp_path):
         statusline_cmd="bash ~/.claude/hooks/sb-statusline.sh",
         permissions=["mcp__symbiosis-brain__brain_read"],
     )
-    data = json.loads(settings.read_text())
+    data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["statusLine"]["command"] == "bash ~/.claude/hooks/sb-statusline.sh"
     # All six live hook events are wired
     for event in ("SessionStart", "Stop", "PreCompact", "UserPromptSubmit",
@@ -195,7 +195,7 @@ def test_merge_settings_seeds_paths_and_does_not_clobber_user_env(tmp_path):
         vault_path="/home/u/my-vault",
         tools_path="/opt/symbiosis-brain",
     )
-    env = json.loads(settings.read_text())["env"]
+    env = json.loads(settings.read_text(encoding="utf-8"))["env"]
     assert env["SYMBIOSIS_BRAIN_VAULT"] == "/home/u/my-vault"
     assert env["SYMBIOSIS_BRAIN_TOOLS"] == "/opt/symbiosis-brain"
     # Non-clobbering: the user's tuned threshold is preserved, not reset to the default
@@ -215,7 +215,7 @@ def test_merge_settings_preserves_user_statusline_in_env(tmp_path):
         statusline_cmd="bash ~/.claude/hooks/sb-statusline.sh",
         permissions=[],
     )
-    data = json.loads(settings.read_text())
+    data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["env"]["SYMBIOSIS_BRAIN_USER_STATUSLINE_CMD"] == "bash ~/my-status.sh"
 
 
@@ -232,7 +232,7 @@ def test_merge_settings_idempotent(tmp_path):
         statusline_cmd="bash ~/.claude/hooks/sb-statusline.sh",
         permissions=["mcp__sb__a"],
     )
-    data = json.loads(settings.read_text())
+    data = json.loads(settings.read_text(encoding="utf-8"))
     # Permissions list is deduplicated
     assert data["permissions"]["allow"].count("mcp__sb__a") == 1
 

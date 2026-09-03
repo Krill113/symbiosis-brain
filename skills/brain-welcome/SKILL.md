@@ -53,7 +53,7 @@ Print:
 не пропадёт.
 ````
 
-Wait for answer. Then write `wiki/CRITICAL_FACTS.md` via `brain_write` with
+Wait for answer. Then write `CRITICAL_FACTS.md` via `brain_write` with
 frontmatter (`scope: global`, `type: wiki`, `tags: [user-profile, bootstrap, critical]`,
 `title: Critical Facts — User Profile`, `gist: <≤80 chars summary>`) and body
 distilled from the user's answer (≤150 tokens, role + stack + active projects + key strength).
@@ -122,5 +122,5 @@ brain-welcome never runs again on this vault.
 
 - If skill crashes during Step 2, marker is NOT written → next session retries.
 - If marker present, skill exits silently on Step 0 — even when invoked manually.
-- If `wiki/CRITICAL_FACTS.md` already exists when skill runs → skip Step 2's write,
+- If `CRITICAL_FACTS.md` already exists when skill runs → skip Step 2's write,
   re-confirm to user: "вижу что CRITICAL_FACTS уже есть, обновим вручную если нужно".

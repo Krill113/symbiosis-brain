@@ -81,24 +81,77 @@ def test_has_marker_returns_false_when_absent(tmp_path):
 def test_scaffold_vault_creates_structure(tmp_path):
     vault = tmp_path / "v"
     install_lib.scaffold_vault(vault)
-    for d in ("projects", "wiki", "decisions", "patterns", "mistakes",
-              "feedback", "research", "reference"):
+    for d in ("reference", "global/wiki", "global/decisions", "global/patterns",
+              "global/mistakes", "global/feedback", "global/research",
+              "global/reference", "global/projects"):
         assert (vault / d).is_dir()
     assert (vault / "README.md").exists()
     assert (vault / "reference" / "scope-taxonomy.md").exists()
     assert (vault / "MEMORY.md").exists()
 
 
+def test_scaffold_vault_creates_scope_first_layout(tmp_path):
+    """A fresh vault starts in the layout the product actually uses.
+
+    Seeding the pre-2026-09 top-level type folders taught a new user a layout
+    the vault had already left, and left eight empty directories they had to
+    reason about on day one.
+    """
+    vault = tmp_path / "v"
+    install_lib.scaffold_vault(vault)
+
+    for legacy in ("projects", "wiki", "decisions", "patterns",
+                   "mistakes", "feedback", "research"):
+        assert not (vault / legacy).exists(), f"legacy top-level {legacy}/ was seeded"
+    # reference/ is not legacy: it holds the taxonomy SSOT at a hardcoded path.
+    assert (vault / "reference" / "scope-taxonomy.md").exists()
+    assert (vault / "global" / "decisions").is_dir()
+
+
+def test_scaffold_vault_leaves_a_pre_reorg_vault_untouched(tmp_path):
+    """A vault that already has the old layout keeps it, contents and all.
+
+    Seeding changed for fresh vaults only. Nothing removes what a vault built
+    before the 2026-09 reorg contains, and scaffold_vault runs again on every
+    repair — so this is a promise about someone else's notes, which makes it
+    worth a test rather than a sentence in a description.
+    """
+    vault = tmp_path / "v"
+    legacy_note = vault / "projects" / "alpha-seti.md"
+    legacy_note.parent.mkdir(parents=True)
+    legacy_note.write_text("# card", encoding="utf-8")
+
+    install_lib.scaffold_vault(vault)
+
+    assert legacy_note.read_text(encoding="utf-8") == "# card"
+    assert (vault / "projects").is_dir()
+
+
+def test_scaffold_vault_seeds_a_taxonomy_every_loader_can_read(tmp_path):
+    """The starter taxonomy has to satisfy both loaders, not just the scope one.
+
+    lint reads the folder-to-type table on every run, so a starter file without
+    that section made brain_lint raise ValueError on a brand-new vault.
+    """
+    from symbiosis_brain import taxonomy
+
+    vault = tmp_path / "v"
+    install_lib.scaffold_vault(vault)
+
+    assert "global" in taxonomy.load_valid_scopes(vault)
+    assert taxonomy.load_folder_type_map(vault)["decisions"] == "decision"
+
+
 def test_scaffold_vault_idempotent_preserves_existing_content(tmp_path):
     vault = tmp_path / "v"
     install_lib.scaffold_vault(vault)
     # User adds content
-    (vault / "projects" / "foo.md").write_text("# Foo", encoding="utf-8")
+    (vault / "global" / "decisions" / "foo.md").write_text("# Foo", encoding="utf-8")
     custom_readme = "# my custom readme"
     (vault / "README.md").write_text(custom_readme, encoding="utf-8")
 
     install_lib.scaffold_vault(vault)  # second call
-    assert (vault / "projects" / "foo.md").read_text() == "# Foo"
+    assert (vault / "global" / "decisions" / "foo.md").read_text() == "# Foo"
     assert (vault / "README.md").read_text() == custom_readme
 
 

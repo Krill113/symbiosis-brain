@@ -24,7 +24,7 @@ from symbiosis_brain.search import (
     dedup_candidates,
 )
 from symbiosis_brain.storage import Storage
-from symbiosis_brain.sync import VAULT_DIRS, SyncResult, VaultSync
+from symbiosis_brain.sync import SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
 from symbiosis_brain.markdown_parser import parse_note, render_note, merge_frontmatter
 from symbiosis_brain.lint import VaultLinter
@@ -1320,9 +1320,19 @@ def main():
 
     vault_path = Path(args.vault).expanduser().resolve()
     if not vault_path.exists():
-        vault_path.mkdir(parents=True)
-        for d in VAULT_DIRS:
-            (vault_path / d).mkdir(parents=True, exist_ok=True)
+        # Building a vault here masked the two likeliest causes — an unmounted
+        # drive and a typo in --vault — as an empty memory: the session connects,
+        # finds nothing, and the user reads that as a vault that lost its notes.
+        # doctor makes it worse by starting a second serve against the live vault,
+        # so a wrong path could be materialised by a routine health check. The
+        # tree this used to build was not even usable: it had no
+        # reference/scope-taxonomy.md, which every note write reads. Creating a
+        # vault is setup's job; serve only opens one.
+        raise SystemExit(
+            f"vault not found: {vault_path}\n"
+            "Run `symbiosis-brain setup claude-code` to create it, or check the "
+            "--vault path — an unmounted drive looks exactly like this."
+        )
 
     asyncio.run(_run_server(vault_path))
 

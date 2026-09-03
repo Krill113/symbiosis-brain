@@ -76,9 +76,15 @@ def has_marker(path: Path, marker: str) -> bool:
     return marker in path.read_text(encoding="utf-8")
 
 
-VAULT_FOLDERS = ("projects", "wiki", "decisions", "patterns",
-                 "mistakes", "feedback", "research", "reference",
-                 # scope-first canon (2026-09 reorg); legacy dirs stay for transition
+VAULT_FOLDERS = (# reference/ is NOT a legacy type folder: reference/scope-taxonomy.md is the
+                 # taxonomy SSOT at a path hardcoded in taxonomy.py, lint.py, report.py,
+                 # storage.py and the doctor health-check. Seeding it is what lets
+                 # scaffold_vault write the starter taxonomy below.
+                 "reference",
+                 # scope-first canon (2026-09 reorg). The pre-reorg top-level type
+                 # folders are no longer seeded: a fresh vault starts in the layout
+                 # the product uses. Existing vaults keep theirs — nothing deletes
+                 # them, and both layouts stay readable (see sync.VAULT_DIRS).
                  "global/wiki", "global/decisions", "global/patterns", "global/mistakes",
                  "global/feedback", "global/research", "global/reference", "global/projects")
 

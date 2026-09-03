@@ -66,7 +66,7 @@ Use `brain_write`:
 
 ```python
 brain_write(
-    path=f"projects/{scope}.md",
+    path=f"{scope}/{scope}.md",
     title=<project name from PROJECT_PATH basename>,
     note_type="project",
     scope=scope,
@@ -109,7 +109,7 @@ In `mode=recovery`: try `brain_search` for the same scope first. If a previous d
 Read `vault/reference/scope-taxonomy.md`. Find the `## Whitelist` table. If a row already starts with `` | `<scope>` `` → leave it (idempotent, no duplicate). Otherwise, append a row matching the existing column layout:
 
 ```
-| `<scope>` | <kind> | <one-line description from answer 1> | [[projects/<scope>]] |
+| `<scope>` | <kind> | <one-line description from answer 1> | [[<scope>/<scope>]] |
 ```
 
 `<kind>` defaults to `product`; use `umbrella-member` if `umbrella` is set, `umbrella` if this scope is itself a parent. Use Edit tool — DO NOT call `brain_write` (that creates new note). Insert the new row alphabetically, before the `## Антипаттерны` heading.
@@ -143,10 +143,10 @@ Always run this — even on errors. Use a `trap`-equivalent: wrap Steps 3-6 such
 ### Step 8: Brief confirmation
 
 Single line:
-> ✓ Scope `<scope>` зарегистрирован. Карточка [[projects/<scope>]], маркер в CLAUDE.md.
+> ✓ Scope `<scope>` зарегистрирован. Карточка [[<scope>/<scope>]], маркер в CLAUDE.md.
 
 In draft mode:
-> ✓ Scope `<scope>` зарегистрирован в режиме draft. Дополни `## Зачем` в [[projects/<scope>]] когда руки дойдут.
+> ✓ Scope `<scope>` зарегистрирован в режиме draft. Дополни `## Зачем` в [[<scope>/<scope>]] когда руки дойдут.
 
 Do NOT continue dialogue. Control returns to brain-init.
 

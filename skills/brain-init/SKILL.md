@@ -74,7 +74,7 @@ The CLI returns one of:
 | `marker_future`  | marker version ≥ 2 (newer client wrote it) | run `brain-project-init` with `mode=migration`        |
 | `hook`           | no marker found, fell back to basename     | check vault — see Step 3.1                            |
 
-If `source=marker_v1` AND `marker_status=draft`: scope is provisional. Read `projects/<scope>.md` — if `## Зачем` body is `TODO`, prompt the user to flesh it out (one short message, single attempt; don't pester).
+If `source=marker_v1` AND `marker_status=draft`: scope is provisional. Read `<scope>/<scope>.md (legacy fallback: projects/<scope>.md)` — if `## Зачем` body is `TODO`, prompt the user to flesh it out (one short message, single attempt; don't pester).
 
 #### Step 3.1: Vault check when source=hook
 
@@ -84,7 +84,7 @@ Call `brain_list(scope=<scope>)`.
 
 ### Step 4: Load project context (L1)
 
-Call `brain_read("projects/<scope>.md")` directly — deterministic single-file read, no ranking. The project card is the single-source-of-truth for the scope (Roadmap, Current Status, Recent decisions, Active initiatives, Handoff sections). **Keep the loaded content in working memory for Steps 4.5 and 4.6 — do not re-read.**
+Call `brain_read("<scope>/<scope>.md (legacy fallback: projects/<scope>.md)")` directly — deterministic single-file read, no ranking. The project card is the single-source-of-truth for the scope (Roadmap, Current Status, Recent decisions, Active initiatives, Handoff sections). **Keep the loaded content in working memory for Steps 4.5 and 4.6 — do not re-read.**
 
 Budget: typically 1-3K tokens. If the card is unusually large (>15K bytes / ~4K tokens) — note it and skip the umbrella search in Step 4.5 to stay within budget.
 
@@ -112,7 +112,7 @@ Format reference: [[wiki/handoff-pattern]] (4 bullets: shipped / WIP / parked / 
 
 The following pathological states are handled silently in priority order:
 
-- **Marker missing, `projects/<scope>.md` exists** → propose: "Маркер CLAUDE.md потерялся, восстановить из vault?". On yes, write marker via Edit (append at EOF). One question max. **Marker format** (single line, comma-separated `key=value` pairs):
+- **Marker missing, `<scope>/<scope>.md (legacy fallback: projects/<scope>.md)` exists** → propose: "Маркер CLAUDE.md потерялся, восстановить из vault?". On yes, write marker via Edit (append at EOF). One question max. **Marker format** (single line, comma-separated `key=value` pairs):
   ```
   <!-- symbiosis-brain v1: scope=<scope>[, umbrella=<umbrella>][, status=<status>] -->
   ```
@@ -120,7 +120,7 @@ The following pathological states are handled silently in priority order:
   - `<!-- symbiosis-brain v1: scope=symbiosis-brain -->` (no umbrella)
   - `<!-- symbiosis-brain v1: scope=acme-net, umbrella=acme -->` (with umbrella)
   - `<!-- symbiosis-brain v1: scope=newscope, status=draft -->` (provisional)
-- **Marker present, `projects/<scope>.md` missing** → run `brain-project-init` with `mode=recovery` and pre-filled scope/umbrella from the marker. Skill should NOT re-ask "зачем" — read it from history if found, otherwise fall back to draft mode.
+- **Marker present, `<scope>/<scope>.md (legacy fallback: projects/<scope>.md)` missing** → run `brain-project-init` with `mode=recovery` and pre-filled scope/umbrella from the marker. Skill should NOT re-ask "зачем" — read it from history if found, otherwise fall back to draft mode.
 - **Marker version ≥ 2 (future client)** → run `brain-project-init` with `mode=migration`. Tell the user: "Маркер написан более новой версией Symbiosis Brain. Запускаю миграцию".
 - **Marker scope ≠ frontmatter scope (drift)** → vault wins. Use frontmatter scope. Tell the user once: "Маркер CLAUDE.md устарел (`<old>` → `<new>`), исправить?". Apply on yes.
 

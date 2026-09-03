@@ -13,8 +13,10 @@ use» is a skill; a skill whose body is one command is a script.
 
 ## 2. Script (tier 1)
 
-- Location: your own tooling directory (`<workspace>/tools/<class-level-name>.<ps1|py|sh>`)
-  for cross-project tooling; the target repo's `tools/` when it belongs to one project.
+- Location: the vault tools store — `<vault>/global/files/tools/<class-level-name>.<ps1|py|sh>`
+  for cross-project tooling, `<vault>/<scope>/files/tools/` when it serves one project;
+  the target repo's `tools/` only when the script must ship with the repo. The vault store
+  is git-synced (backup for free) and lives next to tool-routing, which references it.
 - Windows default: PowerShell or Python (bash tool here is Git-bash; MSYS mangles
   `/flags` and paths). Bash only for hook-adjacent work.
 - Shape: arguments, `--help` / comment header with purpose and an example call,

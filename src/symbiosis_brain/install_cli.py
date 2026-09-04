@@ -643,6 +643,16 @@ def _pid_is_alive(pid: int) -> bool | None:
     return None
 
 
+# Minutes a search waits on the reindex lock, and after how long the lock is
+# broken automatically. These mirror search._REINDEX_LOCK_WAIT_S and
+# _REINDEX_LOCK_STALE_S, restated rather than imported because importing
+# search pulls numpy into a command that must stay light. Restating a number is
+# how two numbers start disagreeing, so a test asserts these still match the
+# originals — the duplicate is allowed, the drift is not.
+_REINDEX_WAIT_MIN = 3
+_REINDEX_STALE_MIN = 30
+
+
 def _report_reindex_lock(vault: Path) -> int:
     """Print the reindex lock's state. Returns 1 if it is an issue, else 0.
 
@@ -675,8 +685,17 @@ def _report_reindex_lock(vault: Path) -> int:
         print(f"✓ Reindex lock   held {mins}m by live pid {pid} (reindex in progress)")
         return 0
     if alive is False:
+        # Says what it costs and what happens next, rather than only "delete
+        # this". The check itself was right on its first live run — 29 minutes
+        # of a dead pid holding the lock — but the advice beside it was not: the
+        # lock is swept automatically at the stale threshold, so "delete it" as
+        # a bare imperative invents an urgency that is not there. Tests could
+        # not catch that; they ask whether the state is detected, never whether
+        # the sentence about it is true.
         print(f"✗ Reindex lock   HELD {mins}m by pid {pid}, which is NOT running"
-              f" — every search waits on it; delete {lockfile}")
+              f" — every search waits up to {_REINDEX_WAIT_MIN}m on it."
+              f" It is broken automatically at {_REINDEX_STALE_MIN}m;"
+              f" delete {lockfile} now if you would rather not wait")
         return 1
     # Unknown is reported as unknown. Saying "no process holds it" from the file's
     # age alone is a guess, and acting on that guess deletes a live process's lock.

@@ -159,6 +159,17 @@ class TestReindexLock:
             str(vault / ".index" / "brain.db").encode()).hexdigest()[:12]
         return Path(tempfile.gettempdir()) / f"sb-reindex-{tag}.lock"
 
+    def test_the_durations_it_quotes_match_the_ones_search_enforces(self):
+        """doctor restates search's two timeouts instead of importing them, so
+        the command stays free of numpy. A restated number is one that can drift
+        away from the original silently, and a message quoting the wrong
+        threshold is worse than one quoting none: the reader would wait for a
+        sweep that comes later, or delete a lock that was about to clear."""
+        from symbiosis_brain import search
+
+        assert install_cli._REINDEX_WAIT_MIN == search._REINDEX_LOCK_WAIT_S // 60
+        assert install_cli._REINDEX_STALE_MIN == search._REINDEX_LOCK_STALE_S // 60
+
     def test_lock_held_by_a_dead_pid_is_an_issue(self, tmp_path: Path, capsys):
         """Every search waits on this lock before giving up, so one left behind
         is minutes of silence per query with nothing on screen to explain it."""

@@ -47,12 +47,12 @@ For each scope bucket — dispatch one `Agent` (subagent_type=Explore) in parall
      - `wiki` — what reader learns
      - `reference` — where to look + why
    - Don't duplicate title. Don't write "what's inside" — write "what this note enables".
-3. **Insert `gist:` line into frontmatter via direct file `Edit`** (NOT `brain_patch` — it operates on body only, server strips frontmatter before matching, so the closing `---` anchor is invisible to it):
-   - Vault path: `<SYMBIOSIS_BRAIN_VAULT>/<note-path>` (use the env var if set, else hardcoded vault path)
-   - Read the file via `Read` tool to confirm exact frontmatter format
-   - Use `Edit` tool: anchor on the LAST frontmatter field (e.g. `tags: [foo]\n---` or `valid_from: '2026-04-25'\n---`) — replace with `<same-field>\ngist: <generated>\n---`
-   - YAML escape: if gist contains `:`, single-quote the value (`gist: 'Spawn CAD: bg → DataModel'`); if it contains backslash, use single quotes too (avoid YAML `\X` invalid escape)
-4. After all files done, call `mcp__symbiosis-brain__brain_sync` ONCE to refresh the index. If it returns `database is locked`, the lock will clear after MCP restart — files on disk are correct.
+3. **Set the gist with `brain_patch`**, one call per note:
+   `mcp__symbiosis-brain__brain_patch(path="<note-path>", gist="<generated>")`
+   - Frontmatter fields are named arguments — `gist`, `tags`, `title`, `valid_to` and the rest. No anchor, and the body is not touched.
+   - **Do not hand-escape YAML.** The server serialises the value, so a gist containing `:` or a backslash needs nothing from you. Hand-escaping was required by the old `Edit` recipe and is exactly how one unquoted colon once broke `brain_sync` for the whole vault.
+   - `anchor` still cannot reach frontmatter, and that is deliberate rather than a gap — `gist:` occurs in bodies too, and substring edits break on quoting and folded values while leaving a file that still parses. See the reasoning in `server.py` beside the tool schema. Do not try to reach the YAML block with an anchor.
+4. No batch sync needed: `brain_patch` reindexes the note it wrote. Call `mcp__symbiosis-brain__brain_sync` only if you also changed files outside the tool.
 5. Report back which paths were backfilled.
 
 ### Step 4: Wait for all subagents to complete

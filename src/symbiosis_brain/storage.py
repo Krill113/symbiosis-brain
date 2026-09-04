@@ -125,9 +125,11 @@ class Storage:
         This migration triggers the existing `needs_full_reindex` mechanism
         once per vault: deletes the `wikilink_normalization_reindex` marker so
         the next `sync_all()` call sees needs_full_reindex=True, purges
-        relations + entities, NULLs content_hash, and rebuilds with the new
-        resolver. After that rebuild marks itself done, both markers stay set
-        and this migration is a no-op forever.
+        relations + entities, re-ingests every note (hashes and stamps intact —
+        the rebuild is forced by a flag on that run, not by NULLing hashes, as
+        of 2026-09-04), and rebuilds the graph with the new resolver. After
+        that rebuild marks itself done, both markers stay set and this
+        migration is a no-op forever.
         """
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -233,18 +235,38 @@ class Storage:
 
     def upsert_note(self, path: str, title: str, content: str, note_type: str, scope: str,
                     tags: list[str] | None = None, frontmatter: dict | None = None,
-                    valid_from: str | None = None, valid_to: str | None = None):
+                    valid_from: str | None = None, valid_to: str | None = None,
+                    content_hash: str | None = None):
+        """Insert or refresh one note row.
+
+        `updated_at` means "the file's content changed", not "the row was
+        written". The two used to be the same thing: every re-sync restamped
+        it, and a full reindex — which re-upserts the whole vault — left 1554
+        of 1632 notes carrying the day of the migration. Now the caller passes
+        the file's `content_hash` and the statement itself compares it with the
+        stored one: equal → the old stamp stays; different, or either side
+        unknown → restamped. `created_at` is never touched on conflict.
+        "Content" is the file's bytes, whoever changed them: when brain_rename
+        rewrites [[links]] in the notes that pointed at the moved one, those
+        notes did change and their stamp moves — a mechanical edit is an edit.
+
+        The hash is written here, in the same statement, rather than by a
+        follow-up UPDATE: the comparison needs the OLD hash still in the row,
+        and a second statement would have raced a parallel sync between the
+        two. A caller with no hash (a test seeding rows) keeps whatever hash
+        the row already has — it did not read the file, so it cannot vouch
+        for it.
+        """
         now = self._now()
         tags_json = json.dumps(tags or [])
         fm_json = json.dumps(frontmatter or {})
         # Single atomic statement avoids the SELECT-then-INSERT race that
         # causes UNIQUE-constraint failures when two processes concurrently
         # upsert the same path (e.g. parallel cold-starts on a fresh vault).
-        # created_at is preserved for existing rows via the excluded alias.
         self._conn.execute("""
             INSERT INTO notes (path, title, content, note_type, scope, tags, frontmatter,
-                created_at, updated_at, valid_from, valid_to)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_hash, created_at, updated_at, valid_from, valid_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 title=excluded.title,
                 content=excluded.content,
@@ -252,10 +274,17 @@ class Storage:
                 scope=excluded.scope,
                 tags=excluded.tags,
                 frontmatter=excluded.frontmatter,
-                updated_at=excluded.updated_at,
+                updated_at=CASE
+                    WHEN excluded.content_hash IS NOT NULL
+                         AND notes.content_hash = excluded.content_hash
+                    THEN notes.updated_at
+                    ELSE excluded.updated_at
+                END,
+                content_hash=COALESCE(excluded.content_hash, notes.content_hash),
                 valid_from=excluded.valid_from,
                 valid_to=excluded.valid_to
-        """, (path, title, content, note_type, scope, tags_json, fm_json, now, now, valid_from, valid_to))
+        """, (path, title, content, note_type, scope, tags_json, fm_json, content_hash,
+              now, now, valid_from, valid_to))
         self._conn.commit()
 
     def get_note(self, path: str) -> dict | None:
@@ -267,6 +296,49 @@ class Storage:
     def delete_note(self, path: str):
         self._conn.execute("DELETE FROM notes WHERE path=?", (path,))
         self._conn.commit()
+
+    def move_note(self, old_path: str, new_path: str) -> None:
+        """Re-key one note row under a new path, REPLACING any row already
+        there — not a safe primitive for a live note at `new_path`; the caller
+        must know that path holds no note. Everything else about the moved row
+        stays put — rowid, created_at, updated_at, content_hash, valid_from/to.
+
+        This is the primitive a rename was missing: with `path` as the primary
+        key and only upsert/delete available, every move was DELETE + INSERT,
+        and the INSERT stamped both dates with `now` (the 02.09 layout
+        migration re-aged 1525 notes this way). FTS follows on its own through
+        the `notes_au` trigger — same rowid, re-tokenized once.
+
+        A row already sitting at `new_path` is replaced, in the same
+        transaction. Both callers guarantee it is not a live note: brain_rename
+        has checked that no FILE exists there (a leftover DB row is drift), and
+        sync_all's pairing only names a path that is on disk but absent from
+        the DB — a row can only have appeared there through a concurrent
+        process running the old delete+insert code, stamped with fresh dates.
+        Replacing it with the moved row is exactly the outcome wanted in both
+        cases; a plain UPDATE would instead hit the UNIQUE path and raise after
+        the file had already moved on disk. BEGIN IMMEDIATE on this
+        autocommit connection (isolation_level=None, see __init__) makes the
+        two statements one unit, as the migrations and index_note already do.
+
+        NOT handled here, on purpose: the note's outgoing `relations` (a
+        scope-prefix link may resolve differently after the move, so the
+        caller deletes them by source and re-resolves — `_sync_wikilinks`
+        starts with that DELETE, which also clears whatever edges the replaced
+        row had) and its `notes_vec` row (vec0 refuses UPDATE on its primary
+        key, see SearchEngine.move_vec).
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute("DELETE FROM notes WHERE path=?", (new_path,))
+            self._conn.execute("UPDATE notes SET path=? WHERE path=?", (new_path, old_path))
+            self._conn.execute("COMMIT")
+        except Exception:
+            try:
+                self._conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def delete_relations_by_source(self, source_note: str):
         self._conn.execute("DELETE FROM relations WHERE source_note=?", (source_note,))
@@ -292,13 +364,14 @@ class Storage:
         if note_type:
             query += " AND note_type=?"
             params.append(note_type)
-        # Newest CLAIM first, not newest row. `updated_at` says when the row was
-        # last written, and a re-sync rewrites it for every note it touches — on
-        # the live vault it holds 4 distinct values across 1632 notes, so it
-        # ordered nothing. `valid_from` lives in the file and survives. SQLite
-        # sorts NULL below every value, so DESC already puts undated notes last;
-        # NULLIF folds the empty string into that same bucket. `updated_at` stays
-        # as the tiebreaker, which is all it was ever fit for.
+        # Newest CLAIM first, not newest row. `updated_at` now moves only when
+        # the content does, but it dates the file, not the claim — and when this
+        # ordering was chosen a re-sync still rewrote it for every note it
+        # touched (4 distinct values across 1632 notes on the live vault, so it
+        # ordered nothing). `valid_from` lives in the file and says what the
+        # reader asks. SQLite sorts NULL below every value, so DESC already puts
+        # undated notes last; NULLIF folds the empty string into that same
+        # bucket. `updated_at` stays as the tiebreaker.
         query += " ORDER BY NULLIF(valid_from, '') DESC, updated_at DESC"
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_note(r) for r in rows]

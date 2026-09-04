@@ -94,11 +94,12 @@ class TestNotesCRUD:
 
 class TestListNotesOrdering:
     """The order `brain_list` returns had no test at all, and `ORDER BY
-    updated_at DESC` had quietly stopped ordering anything: that column records
-    when the row was last written, and a re-sync rewrites it for every note it
-    touches — 4 distinct values across 1632 notes on the live vault. Newest
-    claim first is what a reader asks for, and `valid_from` is the only stamp
-    that survives, so it leads and `updated_at` is left as the tiebreaker."""
+    updated_at DESC` had quietly stopped ordering anything: at the time a
+    re-sync rewrote that column for every note it touched — 4 distinct values
+    across 1632 notes on the live vault. `updated_at` now moves only when the
+    content does, but it still dates the file, not the claim; newest claim
+    first is what a reader asks for, so `valid_from` leads and `updated_at`
+    stays the tiebreaker."""
 
     def test_newest_claim_first_undated_last(self, db_path: Path):
         storage = Storage(db_path)
@@ -112,8 +113,8 @@ class TestListNotesOrdering:
                                 note_type="wiki", scope="global",
                                 valid_from=valid_from)
         # Every row was written within the same instant, so `updated_at` cannot
-        # be what separates them — which is exactly the state the whole vault is
-        # in after a rebuild.
+        # be what separates them — the state the whole vault was in after the
+        # 02.09 rebuild.
         order = [n["path"] for n in storage.list_notes()]
         assert order[:3] == ["w/newest.md", "w/middle.md", "w/older.md"]
         assert order[3] == "w/undated.md", "a note with no date sorts last, not first"

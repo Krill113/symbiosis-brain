@@ -511,3 +511,27 @@ class Storage:
 
     def close(self):
         self._conn.close()
+
+
+def vector_drift(conn) -> tuple[int, int] | None:
+    """`(notes, notes_vec)` — or None when there is no vector table to compare.
+
+    One definition, two readers: brain_status reports it to a person, doctor
+    turns it into a pass/fail. Counting the same thing twice in two places is
+    how the two answers start disagreeing, and on 2026-09-02 the disagreement
+    that mattered was between "All OK" and a notes_vec of zero — semantic
+    search dead, every surface reporting health.
+
+    Takes a connection rather than a path so the caller decides what it opened.
+    Doctor must NOT construct a Storage: that runs migrations, and an
+    instrument that changes what it inspects is not a diagnostic.
+    """
+    try:
+        notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        vec = conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0]
+    except sqlite3.Error:
+        # No notes_vec at all (vector support off, or a database built before
+        # it existed). "Nothing to compare" is not "in sync" and must not be
+        # rendered as either.
+        return None
+    return int(notes), int(vec)

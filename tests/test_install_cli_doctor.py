@@ -90,6 +90,15 @@ def _green_install(tmp_path, monkeypatch):
         "statusLine": {"command": "bash ~/.claude/hooks/sb-statusline.sh"},
         "permissions": {"allow": list(install_cli.SB_PERMISSIONS)},
     })
+    # Compiled action rules are part of being healthy, not an extra: `setup`
+    # compiles them (install_cli.py:474-475), so a real green install always has
+    # this file. Without it the fixture modelled an install that had never been
+    # set up while claiming to model a healthy one — which only became visible
+    # once doctor learned to look.
+    index_dir = tmp_path / "vault" / ".index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    install_lib.atomic_write_json(index_dir / "action-rules.meta.json",
+                                  {"rules_total": 3, "rules_compiled": 3})
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("<!-- symbiosis-brain v1: global -->\n", encoding="utf-8")
 

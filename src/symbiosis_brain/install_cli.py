@@ -27,7 +27,8 @@ for _stream in (sys.stdout, sys.stderr):
         except (AttributeError, OSError):
             pass
 
-from symbiosis_brain import install_lib, sqlite_health
+from symbiosis_brain import action_rules, install_lib, sqlite_health
+from symbiosis_brain import storage as storage_mod
 
 DEFAULT_VAULT = Path.home() / "symbiosis-brain-vault"
 
@@ -514,6 +515,176 @@ def cmd_setup(args):
     )
 
 
+def _report_action_rules(vault: Path) -> int:
+    """Whether the recall rules were compiled at all. Returns 1 if an issue.
+
+    The matcher check above asks whether the hook is wired; this asks whether
+    it has anything to say. Only the first was ever made, so an install with
+    zero compiled rules printed a green "Action-recall OK" while recall did
+    nothing — the report was about the plumbing and read as being about the
+    water.
+    """
+    meta_path = vault / ".index" / action_rules.META_BASENAME
+    if not meta_path.exists():
+        print("✗ Action rules   NONE COMPILED (no action-rules.meta.json)"
+              " — run `symbiosis-brain compile-action-rules`")
+        return 1
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        compiled = int(meta.get("rules_compiled") or 0)
+        total = int(meta.get("rules_total") or 0)
+    except Exception as e:
+        # Unreadable is not healthy. An OK here would be the exact defect this
+        # section exists to remove.
+        print(f"⚠ Action rules   cannot read {meta_path.name}: {e}")
+        return 0
+    if compiled == 0:
+        print(f"✗ Action rules   NONE COMPILED ({total} declared)"
+              " — run `symbiosis-brain compile-action-rules`")
+        return 1
+    if compiled < total:
+        print(f"✗ Action rules   PARTIAL ({compiled} of {total} compiled)"
+              " — run `symbiosis-brain compile-action-rules`")
+        return 1
+    print(f"✓ Action rules   OK ({compiled} compiled)")
+    return 0
+
+
+def _report_vector_index(vault: Path) -> int:
+    """Whether every note is in the vector index. Returns 1 if an issue.
+
+    On 2026-09-02 every surface reported health while notes_vec was empty and
+    semantic search was dead: outside brain_status, which a person has to think
+    to run, nothing compared the two counts.
+
+    Read-only, and deliberately NOT through Storage — that runs migrations, and
+    an instrument that changes what it inspects is not a diagnostic.
+    """
+    db_path = vault / ".index" / "brain.db"
+    try:
+        ro = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        try:
+            drift = storage_mod.vector_drift(ro)
+        finally:
+            ro.close()
+    except Exception as e:
+        print(f"⚠ Vector index   cannot read: {e}")
+        return 0
+    if drift is None:
+        # Not "there is no index": this connection could not ask. Saying the
+        # stronger thing is how the first version of this check announced an
+        # empty index against a vault holding 1628 of them.
+        print("⚠ Vector index   could not be read (sqlite-vec unavailable here)")
+        return 0
+    notes, vec = drift
+    if notes != vec:
+        print(f"✗ Vector index   INCOMPLETE ({notes} notes, {vec} indexed)"
+              " — semantic search is degraded; restart the server to rebuild")
+        return 1
+    print(f"✓ Vector index   OK ({vec} of {notes} indexed)")
+    return 0
+
+
+def _pid_is_alive(pid: int) -> bool | None:
+    """True / False / None when it cannot be told.
+
+    NOT `os.kill(pid, 0)`. That is the POSIX idiom for "does this process
+    exist", but Windows has no signals and CPython implements os.kill there
+    through TerminateProcess — the argument is an exit code, not a no-op. The
+    POSIX one-liner would therefore KILL the process doctor came to ask about.
+    search.py:431 says the same thing, which is the only reason this was caught
+    before it ran. Do not "simplify" this back.
+
+    Two Windows details, each of which silently empties the check:
+
+    * argtypes/restype are mandatory — without them ctypes truncates the handle
+      on x64 and the answer becomes meaningless (see the vault note on the
+      vacuous None test).
+    * ERROR_ACCESS_DENIED means the process EXISTS and belongs to someone else.
+      Reading any zero handle as "gone" declares a live foreign process dead.
+
+    Caveat no API can remove: pids are reused, so a match is not proof that
+    this is the same process that wrote the file.
+    """
+    if pid <= 0:
+        return None
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True          # exists, not ours
+        except OSError:
+            return None
+        return True
+
+    import ctypes
+    from ctypes import wintypes
+
+    ERROR_INVALID_PARAMETER, ERROR_ACCESS_DENIED, SYNCHRONIZE = 87, 5, 0x00100000
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        k32.CloseHandle.restype = wintypes.BOOL
+        handle = k32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            k32.CloseHandle(handle)
+            return True
+        err = ctypes.get_last_error()
+    except Exception:
+        return None
+    if err == ERROR_INVALID_PARAMETER:
+        return False
+    if err == ERROR_ACCESS_DENIED:
+        return True
+    return None
+
+
+def _report_reindex_lock(vault: Path) -> int:
+    """Print the reindex lock's state. Returns 1 if it is an issue, else 0.
+
+    Every search waits on this lock for search._REINDEX_LOCK_WAIT_S before
+    giving up, so one left behind by a killed process is minutes of silence per
+    query with nothing on screen to explain it.
+    """
+    import hashlib
+    import tempfile
+    import time
+
+    db_path = vault / ".index" / "brain.db"
+    tag = hashlib.sha256(str(db_path).encode()).hexdigest()[:12]
+    lockfile = Path(tempfile.gettempdir()) / f"sb-reindex-{tag}.lock"
+    try:
+        if not lockfile.exists():
+            print("✓ Reindex lock   OK (not held)")
+            return 0
+        age_s = int(time.time() - lockfile.stat().st_mtime)
+        pid_line = lockfile.read_text(encoding="utf-8").splitlines()[:1]
+        pid = int(pid_line[0]) if pid_line and pid_line[0].strip().isdigit() else 0
+    except OSError as e:
+        print(f"⚠ Reindex lock   cannot read: {e}")
+        return 0
+
+    mins = age_s // 60
+    alive = _pid_is_alive(pid)
+    if alive is True:
+        # Held by something running: that is a reindex in progress, not a fault.
+        print(f"✓ Reindex lock   held {mins}m by live pid {pid} (reindex in progress)")
+        return 0
+    if alive is False:
+        print(f"✗ Reindex lock   HELD {mins}m by pid {pid}, which is NOT running"
+              f" — every search waits on it; delete {lockfile}")
+        return 1
+    # Unknown is reported as unknown. Saying "no process holds it" from the file's
+    # age alone is a guess, and acting on that guess deletes a live process's lock.
+    print(f"⚠ Reindex lock   held {mins}m by pid {pid}; could not determine whether"
+          f" that process is running — check before deleting {lockfile}")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     issues = 0
     sb_perms: list[str] = []
@@ -675,6 +846,27 @@ def cmd_doctor(args) -> int:
             else:
                 print("✗ Action-recall  STALE (PreToolUse matcher predates PowerShell support)")
                 issues += 1
+
+    # 10. Action rules actually compiled. The check above asks whether the hook
+    # is wired; this asks whether it has anything to say. They are different
+    # failures and only the first was ever detected, so an install with zero
+    # compiled rules printed a green "Action-recall OK" and recall did nothing.
+    if vault is not None:
+        issues += _report_action_rules(vault)
+
+    # 11. Vector index completeness. On 2026-09-02 every surface reported health
+    # while notes_vec was empty and semantic search was dead: nothing compared
+    # the two counts outside brain_status, which a person has to think to run.
+    # Read-only, and deliberately NOT through Storage — that runs migrations,
+    # and an instrument that changes what it inspects is not a diagnostic.
+    if vault is not None and (vault / ".index" / "brain.db").exists():
+        issues += _report_vector_index(vault)
+
+    # 12. A reindex lock nobody holds. Every search waits on it for
+    # _REINDEX_LOCK_WAIT_S before giving up, so a lock left by a killed process
+    # is minutes of silence per query with nothing to explain it.
+    if vault is not None:
+        issues += _report_reindex_lock(vault)
 
     print()
     if issues:

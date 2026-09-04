@@ -528,10 +528,27 @@ def vector_drift(conn) -> tuple[int, int] | None:
     """
     try:
         notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    except sqlite3.Error:
+        return None
+
+    # `notes_vec` is a sqlite-vec virtual table: querying it needs the extension
+    # loaded on THIS connection, and a connection that never loaded it gets the
+    # same error as one where the table does not exist. Reading that error as
+    # "there is no vector index" is a lie a caller cannot see through — doctor
+    # printed exactly that against a vault holding 1628 indexed notes. So the
+    # extension is loaded first, and only a failure AFTERWARDS means absent.
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception:
+        # Cannot load it here: whether an index exists is genuinely unknown, and
+        # "unknown" is the honest answer, not "none".
+        return None
+
+    try:
         vec = conn.execute("SELECT COUNT(*) FROM notes_vec").fetchone()[0]
     except sqlite3.Error:
-        # No notes_vec at all (vector support off, or a database built before
-        # it existed). "Nothing to compare" is not "in sync" and must not be
-        # rendered as either.
         return None
     return int(notes), int(vec)

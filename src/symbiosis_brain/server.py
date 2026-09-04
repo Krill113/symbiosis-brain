@@ -23,7 +23,7 @@ from symbiosis_brain.search import (
     _reindex_lock,
     dedup_candidates,
 )
-from symbiosis_brain.storage import Storage
+from symbiosis_brain.storage import Storage, vector_drift
 from symbiosis_brain.sync import SyncResult, VaultSync
 from symbiosis_brain.temporal import TemporalManager
 from symbiosis_brain.markdown_parser import parse_note, render_note, merge_frontmatter
@@ -1236,10 +1236,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # Index drift
         n_notes = len(notes)
-        if _search._vec_enabled:
-            n_vec = _storage._conn.execute(
-                "SELECT COUNT(*) FROM notes_vec"
-            ).fetchone()[0]
+        drift = vector_drift(_storage._conn) if _search._vec_enabled else None
+        if drift is not None:
+            n_notes, n_vec = drift
             in_sync = "yes" if n_notes == n_vec else f"no (drift {abs(n_notes-n_vec)})"
         else:
             n_vec = 0

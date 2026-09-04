@@ -1198,13 +1198,20 @@ def _fake_search_stack(monkeypatch):
             pass
 
         def sync_all(self):
-            return SimpleNamespace(removed=[])
+            # Mirror the fields the hook paths read off a real SyncResult
+            # (`removed` and `moved`). A fake missing one raised AttributeError
+            # inside the hook, which swallows every Exception into `[]` — the
+            # tests then failed on a KeyError three frames away from the cause.
+            return SimpleNamespace(removed=[], moved=[])
 
     class _Engine:
         def __init__(self, *a, **k):
             self._vec_enabled = True
 
         def delete_vec(self, path):
+            pass
+
+        def move_vec(self, old_path, new_path):
             pass
 
     monkeypatch.setattr(st, "Storage", _Storage)
@@ -1285,6 +1292,9 @@ def test_legacy_gist_search_requests_all_then_any(tmp_path, monkeypatch):
             self._vec_enabled = True
 
         def delete_vec(self, path):
+            pass
+
+        def move_vec(self, old_path, new_path):
             pass
 
         def search(self, **kwargs):

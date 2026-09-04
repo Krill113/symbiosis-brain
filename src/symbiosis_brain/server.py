@@ -107,6 +107,12 @@ def _apply_targeted_index(sync_result: SyncResult) -> None:
     with _reindex_lock(_storage.db_path):
         for path in sync_result.removed:
             _search.delete_vec(path)
+        # A move is reported ONLY in `moved` — not as removed + added — so it
+        # would touch nothing here and leave the vector under the old path,
+        # silently, until the next repair_index. Same bytes, same vector: re-key
+        # the row instead of embedding again.
+        for old_path, new_path in sync_result.moved:
+            _search.move_vec(old_path, new_path)
         for path in sync_result.added + sync_result.updated:
             note = _storage.get_note(path)
             if note is None:
@@ -170,10 +176,10 @@ def _init(vault_path: Path):
     _linter = VaultLinter(_storage, vault_path=vault_path)
 
     sync_result = _sync.sync_all()
-    logger.info("Vault synced: added=%d updated=%d removed=%d skipped=%d failed=%d",
+    logger.info("Vault synced: added=%d updated=%d removed=%d moved=%d skipped=%d failed=%d",
                 len(sync_result.added), len(sync_result.updated),
-                len(sync_result.removed), sync_result.skipped,
-                len(sync_result.failed))
+                len(sync_result.removed), len(sync_result.moved),
+                sync_result.skipped, len(sync_result.failed))
     for rel_path, reason in sync_result.failed:
         logger.warning("Vault sync skipped %s: %s", rel_path, reason)
 
@@ -309,9 +315,9 @@ def _init(vault_path: Path):
                     repair["embedded"], repair["orphans_deleted"])
         return
 
-    logger.info("Embeddings indexed (targeted: +%d ~%d -%d)",
+    logger.info("Embeddings indexed (targeted: +%d ~%d -%d moved %d)",
                 len(sync_result.added), len(sync_result.updated),
-                len(sync_result.removed))
+                len(sync_result.removed), len(sync_result.moved))
 
 
 def _append_log(vault_path: Path, action: str, path: str, title: str):
@@ -1274,6 +1280,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "added": len(sync_result.added),
             "updated": len(sync_result.updated),
             "removed": len(sync_result.removed),
+            "moved": len(sync_result.moved),
             "skipped": sync_result.skipped,
             # Paths, not a count: a note that failed to parse is invisible in the
             # vault until somebody is told WHICH file to open (B5.1).

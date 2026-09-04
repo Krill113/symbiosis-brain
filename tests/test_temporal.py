@@ -57,9 +57,11 @@ class TestAgeSurvivesReindex:
     def test_staleness_survives_a_full_reindex(self, db_path: Path):
         storage = Storage(db_path)
         self._aged_note(storage, "r/old.md", "2025-01-01")
-        # A rebuild re-upserts every note, so `updated_at` becomes today for all
-        # of them; when the database itself is recreated, `created_at` is a fresh
-        # INSERT and is lost too. Both stamps are therefore worthless as an age.
+        # Simulate the worst case for the stamps: the database itself recreated,
+        # every row a fresh INSERT stamped today. A plain reindex or a move no
+        # longer does this (upsert_note keeps `updated_at` when the content hash
+        # matches, a move re-keys the row), a recreated DB still does — and the
+        # claim's age must not depend on either stamp.
         today = datetime.now(timezone.utc).isoformat()
         storage._conn.execute("UPDATE notes SET created_at=?, updated_at=?",
                               (today, today))

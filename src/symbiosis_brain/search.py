@@ -956,6 +956,40 @@ class SearchEngine:
         self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (path,))
         self.storage._conn.commit()
 
+    def move_vec(self, old_path: str, new_path: str) -> None:
+        """Re-key one vector row without touching the model.
+
+        The embedding is a function of the text and the text did not change,
+        so the stored blob is copied under the new path and the old row is
+        dropped. vec0 refuses `UPDATE` on its primary key (measured on
+        sqlite-vec 0.1.9: "UPDATEs on vec0 primary key values are not
+        allowed"), so copy + delete is the only shape. A stale row already
+        sitting at `new_path` (drift from an earlier rename) is cleared first
+        so the copy cannot hit UNIQUE. If `old_path` has no row, nothing is
+        copied and the next repair_index embeds the note — same as today.
+
+        BEGIN IMMEDIATE for the same reason index_note uses it: a concurrent
+        indexer must see either both halves or neither.
+        """
+        if not self._vec_enabled:
+            return
+        self.storage._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (new_path,))
+            self.storage._conn.execute(
+                "INSERT INTO notes_vec (path, embedding)"
+                " SELECT ?, embedding FROM notes_vec WHERE path=?",
+                (new_path, old_path),
+            )
+            self.storage._conn.execute("DELETE FROM notes_vec WHERE path=?", (old_path,))
+            self.storage._conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.storage._conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
     def is_index_dirty(self) -> bool:
         """True if count(notes) != count(notes_vec). Cheap O(1) drift check."""
         if not self._vec_enabled:

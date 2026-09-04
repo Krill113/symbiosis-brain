@@ -23,12 +23,15 @@ class TemporalManager:
     def staleness_days(self, note: dict) -> float | None:
         """How old the CLAIM is — `None` when the note does not say.
 
-        Deliberately NOT `updated_at`/`created_at`. Those record when the row was
-        last written, and every note is rewritten whenever the vault is
-        re-synced; recreating the index makes each row a fresh INSERT and loses
-        `created_at` as well. Measured on the live vault: 4 distinct `updated_at`
-        values across 1632 notes, 1554 of them stamped with the day the embedder
-        was migrated — and `staleness_warning` consequently silent on all 1635.
+        Deliberately NOT `updated_at`/`created_at`. Since 2026-09-04 both survive
+        a re-sync, a move and a full reindex (`updated_at` moves only when the
+        content does), but they still date the FILE, not the claim: a note
+        re-created from scratch is born today, a typo fix is an edit. Before that
+        fix every re-sync restamped them — measured on the live vault: 4 distinct
+        `updated_at` values across 1632 notes, 1554 stamped with the day of the
+        02.09 migrations — and `staleness_warning` was silent on all 1635. The
+        measurement is why this moved; the claim-vs-file distinction is why it
+        stays.
 
         `valid_from` survives because it lives in the note's own frontmatter, not
         in a column: 109 distinct days over the same vault. Some of them predate

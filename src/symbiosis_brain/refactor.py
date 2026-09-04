@@ -147,12 +147,19 @@ def brain_rename(
     new_file.parent.mkdir(parents=True, exist_ok=True)
     with note_write_lock(vault_path, new_path):
         old_file.rename(new_file)
-        storage.delete_note(old_path)
+        # Re-key, don't re-create: the row keeps rowid, created_at, updated_at
+        # and content_hash. The old DELETE + sync_one INSERT stamped both dates
+        # with `now`, which is how the 02.09 migration re-aged 1525 notes.
+        storage.move_note(old_path, new_path)
+        # Outgoing edges are rebuilt by sync_one below — a scope-prefix link
+        # can resolve differently once the note lives under another scope.
         storage.delete_relations_by_source(old_path)
         if search is not None:
-            search.delete_vec(old_path)
+            # Same text, same vector: copy the stored blob, no model call.
+            search.move_vec(old_path, new_path)
+        # Same bytes → same content_hash → upsert keeps updated_at; what this
+        # call is for is re-resolving links under the new path.
         sync.sync_one(new_path)
-        _reindex_one(search, storage, new_path)
 
     return {"refs_rewritten": len(sources), "sources": sources}
 

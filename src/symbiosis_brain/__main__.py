@@ -376,6 +376,8 @@ def _gist_search(vault_path, query, scope, limit, *, log_ctx=None) -> list:
     search = SearchEngine(storage)
     for _p in _sync_result.removed:
         search.delete_vec(_p)
+    for _old, _new in _sync_result.moved:
+        search.move_vec(_old, _new)  # re-key only, no model call — fits the hook budget
     # Additions stay unembedded here (hook budget); the next serve start
     # repairs them at O(drift) via repair_index().
     # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).
@@ -420,6 +422,8 @@ def _prompt_recall_hits(vault_path, prompt, scope, limit, session_id, cfg, *,
         engine = SearchEngine(storage)
         for _p in sync_result.removed:
             engine.delete_vec(_p)
+        for _old, _new in sync_result.moved:
+            engine.move_vec(_old, _new)  # re-key only, no model call
     except Exception:
         return []
 
@@ -617,6 +621,8 @@ def _run_pre_action_recall(argv: list[str]) -> int:
         engine = SearchEngine(storage)
         for _p in _sync_result.removed:
             engine.delete_vec(_p)
+        for _old, _new in _sync_result.moved:
+            engine.move_vec(_old, _new)  # re-key only, no model call
         # Additions stay unembedded here (hook budget); the next serve start
         # repairs them at O(drift) via repair_index().
         # Note: we DO NOT re-index_all() here — too slow for hook (~3-5s).

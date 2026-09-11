@@ -93,7 +93,7 @@ _MSYS_DRIVE = re.compile(r"^/([A-Za-z])(/.*)?$")
 # --- paths ---------------------------------------------------------------------
 
 def _from_msys(p: str) -> str:
-    """`/c/Repos/x` -> `C:/Repos/x` on Windows. MSYS converts a POSIX path
+    """`/d/work/proj` -> `D:/work/proj` on Windows. MSYS converts a POSIX path
     argument before it reaches a native program; this covers the times it
     does not (MSYS_NO_PATHCONV, a value read from the environment)."""
     if os.name == "nt":
@@ -105,7 +105,7 @@ def _from_msys(p: str) -> str:
 
 def _fold(p: str) -> str:
     """One spelling per directory: case folded and forward slashes on Windows,
-    where `.claude.json` stores `C:/Repos/x` and bash hands us `c:\\repos\\x`."""
+    where `.claude.json` stores `D:/work/proj` and bash hands us `d:\\work\\proj`."""
     q = os.path.normcase(os.path.normpath(p))
     return q.replace("\\", "/") if os.name == "nt" else q
 

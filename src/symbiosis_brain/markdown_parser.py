@@ -125,13 +125,32 @@ def _as_iso(v: Any) -> Any:
     return v
 
 
+def _json_safe(v: Any) -> Any:
+    """Dates and datetimes anywhere inside a frontmatter value — nested dicts
+    and lists, dict KEYS included — become ISO-8601 strings; everything else
+    is returned as-is.
+
+    SafeLoader types an unquoted `reviewed: 2026-09-10` as datetime.date, and
+    everything parse_note does not pop lands in `extra`, which upsert_note
+    stores through json.dumps — so one person-typed date raised TypeError and
+    aborted the whole vault's sync (recurrence 2026-09-10). Values no string can
+    stand for (bytes from !!binary, a set from !!set) are left alone on purpose:
+    sync_all reports that one note by name instead of guessing a meaning.
+    """
+    if isinstance(v, dict):
+        return {_as_iso(k): _json_safe(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_json_safe(x) for x in v]
+    return _as_iso(v)
+
+
 def parse_note(content: str) -> dict[str, Any]:
     """Parse markdown with optional YAML frontmatter into structured dict."""
     post = frontmatter.loads(content)
     meta = dict(post.metadata)
     body = post.content
 
-    title = meta.pop("title", None)
+    title = _as_iso(meta.pop("title", None))
     if not title:
         match = HEADING_RE.search(body)
         title = match.group(1).strip() if match else "Untitled"
@@ -141,11 +160,11 @@ def parse_note(content: str) -> dict[str, Any]:
         "body": body,
         "type": meta.pop("type", "wiki"),
         "scope": meta.pop("scope", "global"),
-        "tags": meta.pop("tags", []),
+        "tags": _json_safe(meta.pop("tags", [])),
         "valid_from": _as_iso(meta.pop("valid_from", None)),
         "valid_to": _as_iso(meta.pop("valid_to", None)),
         "created_at": _as_iso(meta.pop("created_at", None)),
-        "extra": meta,
+        "extra": _json_safe(meta),
     }
 
 

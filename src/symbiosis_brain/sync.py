@@ -268,7 +268,13 @@ class VaultSync:
                     valid_to=parsed["valid_to"],
                     content_hash=content_hash,
                 )
-            except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError) as e:
+            except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError, TypeError) as e:
+                # TypeError: a frontmatter value JSON cannot hold (bytes from
+                # !!binary, a set from !!set). parse_note turns dates into
+                # strings; anything else costs this one note, named — before
+                # 2026-09-11 it escaped the loop and aborted the whole vault
+                # with a message that named no file. server.py's write path
+                # already listed it.
                 result.failed.append((rel_path, f"{type(e).__name__}: {e}"))
                 # We could not ingest it, so the stored hash no longer vouches
                 # for the row being complete: in a forced run its edges were

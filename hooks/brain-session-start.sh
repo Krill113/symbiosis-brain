@@ -131,16 +131,47 @@ fi
 # SQLite (3.50.4) still carries the WAL-Reset race we deliberately parked.
 # 60 min matches the GC threshold for the same file below, so "stale -> swept ->
 # re-primed" is one cycle, not two competing numbers.
+#
+# Shared per cwd (plan A-2, 2026-09-04): one poll per project directory per day,
+# not one per session — on 04.09 a crashed terminal restarted five sessions and
+# made five full polls in 2.5 minutes. `mcp-roster check` (src/symbiosis_brain/
+# mcp_roster.py) compares a snapshot of every MCP config layer it can see with
+# the key stored beside the shared answer; on a hit it copies the answer to this
+# session's file and no poll happens. It runs synchronously under `timeout 3`
+# (uv start ~0.25 s, inside the 5 s budget); only a miss pays the detached poll,
+# whose output `mcp-roster publish` stores as per-session file + shared answer +
+# key. Exit 11 from publish = the poll printed no server line: dropped, since
+# _roster_set would read it as "no roster" anyway. Any other failure (no uv, a
+# crash, the timeout) takes the pre-cache path: poll, publish per-session only.
 _roster="$SB_TMP/brain-mcp-roster-${SESSION_ID}"
 if [ -n "$SESSION_ID" ] && command -v claude >/dev/null 2>&1 && \
    { [ ! -f "$_roster" ] || [ -n "$(find "$_roster" -mmin +60 2>/dev/null)" ]; }; then
-  (
-    if claude mcp list >"$_roster.tmp" 2>/dev/null; then
-      mv -f "$_roster.tmp" "$_roster" 2>/dev/null || rm -f "$_roster.tmp" 2>/dev/null
-    else
-      rm -f "$_roster.tmp" 2>/dev/null
-    fi
-  ) >/dev/null 2>&1 &
+  _sb_uv=
+  [ -n "$TOOLS" ] && command -v uv >/dev/null 2>&1 && _sb_uv=1
+  _rc=1
+  if [ -n "$_sb_uv" ]; then
+    timeout 3 uv run --quiet --directory "$TOOLS" python -m symbiosis_brain mcp-roster \
+      check --session-id "$SESSION_ID" --cwd "$PWD" >/dev/null 2>&1
+    _rc=$?
+  fi
+  if [ "$_rc" -ne 0 ]; then
+    (
+      if claude mcp list >"$_roster.tmp" 2>/dev/null; then
+        _pub=1
+        if [ -n "$_sb_uv" ]; then
+          uv run --quiet --directory "$TOOLS" python -m symbiosis_brain mcp-roster \
+            publish --session-id "$SESSION_ID" --cwd "$PWD" --from "$_roster.tmp" >/dev/null 2>&1
+          _pub=$?
+        fi
+        case "$_pub" in
+          0|11) rm -f "$_roster.tmp" 2>/dev/null ;;
+          *) mv -f "$_roster.tmp" "$_roster" 2>/dev/null || rm -f "$_roster.tmp" 2>/dev/null ;;
+        esac
+      else
+        rm -f "$_roster.tmp" 2>/dev/null
+      fi
+    ) >/dev/null 2>&1 &
+  fi
 fi
 
 # Clean THIS session's trigger flags (threshold reset on compaction; no-op on fresh startup)
@@ -171,6 +202,9 @@ if command -v find >/dev/null 2>&1; then
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-seen-*.json' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-route-turn-*' -mmin +60 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-roster-*' -mmin +60 -delete 2>/dev/null || true
+  # The shared roster answer and its .key live a day (mcp_roster.TTL_S; a test
+  # pins the two numbers together), not 60 minutes like the per-session file.
+  find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-shared-*' -mmin +1440 -delete 2>/dev/null || true
   find "$SB_TMP" -maxdepth 1 -name 'brain-model-*' -mmin +60 -delete 2>/dev/null || true
   # 24h, not 60min like the counters above: this one is written once per session and
   # must outlive a long session, not be refreshed by every turn.

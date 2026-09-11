@@ -772,6 +772,11 @@ def main():
         sys.exit(_run_prewarm(argv[1:]))
     if argv and argv[0] == "compile-action-rules":
         sys.exit(_run_compile_action_rules(argv[1:]))
+    if argv and argv[0] == "mcp-roster":
+        # SessionStart's shared `claude mcp list` cache (mcp_roster.py). Lazy
+        # import: every hook on the machine passes through this file.
+        from symbiosis_brain.mcp_roster import run as _run_mcp_roster
+        sys.exit(_run_mcp_roster(argv[1:]))
     # Default — MCP server
     from symbiosis_brain.server import main as server_main
     server_main()

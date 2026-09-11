@@ -319,7 +319,8 @@ def merge_settings_json(settings_path: Path,
                         statusline_cmd: str,
                         permissions: list[str],
                         vault_path: str | None = None,
-                        tools_path: str | None = None) -> None:
+                        tools_path: str | None = None,
+                        override_env: dict[str, str] | None = None) -> None:
     """Idempotent deep-merge of our hooks/statusLine/permissions/env into settings.json.
 
     Caller (cmd_setup) is the single owner of the pre-task backup.
@@ -327,6 +328,9 @@ def merge_settings_json(settings_path: Path,
     - Seeds SB_ENV_DEFAULTS plus VAULT/TOOLS paths, non-clobbering (existing user
       values are never overwritten) — required for PreToolUse recall and SessionEnd
       sync to resolve their paths and knobs.
+    - `override_env` is the one exception: those keys are written even over an
+      existing value, because the caller knows the owner asked for exactly that
+      on this run (`setup --vault <path>`).
     - Deduplicates permissions.allow.
     """
     if not settings_path.exists():
@@ -348,6 +352,9 @@ def merge_settings_json(settings_path: Path,
         env_defaults["SYMBIOSIS_BRAIN_TOOLS"] = tools_path
     cur_env = settings.get("env") or {}
     seed_env = {k: v for k, v in env_defaults.items() if k not in cur_env}
+    # The one exception to non-clobbering: values the owner explicitly asked for
+    # on this run. deep_merge lets the overlay win over an existing scalar.
+    seed_env.update(override_env or {})
 
     ours_hooks = _hooks_block(hook_dir)
     cur_hooks = settings.get("hooks") or {}

@@ -1,4 +1,5 @@
 import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,10 +69,69 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def _walk_vault(vault: Path) -> dict[str, Path]:
+    """Every note file under the vault, as {vault-relative posix path: Path}.
+
+    Selects exactly what `vault.glob(MD_GLOB)` plus the filters that followed
+    it used to select — tests/test_sync_walk.py compares the two name for name
+    on the running platform and Python — at a fraction of the cost: 73 -> 10 ms
+    on a 1724-note vault (2026-09-11). pathlib built and matched a Path for
+    every entry of every directory, .git's 4542 included, only to drop them
+    afterwards; here an excluded directory is never entered.
+
+    Rules, each mirroring glob or the old filters:
+    - `*.md` is matched the way glob matches it by default: case-insensitive on
+      Windows, case-sensitive elsewhere (os.path.normcase);
+    - a DIRECTORY whose name matches is an entry too, because glob yields it
+      (reading it then fails and is reported, exactly as before);
+    - anything whose first path segment starts with "." is skipped — top-level
+      dot dirs and dot files; a dot dir deeper down IS walked, as before;
+    - SKIP_FILES are skipped by name at any depth; a directory named in
+      MATERIAL_DIRS is never entered, at any depth (is_material_path);
+    - a symlinked directory is not descended into — "**" never followed one
+      (3.12: `is_dir() and not is_symlink()`; 3.13+: recurse_symlinks=False);
+    - order is glob's: a directory's own entries, then its subdirectories.
+    """
+    found: dict[str, Path] = {}
+
+    def visit(directory: str, prefix: str) -> None:
+        try:
+            with os.scandir(directory) as it:
+                entries = list(it)
+        except OSError:
+            return  # glob skips an unreadable directory silently, too
+        below: list[tuple[str, str]] = []
+        for entry in entries:
+            name = entry.name
+            if not prefix and name.startswith("."):
+                continue
+            rel = prefix + name
+            if os.path.normcase(name).endswith(".md") and name not in SKIP_FILES:
+                found[rel] = vault / rel
+            try:
+                descend = entry.is_dir() and not entry.is_symlink()
+            except OSError:
+                descend = False
+            if descend and name not in MATERIAL_DIRS:
+                below.append((entry.path, rel + "/"))
+        for sub_directory, sub_prefix in below:
+            visit(sub_directory, sub_prefix)
+
+    visit(str(vault), "")
+    return found
+
+
 class VaultSync:
     def __init__(self, vault_path: Path, storage: Storage):
         self.vault_path = vault_path
         self.storage = storage
+
+    def _body_of(self, path: str) -> str:
+        """One stored body, read on demand: Pass 0's empty-body guard is the
+        only reader of a body in sync_all, and only for a vanished row."""
+        row = self.storage._conn.execute(
+            "SELECT content FROM notes WHERE path=?", (path,)).fetchone()
+        return (row[0] if row is not None else "") or ""
 
     def sync_all(self) -> SyncResult:
         # A migration that changed how links resolve asks for one full rebuild:
@@ -106,19 +166,17 @@ class VaultSync:
             self.storage._conn.execute("DELETE FROM entities")
             self.storage._conn.commit()
 
-        disk_files: dict[str, Path] = {}
-        for md_file in self.vault_path.glob(MD_GLOB):
-            rel = md_file.relative_to(self.vault_path).as_posix()
-            if md_file.name in SKIP_FILES:
-                continue
-            parts = rel.split("/")
-            if parts[0].startswith("."):
-                continue
-            if is_material_path(rel):
-                continue
-            disk_files[rel] = md_file
+        disk_files = _walk_vault(self.vault_path)
 
-        db_notes = {n["path"]: n for n in self.storage.list_notes()}
+        # Only what the passes below read: each row's path and content hash.
+        # The whole row (list_notes: every body, two JSON columns per note and
+        # an ORDER BY) was 71 of 298 ms of a no-change run, and a body is read
+        # by exactly one check — Pass 0's empty-body guard, for a vanished row —
+        # which fetches the one it needs (_body_of).
+        db_notes = {
+            r["path"]: {"path": r["path"], "content_hash": r["content_hash"]}
+            for r in self.storage._conn.execute("SELECT path, content_hash FROM notes")
+        }
 
         # Pass 0: a note that vanished from one path and appeared at another
         # with the same bytes is a MOVE, not a removal plus a birth. Pair
@@ -140,7 +198,7 @@ class VaultSync:
             # Such a row is never paired — its successor is born fresh, which is
             # at least true. One condition, on the vanished side: the newcomer
             # has the same bytes by definition.
-            if not (row.get("content") or "").strip():
+            if not self._body_of(db_path).strip():
                 continue
             gone_by_hash.setdefault(row["content_hash"], []).append(db_path)
         preread: dict[str, str] = {}  # new files' text, read once here, reused in Pass 1

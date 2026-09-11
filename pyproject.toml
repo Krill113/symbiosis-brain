@@ -21,9 +21,18 @@ dependencies = [
     # 2.x port lands, a fresh resolve must stay on 1.x.
     "mcp>=1.0.0,<2.0.0",
     "python-frontmatter>=1.1.0",
-    "fastembed>=0.4.0",
+    # The embedding stack is bounded to versions verified together. PyPI installs
+    # do not read uv.lock, and an unbounded transitive onnxruntime resolved to
+    # 1.29.0, which hung inside InferenceSession.run on a real vault and ran ~7x
+    # slower than 1.24.4. Widen only after re-running an embedding soak.
+    # fastembed: the custom-model registry targets 0.8 internals.
+    "fastembed>=0.8.0,<0.9",
+    "onnxruntime==1.24.4",
+    # tokenizers decides what text reaches the model; a different one yields
+    # different vectors from the index built with the verified one.
+    "tokenizers>=0.22.2,<0.23",
     "sqlite-vec>=0.1.6",
-    "numpy>=1.26.0",
+    "numpy>=1.26.0,<2.5",
 ]
 
 [project.urls]

@@ -8,8 +8,8 @@ the other three. Import from here; never restate a limit at a call site.
 """
 
 GIST_SOFT_LIMIT = 100
-"""Recommended ceiling. lint reports a longer gist as `gist_too_long`;
-brain_write emits a soft warning but still writes the note."""
+"""Recommended ceiling. brain_write emits a soft warning past it but still writes
+the note. lint does not flag it: `gist_too_long` starts at GIST_HARD_LIMIT."""
 
 GIST_HARD_LIMIT = 140
 """Hard ceiling. brain_write rejects a longer gist outright (Q5 closure 2026-05-14)."""

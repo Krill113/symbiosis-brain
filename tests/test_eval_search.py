@@ -119,6 +119,13 @@ def test_harness_text_rows_are_dropped_not_measured(tmp_path):
          "origin": "main", "scope": None, "lang": "en", "shown": [], "read_after": []},
         {"query": "   ", "source": "hook-prompt", "origin": "main", "scope": None,
          "lang": "en", "shown": [], "read_after": []},
+        # The collegial format's own traffic: a lead session's letter arrives as
+        # a user turn. It was the LARGEST service class in the live log (230 of
+        # 589 hook_prompt rows on 04.09) and the harness's private prefix list
+        # did not know it — which is why the list now lives in retrieval_log.
+        {"query": '<cross-session-message from="uds:x" from-name="lead">do the thing',
+         "source": "hook-prompt", "origin": "main", "scope": None, "lang": "ru",
+         "shown": [], "read_after": []},
         {"query": "real question", "source": "mcp-search", "origin": "unknown",
          "scope": None, "lang": "en", "shown": [], "read_after": []},
     ]
@@ -126,7 +133,13 @@ def test_harness_text_rows_are_dropped_not_measured(tmp_path):
 
     parsed, dropped = eval_search.load_queries(src)
     assert [r["query"] for r in parsed] == ["real question"]
-    assert dropped == 2
+    assert dropped == 3
+
+
+def test_harness_prefix_list_is_the_retrieval_log_one():
+    """One list in the package, imported here — not a second copy that drifts."""
+    from symbiosis_brain import retrieval_log
+    assert eval_search.SYSTEM_QUERY_PREFIXES is retrieval_log.SERVICE_QUERY_PREFIXES
 
 
 def test_a_broken_jsonl_line_names_its_line_number(tmp_path):

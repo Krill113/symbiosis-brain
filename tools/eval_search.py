@@ -43,6 +43,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# stdlib-only module (retrieval_log imports nothing from the package), so this
+# does not break the import-light rule the lazy `symbiosis_brain.search` imports
+# below exist for.
+from symbiosis_brain.retrieval_log import SERVICE_QUERY_PREFIXES
+
 K_DEFAULT = 5
 
 GRADE_READ = 2
@@ -51,10 +56,15 @@ GRADE_READ = 2
 GRADE_SHOWN = 0
 """Shown and ignored — a weak negative, NOT an absence of judgement."""
 
-SYSTEM_QUERY_PREFIXES = ("<task-notification>", "<system-reminder>", "<local-command-")
+SYSTEM_QUERY_PREFIXES = SERVICE_QUERY_PREFIXES
 """hook-prompt rows whose "query" is harness plumbing rather than a human prompt.
 mine_queries.py:203 recovers the prompt by walking back to the nearest user-role
-message, and a task notification IS a user-role message."""
+message, and a task notification IS a user-role message.
+
+The SAME tuple object as retrieval_log.SERVICE_QUERY_PREFIXES, not a copy: a
+private three-prefix list here caught 95 of the 337 service rows in the live
+log on 2026-09-04 — the largest class, `<cross-session-message`, was born after
+this list was written, and nothing told the harness."""
 
 DEFAULT_CONFIGS = (
     "fts-all", "fts-any", "vec-current",

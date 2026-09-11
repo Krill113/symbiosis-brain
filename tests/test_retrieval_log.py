@@ -69,7 +69,7 @@ def test_migration_creates_both_tables_and_three_indexes(db_path: Path):
         tables = set(storage.list_tables())
         assert "retrieval_event" in tables
         assert "retrieval_hit" in tables
-        assert storage.get_schema_version("retrieval_log") == 1
+        assert storage.get_schema_version("retrieval_log") == 2
         idx = {r[0] for r in _rows(
             db_path,
             "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_retrieval%'",
@@ -93,6 +93,7 @@ def test_retrieval_event_has_every_column_the_ddl_promises(db_path: Path):
         "id", "ts", "session_id", "origin", "source", "tool", "query", "scope",
         "mode", "fts_mode", "n_returned", "dedup_dropped", "vec_enabled",
         "latency_ms", "e2e_ms", "client",
+        "query_kind",   # 2026-09-04, Plan B: last, so ALTER … ADD COLUMN on an old db lands in the same place
     ]
 
 
@@ -106,7 +107,7 @@ def test_migration_is_idempotent_and_keeps_existing_rows(db_path: Path, tmp_vaul
 
     storage = Storage(db_path)          # second open: migration must be a no-op
     try:
-        assert storage.get_schema_version("retrieval_log") == 1
+        assert storage.get_schema_version("retrieval_log") == 2
         assert len(storage.list_notes()) == 1
     finally:
         storage.close()
@@ -150,6 +151,201 @@ def _one_event(db: Path) -> sqlite3.Row:
         return rows[0]
     finally:
         conn.close()
+
+
+# ---------- Plan B (2026-09-04): a service prompt gets a kind, not a shell exit ----------
+# A prompt-hook query that the harness injected (a cross-session message, a
+# task notification) is not a human prompt, yet it MUST still be logged: an
+# early exit in the shell hook would mean no search, no row, and no denominator
+# for any later recount. So the row is written and LABELLED, and the label comes
+# from ONE list — the seven prefixes the 04.09 recount used verbatim, so the
+# stored labels reproduce its published numbers (61 of 1113 baseline events).
+
+def test_classify_query_names_each_of_the_seven_service_prefixes():
+    from symbiosis_brain.retrieval_log import SERVICE_QUERY_PREFIXES, classify_query
+    assert SERVICE_QUERY_PREFIXES == (
+        "<cross-session-message", "<task-notification>", "<agent-message",
+        "<teammate-message", "<system-reminder>", "<local-command-",
+        "[SYSTEM NOTIFICATION",
+    )
+    assert classify_query('<cross-session-message from="x">hi') == "service:cross-session"
+    assert classify_query("<task-notification>\n<task-id>1</task-id>") == "service:task-notification"
+    assert classify_query('<agent-message from="a">r') == "service:agent-message"
+    assert classify_query("<teammate-message from=\"b\">r") == "service:teammate-message"
+    assert classify_query("<system-reminder>x</system-reminder>") == "service:system-reminder"
+    assert classify_query("<local-command-stdout>x") == "service:local-command"
+    assert classify_query("[SYSTEM NOTIFICATION - NOT USER INPUT]\n<task-notification>") \
+        == "service:system-notification"
+
+
+def test_classify_query_calls_everything_else_human_and_matches_only_at_the_start():
+    from symbiosis_brain.retrieval_log import classify_query
+    assert classify_query("почини баг в роутинге") == "human"
+    assert classify_query("  \n<cross-session-message from=\"x\">") == "service:cross-session"
+    assert classify_query("a <cross-session-message> quoted mid-sentence") == "human"
+    assert classify_query("") == "human"
+    assert classify_query(None) == "human"
+
+
+def test_query_kind_for_labels_prompt_sources_only():
+    """`hook_prompt` and `legacy_gist` carry a prompt; every other source carries
+    a tool input or an agent's own query, where 'human' would be a lie — those
+    get 'n/a', so that NULL keeps exactly one meaning: written before the column."""
+    from symbiosis_brain.retrieval_log import query_kind_for
+    assert query_kind_for("hook_prompt", "<task-notification>x") == "service:task-notification"
+    assert query_kind_for("hook_prompt", "что мы решили по TTL") == "human"
+    assert query_kind_for("legacy_gist", "hello") == "human"
+    assert query_kind_for("mcp_search", "<task-notification>x") == "n/a"
+    assert query_kind_for("hook_pre_action", "wiki/alpha.md") == "n/a"
+    assert query_kind_for("mcp_read", "wiki/alpha.md") == "n/a"
+
+
+# The 16-column table exactly as HEAD 0581b9c created it — a log written before
+# the column existed. The live base is such a table (2838 events on 04.09).
+_V1_EVENT_DDL = """CREATE TABLE retrieval_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, session_id TEXT,
+    origin TEXT NOT NULL DEFAULT 'unknown', source TEXT NOT NULL, tool TEXT,
+    query TEXT NOT NULL DEFAULT '', scope TEXT, mode TEXT, fts_mode TEXT,
+    n_returned INTEGER NOT NULL DEFAULT 0, dedup_dropped INTEGER NOT NULL DEFAULT 0,
+    vec_enabled INTEGER NOT NULL DEFAULT 0, latency_ms INTEGER, e2e_ms INTEGER,
+    client TEXT)"""
+_V1_HIT_DDL = """CREATE TABLE retrieval_hit (event_id INTEGER NOT NULL, rank INTEGER NOT NULL,
+    note_path TEXT NOT NULL, score REAL, in_both INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, rank))"""
+
+
+def _v1_db(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    conn.execute(_V1_EVENT_DDL)
+    conn.execute(_V1_HIT_DDL)
+    conn.executemany(
+        "INSERT INTO retrieval_event (ts, source, query) VALUES (?, ?, ?)",
+        [
+            ("2026-09-03T10:00:00+00:00", "hook_prompt", '<cross-session-message from="x">do'),
+            ("2026-09-03T10:01:00+00:00", "hook_prompt", "почини баг"),
+            ("2026-09-03T10:02:00+00:00", "mcp_search", "<task-notification>not a prompt source"),
+            ("2026-09-03T10:03:00+00:00", "legacy_gist", "[SYSTEM NOTIFICATION - NOT USER INPUT]"),
+        ],
+    )
+    return conn
+
+
+def _kinds(conn) -> list:
+    return [r[0] for r in conn.execute("SELECT query_kind FROM retrieval_event ORDER BY id")]
+
+
+def test_upgrade_to_v2_adds_the_column_and_labels_every_old_row(tmp_path: Path):
+    """Runs inside the CALLER's transaction (storage's migration wraps it in
+    BEGIN IMMEDIATE); returns how many rows it labelled."""
+    from symbiosis_brain.retrieval_log import upgrade_to_v2
+    conn = _v1_db(tmp_path / "old.db")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        labelled = upgrade_to_v2(conn)
+        conn.execute("COMMIT")
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(retrieval_event)")]
+        assert len(cols) == 17 and cols[-1] == "query_kind"
+        assert labelled == 4
+        assert _kinds(conn) == [
+            "service:cross-session", "human", "n/a", "service:system-notification",
+        ]
+    finally:
+        conn.close()
+
+
+def test_upgrade_to_v2_is_idempotent_and_touches_only_null_rows(tmp_path: Path):
+    """A second run must not fail on the existing column, must label the rows an
+    OLD process wrote after the column arrived (they come in as NULL), and must
+    leave every already-labelled row alone."""
+    from symbiosis_brain.retrieval_log import upgrade_to_v2
+    conn = _v1_db(tmp_path / "old.db")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        upgrade_to_v2(conn)
+        conn.execute("COMMIT")
+        conn.execute(
+            "INSERT INTO retrieval_event (ts, source, query) VALUES"
+            " ('2026-09-04T00:00:00+00:00', 'hook_prompt', '<agent-message from=\"a\">r')"
+        )
+        conn.execute("UPDATE retrieval_event SET query_kind='human' WHERE id=1")
+        conn.execute("BEGIN IMMEDIATE")
+        labelled = upgrade_to_v2(conn)
+        conn.execute("COMMIT")
+        assert labelled == 1
+        assert _kinds(conn) == [
+            "human", "human", "n/a", "service:system-notification", "service:agent-message",
+        ]
+    finally:
+        conn.close()
+
+
+def test_storage_migration_upgrades_an_existing_v1_log_to_v2(db_path: Path):
+    """The one schema authority is storage's `_migrate_retrieval_log`: below
+    version 2 it calls upgrade_to_v2 and stamps 2. Emulated by winding a fresh
+    db back to v1 (DROP COLUMN + version 1 + rows an old process left as NULL)
+    and reopening."""
+    Storage(db_path).close()
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("ALTER TABLE retrieval_event DROP COLUMN query_kind")
+        conn.execute("UPDATE schema_version SET version = 1 WHERE key = 'retrieval_log'")
+        conn.executemany(
+            "INSERT INTO retrieval_event (ts, source, query) VALUES (?, ?, ?)",
+            [("2026-09-03T10:00:00+00:00", "hook_prompt", '<cross-session-message from="x">do'),
+             ("2026-09-03T10:01:00+00:00", "mcp_search", "q")],
+        )
+    finally:
+        conn.close()
+
+    storage = Storage(db_path)              # reopen: the migration must run
+    try:
+        assert storage.get_schema_version("retrieval_log") == retrieval_log.RETRIEVAL_LOG_VERSION == 2
+    finally:
+        storage.close()
+    cols = [r[1] for r in _rows(db_path, "PRAGMA table_info(retrieval_event)")]
+    assert cols[-1] == "query_kind"
+    kinds = [r[0] for r in _rows(db_path, "SELECT query_kind FROM retrieval_event ORDER BY id")]
+    assert kinds == ["service:cross-session", "n/a"]
+
+
+def test_rotate_labels_rows_an_old_writer_left_unlabelled(db_path: Path):
+    """A writer older than the column — a `serve` not yet restarted, or a hook
+    in the seconds between the two saves of the rollout — inserts without
+    query_kind and leaves NULL behind. upgrade_to_v2 runs once, so those rows
+    would stay NULL forever; the daily rotation labels them instead, and NULL
+    never outlives a day of serve uptime."""
+    Storage(db_path).close()
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO retrieval_event (ts, source, query) VALUES"
+            " ('2099-01-01T00:00:00+00:00', 'hook_prompt', '<task-notification>x')"
+        )
+    finally:
+        conn.close()
+    assert retrieval_log.rotate(db_path) == 0          # nothing is old enough to delete
+    assert _rows(db_path, "SELECT query_kind FROM retrieval_event") == [("service:task-notification",)]
+
+
+def test_record_writes_the_query_kind_of_a_service_prompt(db_path: Path):
+    Storage(db_path).close()
+    retrieval_log.record(
+        _ctx(db_path, source="hook_prompt", client="hook", session_id="s1", origin="main"),
+        query='<cross-session-message from="x">do the thing', scope=None, mode="gist",
+        fts_mode="all", hits=[], latency_ms=1, vec_enabled=False,
+    )
+    assert _one_event(db_path)["query_kind"] == "service:cross-session"
+
+
+def test_record_labels_a_human_prompt_and_a_server_search_differently(db_path: Path):
+    Storage(db_path).close()
+    for ctx in (_ctx(db_path, source="hook_prompt", client="hook"), _ctx(db_path)):
+        retrieval_log.record(
+            ctx, query="почини баг в роутинге", scope=None, mode="gist", fts_mode="all",
+            hits=[], latency_ms=1, vec_enabled=False,
+        )
+    kinds = [r[0] for r in _rows(db_path, "SELECT query_kind FROM retrieval_event ORDER BY id")]
+    assert kinds == ["human", "n/a"]
 
 
 def test_record_writes_the_event_and_every_hit_row(db_path: Path):

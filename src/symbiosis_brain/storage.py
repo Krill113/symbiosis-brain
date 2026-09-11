@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from symbiosis_brain.retrieval_log import RETRIEVAL_LOG_STATEMENTS
+from symbiosis_brain.retrieval_log import RETRIEVAL_LOG_STATEMENTS, upgrade_to_v2
 
 _BUSY_TIMEOUT_MS = 30_000
 
@@ -156,6 +156,12 @@ class Storage:
     def _migrate_retrieval_log(self):
         """Stage 2: retrieval_event + retrieval_hit. Empty tables, no reindex.
 
+        Two steps on one version key: below 1 the tables are created; below 2
+        (2026-09-04) `retrieval_log.upgrade_to_v2` adds `query_kind` and labels
+        the rows that predate it — the body lives next to the DDL it changes,
+        this method is the one place that decides WHEN it runs. A fresh
+        database climbs 0 → 1 → 2 inside the same transaction.
+
         Same shape as the two migrations above: BEGIN IMMEDIATE serializes
         parallel migrators, the version key makes the step a no-op afterwards.
         NOT executescript — it does an implicit COMMIT and tears the
@@ -176,6 +182,12 @@ class Storage:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
                     ("retrieval_log", 1),
+                )
+            if current < 2:
+                upgrade_to_v2(self._conn)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (key, version) VALUES (?, ?)",
+                    ("retrieval_log", 2),
                 )
             self._conn.commit()
         except Exception:

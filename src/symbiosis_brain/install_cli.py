@@ -95,8 +95,6 @@ def _resolve_vault_path() -> Path | None:
     3. `DEFAULT_VAULT` if it exists on disk.
     4. None.
     """
-    import shlex
-
     env_vault = os.environ.get("SYMBIOSIS_BRAIN_VAULT")
     if env_vault:
         return Path(env_vault).expanduser()
@@ -106,23 +104,51 @@ def _resolve_vault_path() -> Path | None:
             ["claude", "mcp", "list"], capture_output=True, timeout=10,
             text=True, encoding="utf-8", errors="replace",
         )
-        for line in proc.stdout.splitlines():
-            if "symbiosis-brain" not in line or "--vault" not in line:
-                continue
-            tail = line.split("--vault", 1)[1].strip()
-            try:
-                tokens = shlex.split(tail, posix=False)
-            except ValueError:
-                tokens = tail.split()
-            if tokens:
-                # First token is the vault path (quoted forms come back unstripped from shlex non-posix).
-                return Path(tokens[0].strip('"').strip("'"))
+        registered = _vault_from_mcp_listing(proc.stdout)
+        if registered is not None:
+            return registered
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
     if DEFAULT_VAULT.exists():
         return DEFAULT_VAULT
     return None
+
+
+def _vault_from_mcp_listing(stdout: str | None) -> Path | None:
+    """The vault our server is registered with, read from `claude mcp list`
+    output; None when it is not registered with a --vault. One parser, two
+    readers: _resolve_vault_path, and _register_mcp, which compares it with the
+    vault setup was asked for."""
+    import shlex
+
+    for line in (stdout or "").splitlines():
+        if "symbiosis-brain" not in line or "--vault" not in line:
+            continue
+        tail = line.split("--vault", 1)[1].strip()
+        try:
+            tokens = shlex.split(tail, posix=False)
+        except ValueError:
+            tokens = tail.split()
+        if tokens:
+            # First token is the vault path (quoted forms come back unstripped from shlex non-posix).
+            return Path(tokens[0].strip('"').strip("'"))
+    return None
+
+
+def _same_path(a: Path | str, b: Path | str) -> bool:
+    return (os.path.normcase(os.path.abspath(os.path.expanduser(str(a))))
+            == os.path.normcase(os.path.abspath(os.path.expanduser(str(b)))))
+
+
+def _settings_env(settings: Path) -> dict:
+    """settings.json's env block as it stands, {} when unreadable or absent."""
+    try:
+        data = json.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    env = data.get("env") if isinstance(data, dict) else None
+    return env if isinstance(env, dict) else {}
 
 
 def _check_mcp_running() -> bool:
@@ -217,8 +243,27 @@ def _packaged_commands_dir() -> Path:
     return install_lib.packaged_dir(__file__, "commands")
 
 
-def _register_mcp(vault_path: Path) -> None:
-    """Run `claude mcp add -s user symbiosis-brain ...` if not already registered."""
+def _mcp_add(vault_path: Path):
+    return subprocess.run(
+        ["claude", "mcp", "add", "-s", "user", "symbiosis-brain", "--",
+         "symbiosis-brain", "serve", "--vault", str(vault_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+    )
+
+
+def _register_mcp(vault_path: Path, *, replace: bool = False) -> Path | None:
+    """Register our MCP server for `vault_path`. Returns the vault it was
+    registered with BEFORE this call — None if it was not registered, or if the
+    listing could not be read.
+
+    An existing registration is left alone unless `replace` is set and it points
+    somewhere else. `replace` is what an explicit `setup --vault` means: the old
+    code returned on the mere word "symbiosis-brain" in the listing, so a move
+    printed "Done" while every session kept the old vault (backlog, 2026-08-29).
+    A replace is remove + add; if the add then fails, the old registration is
+    put back before raising — a failed move must not leave the user with no
+    memory server at all.
+    """
     try:
         # encoding is explicit on purpose. `text=True` alone decodes with the
         # locale's preferred encoding, and `claude mcp list` emits UTF-8: on a
@@ -240,18 +285,43 @@ def _register_mcp(vault_path: Path) -> None:
               f"registered). Verify with `claude mcp list`, or add it manually: "
               f"claude mcp add -s user symbiosis-brain -- "
               f"symbiosis-brain serve --vault {vault_path}")
-        return
+        return None
+
+    registered = _vault_from_mcp_listing(listing.stdout)
+    if registered is not None:
+        if not replace or _same_path(registered, vault_path):
+            return registered
+        remove = subprocess.run(
+            ["claude", "mcp", "remove", "-s", "user", "symbiosis-brain"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+        if remove.returncode != 0:
+            raise RuntimeError(f"`claude mcp remove` failed, the registration for "
+                               f"{registered} is unchanged: {remove.stderr}")
+        add = _mcp_add(vault_path)
+        if add.returncode != 0:
+            restored = _mcp_add(registered).returncode == 0
+            raise RuntimeError(
+                f"`claude mcp add` failed: {add.stderr}. The previous registration "
+                f"({registered}) was " + ("restored." if restored else
+                "NOT restored - run: claude mcp add -s user symbiosis-brain -- "
+                f"symbiosis-brain serve --vault {registered}"))
+        return registered
 
     if "symbiosis-brain" in (listing.stdout or ""):
-        return  # already registered
+        # Registered, but not in a form that names a --vault: leave it be.
+        if replace:
+            print("WARN: symbiosis-brain is registered without a readable --vault; "
+                  "left as is. Re-register it by hand to point at "
+                  f"{vault_path}: claude mcp remove -s user symbiosis-brain, then "
+                  f"claude mcp add -s user symbiosis-brain -- symbiosis-brain serve "
+                  f"--vault {vault_path}")
+        return None
 
-    add = subprocess.run(
-        ["claude", "mcp", "add", "-s", "user", "symbiosis-brain", "--",
-         "symbiosis-brain", "serve", "--vault", str(vault_path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-    )
+    add = _mcp_add(vault_path)
     if add.returncode != 0:
         raise RuntimeError(f"`claude mcp add` failed: {add.stderr}")
+    return None
 
 
 def _copy_skills(target_dir: Path) -> list[str]:
@@ -392,6 +462,12 @@ def cmd_setup(args):
     created_files: list[Path] = []
 
     mcp_registered = False
+    # An explicit --vault is the owner saying where the vault is: it overrides
+    # the env value and the MCP registration. Without it (repair, the prompt)
+    # whatever is already configured wins, as it always did.
+    explicit_vault = bool(getattr(args, "vault", None))
+    env_vault_before = _settings_env(settings).get("SYMBIOSIS_BRAIN_VAULT")
+    registered_before: Path | None = None
 
     try:
         install_lib.scaffold_vault(vault)
@@ -402,6 +478,7 @@ def cmd_setup(args):
             permissions=SB_PERMISSIONS,
             vault_path=str(vault),
             tools_path=str(_packaged_hooks_dir().parent),
+            override_env={"SYMBIOSIS_BRAIN_VAULT": str(vault)} if explicit_vault else None,
         )
         install_lib.append_claude_md_block(claude_md)
 
@@ -463,7 +540,7 @@ def cmd_setup(args):
                 "`symbiosis-brain setup claude-code --repair`."
             )
 
-        _register_mcp(vault)
+        registered_before = _register_mcp(vault, replace=explicit_vault)
         mcp_registered = True
 
         # Stage-1 action-recall: compile action-rules.tsv now so the very
@@ -508,6 +585,12 @@ def cmd_setup(args):
         print(f"Vault kept at {vault} (not deleted).", file=sys.stderr)
         sys.exit(1)
 
+    moved_from = [str(p) for p in (env_vault_before, registered_before)
+                  if p and not _same_path(p, vault)]
+    if explicit_vault and moved_from:
+        print(f"Vault changed: {moved_from[0]} -> {vault}\n"
+              "The notes were NOT copied: the old vault stays where it was. "
+              "Restart every Claude Code window to pick up the new one.")
     print(
         f"Done. Vault: {vault}\n"
         "If Obsidian is missing, I will offer to install it after you restart Claude Code.\n"

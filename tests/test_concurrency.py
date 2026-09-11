@@ -747,7 +747,8 @@ def test_retrieval_log_migration_race_on_a_populated_db(tmp_vault, db_path):
     assert [r["error"] for r in reports] == ["", ""]
     for r in reports:
         assert r["tables"] == ["retrieval_event", "retrieval_hit"]
-        assert r["version"] == 1
+        # both steps of the one version key: tables (1), then query_kind (2)
+        assert r["version"] == 2
         assert r["notes"] == notes_before        # older data survived intact
 
 

@@ -45,6 +45,21 @@ HOOK_SOURCES = ("hook_prompt", "hook_pre_action", "legacy_gist")
 SEARCH_SOURCE = "mcp_search"
 READ_SOURCE = "mcp_read"
 
+# Plan B (2026-09-04). ★ = the share of hits both halves of the hybrid search
+# agreed on (retrieval_hit.in_both), over the sources that ARE searches: a read
+# writes one hit with in_both 0 and would only dilute it. Printed twice — over
+# every event and without the service-labelled prompts — because the harness's
+# own traffic does not score like human prompts, and not even in a fixed
+# direction: over hook_prompt, service prompts scored 31.8 % against 42.6 % for
+# human ones under bge-small, and 52.5 % against 40.7 % under
+# multilingual-e5-small (measured 2026-09-11). A single number would hide which
+# mix you are looking at; neither of the two is the "right" one by construction.
+STAR_SOURCES = (*HOOK_SOURCES, SEARCH_SOURCE)
+SERVICE_KIND_PREFIX = "service:"
+UNLABELLED_KIND = "unlabelled"
+"""A prompt row with query_kind NULL: written by a process older than the
+column. Never counted as service — nobody looked."""
+
 
 # --------------------------------------------------------------------------
 # small helpers
@@ -160,6 +175,52 @@ def _event_stats(storage, cutoff_iso: str):
     return len(rows), _sorted_counts(by_source), _sorted_counts(by_origin), e2e
 
 
+def _prompt_kind_stats(storage, cutoff_iso: str) -> tuple[dict[str, int], int]:
+    """(query_kind counts over PROMPT rows in the window, how many are service).
+    Only the two prompt sources: everything else is 'n/a' by construction."""
+    marks = ", ".join("?" for _ in retrieval_log.PROMPT_SOURCES)
+    rows = storage._conn.execute(
+        f"SELECT query_kind, COUNT(*) AS n FROM retrieval_event"
+        f" WHERE ts >= ? AND source IN ({marks}) GROUP BY query_kind",
+        (cutoff_iso, *retrieval_log.PROMPT_SOURCES),
+    ).fetchall()
+    counts: dict[str, int] = {}
+    for r in rows:
+        kind = r["query_kind"] or UNLABELLED_KIND
+        counts[kind] = counts.get(kind, 0) + int(r["n"])
+    service = sum(n for k, n in counts.items() if k.startswith(SERVICE_KIND_PREFIX))
+    return _sorted_counts(counts), service
+
+
+def _star_split(storage, cutoff_iso: str) -> dict[str, float | int]:
+    """★ over STAR_SOURCES, with every event and without service-labelled ones.
+    NULL query_kind counts as clean: unlabelled is not service."""
+    marks = ", ".join("?" for _ in STAR_SOURCES)
+    clean = f"COALESCE(e.query_kind, '') NOT LIKE '{SERVICE_KIND_PREFIX}%'"
+    row = storage._conn.execute(
+        f"""
+        SELECT COUNT(*)                                             AS shows_all,
+               COALESCE(SUM(h.in_both), 0)                          AS stars_all,
+               COALESCE(SUM(CASE WHEN {clean} THEN 1 ELSE 0 END), 0) AS shows_clean,
+               COALESCE(SUM(CASE WHEN {clean} THEN h.in_both ELSE 0 END), 0) AS stars_clean
+          FROM retrieval_hit h
+          JOIN retrieval_event e ON e.id = h.event_id
+         WHERE e.ts >= ? AND e.source IN ({marks})
+        """,
+        (cutoff_iso, *STAR_SOURCES),
+    ).fetchone()
+
+    def pct(stars, shows) -> float:
+        return round(100.0 * int(stars) / int(shows), 1) if shows else 0.0
+
+    return {
+        "shows_all": int(row["shows_all"]),
+        "star_all_pct": pct(row["stars_all"], row["shows_all"]),
+        "shows_clean": int(row["shows_clean"]),
+        "star_clean_pct": pct(row["stars_clean"], row["shows_clean"]),
+    }
+
+
 def _oldest_ts(storage) -> str | None:
     row = storage._conn.execute("SELECT MIN(ts) AS oldest FROM retrieval_event").fetchone()
     return row["oldest"] if row is not None else None
@@ -222,6 +283,8 @@ def build_report(storage, vault_path, *, days=30, scope=None, top=10) -> dict:
         counters = {p: c for p, c in counters.items() if p in notes_by_path}
 
     events, by_source, by_origin, e2e = _event_stats(storage, cutoff_iso)
+    prompt_kinds, service_events = _prompt_kind_stats(storage, cutoff_iso)
+    star = _star_split(storage, cutoff_iso)
     oldest_ts = _oldest_ts(storage)
     log_days = _age_days(oldest_ts, now) or 0
 
@@ -317,6 +380,9 @@ def build_report(storage, vault_path, *, days=30, scope=None, top=10) -> dict:
         "log_days": log_days,
         "by_source": by_source,
         "by_origin": by_origin,
+        "prompt_kinds": prompt_kinds,
+        "service_events": service_events,
+        "star": star,
         "e2e_ms_p50": _percentile(e2e, 0.50),
         "e2e_ms_p95": _percentile(e2e, 0.95),
         "zero_day": bool(events == 0 or log_days < ZERO_DAY_MIN_DAYS
@@ -358,6 +424,10 @@ TRUNCATED_FMT = "…отчёт обрезан потолком в {n} строк
 
 # §6.3 — the two honest lines a first-day install must see instead of numbers it
 # has not earned yet. Wording follows the spec; only the count words are inflected.
+STAR_FMT = ("★ согласие: все {all_pct} % ({shows_all} {show_word}), "
+            "без служебных {clean_pct} % ({shows_clean}); "
+            "служебных промптов {service} из {prompts}")
+
 ZERO_DAY_FMT = ("Журнал выдачи накапливается: {events} {ev_word} за {days} {day_word}. "
                 "«Горячие» и «выданы, но не прочитаны» появятся после {min_days} дней "
                 "наблюдения; ниже — только то, что видно по ссылкам и правкам.")
@@ -398,6 +468,14 @@ def _header_block(report: dict) -> list[str]:
         lines.append("origin: " + ", ".join(f"{k} {v}" for k, v in s["by_origin"].items()))
     if s["e2e_ms_p50"] is not None:
         lines.append(f"e2e хук-путей: p50 {s['e2e_ms_p50']} мс, p95 {s['e2e_ms_p95']} мс")
+    star = s["star"]
+    if star["shows_all"]:
+        lines.append(STAR_FMT.format(
+            all_pct=star["star_all_pct"], shows_all=star["shows_all"],
+            show_word=_plural(star["shows_all"], "выдача", "выдачи", "выдач"),
+            clean_pct=star["star_clean_pct"], shows_clean=star["shows_clean"],
+            service=s["service_events"], prompts=sum(s["prompt_kinds"].values()),
+        ))
     if cov["skipped_total"]:
         lines.append(INCOMPLETE_FMT.format(n=cov["skipped_total"]))
     return lines

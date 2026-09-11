@@ -70,7 +70,8 @@ RETRIEVAL_LOG_STATEMENTS: tuple[str, ...] = (
     vec_enabled   INTEGER NOT NULL DEFAULT 0,
     latency_ms    INTEGER,                               -- время самого поиска
     e2e_ms        INTEGER,                               -- хук-пути: от точки ПЕРЕД запуском `uv run` до момента формирования блока в python (§2.8); НЕ включает матчер action-rules и пролог bash
-    client        TEXT                                   -- 'claude-code/2.1.246' (сервер) | 'hook' (CLI-пути)
+    client        TEXT,                                  -- 'claude-code/2.1.246' (сервер) | 'hook' (CLI-пути)
+    query_kind    TEXT                                   -- v2 (2026-09-04): 'human' | 'service:<kind>' | 'n/a'; NULL = строку писал процесс старше столбца
 )""",
     "CREATE INDEX IF NOT EXISTS idx_retrieval_event_ts     ON retrieval_event(ts)",
     "CREATE INDEX IF NOT EXISTS idx_retrieval_event_source ON retrieval_event(source)",
@@ -88,8 +89,9 @@ RETRIEVAL_LOG_STATEMENTS: tuple[str, ...] = (
 _INSERT_EVENT = (
     "INSERT INTO retrieval_event ("
     " ts, session_id, origin, source, tool, query, scope, mode, fts_mode,"
-    " n_returned, dedup_dropped, vec_enabled, latency_ms, e2e_ms, client"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " n_returned, dedup_dropped, vec_enabled, latency_ms, e2e_ms, client,"
+    " query_kind"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_HIT = (
@@ -177,6 +179,102 @@ def detect_origin(payload: dict | None) -> str:
     if isinstance(agent_id, str) and agent_id:
         return "subagent"
     return "main"
+
+
+# --- Plan B (2026-09-04): the harness's own text in the prompt hook ---------
+# A UserPromptSubmit payload carries whatever Claude Code put in the turn, and
+# since the collegial format that is more often than not NOT a human prompt: a
+# cross-session message, a task notification, an agent's report. Measured on
+# 04.09 over the whole hook_prompt history (589 rows): 337 begin with one of
+# the tags below. Those rows still MUST be written — an early exit in the shell
+# hook means no search, no row, and no denominator for any recount — so the
+# writer labels them instead. ONE list, and exactly the seven prefixes the
+# 04.09 recount used, so that stored labels reproduce its numbers (61 of 1113
+# baseline events).
+# tools/eval_search.py imports the tuple: a second copy is how the previous
+# list came to catch 95 of 337.
+_SERVICE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("<cross-session-message", "cross-session"),
+    ("<task-notification>", "task-notification"),
+    ("<agent-message", "agent-message"),
+    ("<teammate-message", "teammate-message"),
+    ("<system-reminder>", "system-reminder"),
+    ("<local-command-", "local-command"),
+    ("[SYSTEM NOTIFICATION", "system-notification"),
+)
+SERVICE_QUERY_PREFIXES: tuple[str, ...] = tuple(p for p, _ in _SERVICE_PREFIXES)
+"""Prefixes (matched at the START of the query, after lstrip) that mark a
+hook_prompt row as harness plumbing rather than a human prompt."""
+
+QUERY_KIND_HUMAN = "human"
+QUERY_KIND_NA = "n/a"
+PROMPT_SOURCES = ("hook_prompt", "legacy_gist")
+"""The two sources whose `query` IS the prompt. `hook_pre_action` logs a tool
+input and `mcp_*` an agent's own query — calling those 'human' would be a lie,
+so they get 'n/a'. NULL is thereby left with exactly one meaning: the row was
+written by a process older than the column."""
+
+
+def classify_query(text) -> str:
+    """'human' or 'service:<kind>' for a prompt text. Pure; never raises."""
+    s = (text or "").lstrip()
+    for prefix, kind in _SERVICE_PREFIXES:
+        if s.startswith(prefix):
+            return f"service:{kind}"
+    return QUERY_KIND_HUMAN
+
+
+def query_kind_for(source, query) -> str:
+    """The `query_kind` column value for one event: classify prompt sources,
+    'n/a' for everything else."""
+    if source not in PROMPT_SOURCES:
+        return QUERY_KIND_NA
+    return classify_query(query)
+
+
+RETRIEVAL_LOG_VERSION = 2
+"""The schema_version['retrieval_log'] the DDL above describes. storage's
+`_migrate_retrieval_log` runs RETRIEVAL_LOG_STATEMENTS below 1 and
+`upgrade_to_v2` below 2 — the body lives here, next to the DDL it changes."""
+
+
+def upgrade_to_v2(conn) -> int:
+    """v1 → v2 (2026-09-04): add `query_kind`, label every row that has none.
+
+    Runs INSIDE the caller's transaction (storage wraps it in BEGIN IMMEDIATE)
+    and is idempotent: the ALTER happens only when the column is missing — a
+    fresh v2 CREATE already has it — and the labelling touches only NULL rows,
+    so a label set by hand or by an earlier run survives. Returns the number of
+    rows labelled. Only `PRAGMA table_info` (a schema read) and ordinary DML are
+    used — no journal_mode PRAGMA — so the busy handler covers every lock this
+    takes.
+
+    This runs ONCE per database (storage stamps version 2). Rows a writer
+    older than the column inserts afterwards — a `serve` not yet restarted, a
+    hook in the seconds between the rollout's two saves — come in as NULL and
+    are labelled by the daily `rotate`, which shares `_label_null_rows`.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(retrieval_event)").fetchall()}
+    if "query_kind" not in cols:
+        conn.execute("ALTER TABLE retrieval_event ADD COLUMN query_kind TEXT")
+    return _label_null_rows(conn)
+
+
+def _label_null_rows(conn) -> int:
+    """Label every row whose query_kind is NULL; 0 when the column does not
+    exist yet (a v1 database before storage's migration — never ALTER from
+    here, storage is the one schema authority). Caller owns the transaction."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(retrieval_event)").fetchall()}
+    if "query_kind" not in cols:
+        return 0
+    rows = conn.execute(
+        "SELECT id, source, query FROM retrieval_event WHERE query_kind IS NULL"
+    ).fetchall()
+    conn.executemany(
+        "UPDATE retrieval_event SET query_kind = ? WHERE id = ?",
+        [(query_kind_for(r[1], r[2]), r[0]) for r in rows],
+    )
+    return len(rows)
 
 
 def skipped_count() -> int:
@@ -424,6 +522,10 @@ def _write_event(ctx: LogContext, *, query, scope, mode, fts_mode, n_returned,
         int(latency_ms) if latency_ms is not None else None,
         _e2e_ms(ctx.started_at),
         ctx.client,
+        # Classified from the RAW query, before the cap above: a service prefix
+        # sits at the head, so the cap would not matter, but the label must
+        # describe what came in, not what was kept.
+        query_kind_for(ctx.source, query),
     )
     for attempt in (0, 1):
         pending = 0
@@ -468,6 +570,12 @@ def rotate(db_path: Path, *, days: int = RETENTION_DAYS) -> int:
     keeps the failure local, the caller's keeps _init alive (§2.6).
     Knows nothing about Storage or schema_version: the daily gate and the
     `retrieval_log_rotated_at` stamp belong to the caller.
+
+    Second, separate transaction (2026-09-04): label rows whose `query_kind`
+    is NULL — left by a writer older than the column, see upgrade_to_v2. It
+    rides on the same daily gate because that is exactly the cadence such
+    rows need: none should outlive a day of serve uptime. Its failure is
+    swallowed like the deletion's and never changes the return value.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     conn = None
@@ -490,6 +598,16 @@ def rotate(db_path: Path, *, days: int = RETENTION_DAYS) -> int:
         except Exception:
             _rollback(conn)
             raise
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _label_null_rows(conn)
+                conn.execute("COMMIT")
+            except Exception:
+                _rollback(conn)
+                raise
+        except Exception:
+            logger.debug("retrieval log: labelling NULL query_kind rows failed", exc_info=True)
         return max(int(deleted or 0), 0)
     except Exception:
         logger.debug("retrieval log rotation failed", exc_info=True)

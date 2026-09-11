@@ -43,21 +43,31 @@ def _note(storage, path, *, title=None, scope="global", note_type="wiki",
 
 def _event(storage, *, source, days_ago=1.0, hits=(), origin="unknown", query="q",
            scope=None, mode=None, fts_mode=None, e2e_ms=None, latency_ms=5,
-           session_id=None, tool=None, client=None, dedup_dropped=0, vec_enabled=0):
-    """Одно событие журнала + его хиты (DDL §2.3, I-1/I-2)."""
+           session_id=None, tool=None, client=None, dedup_dropped=0, vec_enabled=0,
+           in_both=0, query_kind="auto"):
+    """Одно событие журнала + его хиты (DDL §2.3, I-1/I-2).
+
+    `query_kind="auto"` — как пишет писатель (retrieval_log.query_kind_for);
+    явное значение или None — как оставил бы старый процесс. `in_both` ставится
+    всем хитам события разом: ★ отчёта считается по этому флагу."""
+    from symbiosis_brain.retrieval_log import query_kind_for
+
+    if query_kind == "auto":
+        query_kind = query_kind_for(source, query)
     cur = storage._conn.execute(
         "INSERT INTO retrieval_event (ts, session_id, origin, source, tool, query, scope,"
-        " mode, fts_mode, n_returned, dedup_dropped, vec_enabled, latency_ms, e2e_ms, client)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " mode, fts_mode, n_returned, dedup_dropped, vec_enabled, latency_ms, e2e_ms, client,"
+        " query_kind)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (_ts(days_ago), session_id, origin, source, tool, query, scope, mode, fts_mode,
-         len(hits), dedup_dropped, vec_enabled, latency_ms, e2e_ms, client),
+         len(hits), dedup_dropped, vec_enabled, latency_ms, e2e_ms, client, query_kind),
     )
     event_id = cur.lastrowid
     for rank, path in enumerate(hits):
         storage._conn.execute(
             "INSERT INTO retrieval_hit (event_id, rank, note_path, score, in_both)"
             " VALUES (?,?,?,?,?)",
-            (event_id, rank, path, 0.5, 0),
+            (event_id, rank, path, 0.5, in_both),
         )
     storage._conn.commit()
     return event_id
@@ -101,6 +111,68 @@ def test_build_report_has_exactly_the_contract_keys(vault_db):
         "summary", "hot", "archive_candidates", "surfaced_not_read",
         "by_scope", "by_type", "routing_health", "coverage",
     }
+
+
+def test_summary_shows_star_with_and_without_service_prompts(vault_db):
+    """Plan B (2026-09-04): a harness-injected prompt is logged AND labelled, and
+    the report prints the agreement share (★ = hits in both halves) twice —
+    over every event and over the non-service ones — so nobody has to choose a
+    side. Which of the two comes out higher is not fixed — it follows the
+    embedder (service prompts scored below human ones under bge-small and above
+    them under e5). The numbers asserted here are built from the rows below."""
+    from symbiosis_brain import report
+
+    vault, storage = vault_db
+    _note(storage, "wiki/alpha.md")
+    _note(storage, "wiki/beta.md")
+    _event(storage, source="hook_prompt", query="почини баг", hits=["wiki/alpha.md"], in_both=1)
+    _event(storage, source="hook_prompt", query='<cross-session-message from="lead">do',
+           hits=["wiki/alpha.md", "wiki/beta.md"], in_both=1)
+    _event(storage, source="hook_prompt", query="<task-notification>\n<task-id>1</task-id>",
+           hits=["wiki/beta.md", "wiki/alpha.md"], in_both=1)
+    _event(storage, source="mcp_search", query="alpha", hits=["wiki/alpha.md"], in_both=0)
+    _event(storage, source="mcp_read", query="wiki/alpha.md", hits=["wiki/alpha.md"], in_both=0)
+    # a row an OLD process wrote after the column arrived: NULL is "unlabelled",
+    # and unlabelled is never counted as service
+    _event(storage, source="hook_prompt", query="старый процесс", hits=["wiki/beta.md"],
+           in_both=1, query_kind=None)
+
+    s = report.build_report(storage, vault)["summary"]
+    assert s["prompt_kinds"] == {
+        "human": 1, "service:cross-session": 1, "service:task-notification": 1, "unlabelled": 1,
+    }
+    assert s["service_events"] == 2
+    # shows over hook + mcp_search sources (mcp_read is a read, not a search):
+    # human 1 + cross 2 + task 2 + mcp_search 1 + old 1 = 7, stars 1+2+2+0+1 = 6 → 85.7 %;
+    # clean drops cross and task: 3 shows, 2 stars → 66.7 %.
+    assert s["star"] == {"shows_all": 7, "star_all_pct": 85.7,
+                         "shows_clean": 3, "star_clean_pct": 66.7}
+
+
+def test_summary_star_clean_differs_from_all_when_service_hits_agree_more(vault_db):
+    from symbiosis_brain import report
+
+    vault, storage = vault_db
+    _note(storage, "wiki/alpha.md")
+    _event(storage, source="hook_prompt", query="почини баг", hits=["wiki/alpha.md"], in_both=0)
+    _event(storage, source="hook_prompt", query='<cross-session-message from="lead">do',
+           hits=["wiki/alpha.md", "wiki/alpha.md"], in_both=1)
+    s = report.build_report(storage, vault)["summary"]
+    assert s["star"] == {"shows_all": 3, "star_all_pct": 66.7,
+                         "shows_clean": 1, "star_clean_pct": 0.0}
+
+
+def test_render_header_carries_the_star_split_line(vault_db):
+    from symbiosis_brain import report
+
+    vault, storage = vault_db
+    _note(storage, "wiki/alpha.md")
+    _event(storage, source="hook_prompt", query="почини баг", hits=["wiki/alpha.md"], in_both=0)
+    _event(storage, source="hook_prompt", query='<cross-session-message from="lead">do',
+           hits=["wiki/alpha.md", "wiki/alpha.md"], in_both=1)
+    text = report.render_report(report.build_report(storage, vault))
+    assert "★ согласие: все 66.7 % (3 выдачи), без служебных 0.0 % (1); " \
+           "служебных промптов 1 из 2" in text
 
 
 def test_hot_is_ranked_by_mcp_search_plus_read_then_path(vault_db):

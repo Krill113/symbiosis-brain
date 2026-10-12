@@ -64,10 +64,43 @@ silently did until 2026-08.
 
 ### Bridge 1 — context percentage
 
-`$SB_TMP/brain-context-pct-<session_id>` — one integer, rewritten on every status tick.
-`brain-save-trigger.sh` reads it to decide whether a threshold was crossed, and
-`brain-save-marker.sh` copies it into `brain-last-save-pct-<session_id>` on every save.
+Context comes from `context_window.used_percentage`, not a rate-limit percentage.
+A legacy root `used_percentage` is accepted only when `context_window` is absent.
+The bounded Bash reader follows object boundaries, ignores quoted/nested decoys,
+and rejects duplicate relevant keys. It uses no external JSON process.
+
+Two per-session files form an observation:
+- `brain-context-pct-<session_id>` — integer 0–100, or an empty line when unavailable;
+- `brain-context-state-<session_id>` — `<integer>\t<unix_seconds>\n`, or
+  `unknown\t<unix_seconds>\n`.
+
+The producer invalidates state before writing the percentage, then publishes state.
+Readers require one complete record in each file, matching percentages, and an age
+of 0–60 seconds. Truncated writes, clock rollback, missing state and old observations
+are unknown. This is a fail-closed best-effort bridge, not a transactional database.
 `SB_TMP` is `${TMPDIR:-${TEMP:-/tmp}}` — the same chain every hook uses.
+
+Missing, null, wrong-type or out-of-range percentages render as `ctx:?`. When a
+`current_usage` object is present, at least one input/cache counter must be positive;
+an all-zero or unusable observation is also shown as unknown. This is a conservative
+availability policy, not a claim that the client is broken: an empty new session can
+also send zeros. A genuinely small context with positive usage may round to `0%`,
+and decreases after compaction are accepted. No previous maximum is substituted.
+
+Stop thresholds and percentage-driven prompt rules use the shared freshness reader.
+Unknown context does not overwrite the last-save marker. Turn-driven prompt rules
+and the PreCompact save request continue to work. SessionStart (including compact)
+clears both observation files for its own session, not another window's state.
+Deploy the exporter, helper and consumers together: legacy percentage-only files no
+longer authorize threshold actions.
+
+The model label uses `model.display_name`, falling back to `model.id`; effort uses
+only runtime `effort.level` (`low`, `medium`, `high`, `xhigh`, `max`). Unknown effort
+is hidden rather than borrowed from global settings. These rules do not depend on
+a provider name. String decoding supports UTF-8 and JSON Unicode escapes; control
+characters are rejected. Payloads over 64 KiB, selected strings over 1024 characters
+and unsupported/malformed observations fail closed. This is a client-payload reader,
+not a general-purpose JSON validation service.
 
 ### Bridge 2 — rate limits
 

@@ -4,21 +4,22 @@ set -e
 
 # Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} matches the /tmp paths
 # used below (Linux CI often presets TMPDIR to a non-/tmp dir).
-export TMPDIR=/tmp TEMP=/tmp
+WORK="$(mktemp -d)"
+export TMPDIR="$WORK" TEMP="$WORK"
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/brain-save-trigger.sh"
 SESSION_ID="test-prompt-$$"
-PCT_FILE="/tmp/brain-context-pct-${SESSION_ID}"
-SHOWN="/tmp/brain-rules-shown-${SESSION_ID}"
-TURNS="/tmp/brain-rules-turn-counter-${SESSION_ID}"
-ROUTE_TURN="/tmp/brain-route-turn-${SESSION_ID}"
+PCT_FILE="$WORK/brain-context-pct-${SESSION_ID}"
+SHOWN="$WORK/brain-rules-shown-${SESSION_ID}"
+TURNS="$WORK/brain-rules-turn-counter-${SESSION_ID}"
+ROUTE_TURN="$WORK/brain-route-turn-${SESSION_ID}"
 
 cleanup() {
-  rm -f "$PCT_FILE" "$SHOWN" "$TURNS" "$ROUTE_TURN" \
-        "/tmp/brain-precompact-${SESSION_ID}" \
-        "/tmp/brain-precompact-pending-${SESSION_ID}"
+  rm -f "$WORK/brain-context-state-${SESSION_ID}" "$PCT_FILE" "$SHOWN" "$TURNS" "$ROUTE_TURN" \
+        "$WORK/brain-precompact-${SESSION_ID}" \
+        "$WORK/brain-precompact-pending-${SESSION_ID}"
 }
-trap cleanup EXIT
+trap 'cleanup; rm -rf "$WORK"' EXIT
 
 pass=0
 fail=0
@@ -48,6 +49,7 @@ export SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL="10"
 # Test 1: short prompt → A1 skipped (no memory section)
 cleanup
 echo "50" > "$PCT_FILE"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true run_hook "ok")
 if [[ "$out" != *"[memory:"* ]]; then t "short prompt skips A1" PASS; else t "short prompt skips A1" FAIL; fi
 
@@ -59,6 +61,7 @@ if [[ "$out" != *"[memory:"* ]]; then t "slash-command skips A1" PASS; else t "s
 # Test 3: zone trigger → rules section emitted
 cleanup
 echo "63" > "$PCT_FILE"
+printf '%s\t%s\n' "63" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 echo "0" > "$TURNS"
 out=$(run_hook "this is a long enough prompt to not trip the short-guard")
 if [[ "$out" == *"[rules"* ]]; then t "zone 60 triggers rules" PASS; else t "zone 60 triggers rules" FAIL; fi
@@ -67,6 +70,7 @@ if grep -q "^60$" "$SHOWN" 2>/dev/null; then t "zone marked as shown" PASS; else
 # Test 4: turn counter trigger → rules section emitted
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 echo "10" > "$TURNS"
 out=$(run_hook "another long enough prompt for guard")
 if [[ "$out" == *"[rules"* ]]; then t "turn counter triggers rules" PASS; else t "turn counter triggers rules" FAIL; fi
@@ -78,6 +82,7 @@ if [ "$(cat "$TURNS" 2>/dev/null)" = "0" ]; then t "turn counter reset" PASS; el
 # must not repeat once its zone was shown.
 cleanup
 echo "63" > "$PCT_FILE"
+printf '%s\t%s\n' "63" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 echo "60" > "$SHOWN"
 echo "0" > "$TURNS"
 out=$(run_hook "long enough prompt to bypass guard")
@@ -94,6 +99,7 @@ if [[ "$out" != *"[rules"* ]]; then t "rules disabled silences A2" PASS; else t 
 # payload — keeps the test hermetic and fast.
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 TMPBIN="$(mktemp -d)"
 cat > "$TMPBIN/uv" <<'EOF'
 #!/bin/sh
@@ -101,8 +107,8 @@ echo '[{"path":"x.md","title":"X","scope":"global","gist":"g"}]'
 EOF
 chmod +x "$TMPBIN/uv"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
-      SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
-      SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+      SYMBIOSIS_BRAIN_TOOLS="$WORK/fake-tools" \
+      SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" \
       SYMBIOSIS_BRAIN_RULES_ENABLED=false \
       PATH="$TMPBIN:$PATH" \
       run_hook "long enough prompt for guard")
@@ -112,6 +118,7 @@ rm -rf "$TMPBIN"
 # Test 8: First-turn roster injection at pct=10 (below all zones)
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "long enough prompt to bypass guard")
 if [[ "$out" == *"[rules"* ]]; then t "first-turn roster fires below all zones" PASS; else t "first-turn roster fires below all zones" FAIL; fi
 if [ -f "$SHOWN" ] && grep -q "^0$" "$SHOWN"; then t "sentinel 0 written to shown file" PASS; else t "sentinel 0 written to shown file" FAIL; fi
@@ -122,6 +129,7 @@ if [ -f "$SHOWN" ] && grep -q "^0$" "$SHOWN"; then t "sentinel 0 written to show
 # Self-contained: explicitly seed $SHOWN with sentinel "0" so this test
 # doesn't silently break if anyone reorders or adds cleanup before it.
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 echo "0" > "$SHOWN"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=false SYMBIOSIS_BRAIN_RULES_ENABLED=true run_hook "another long enough prompt below zones")
 if [[ "$out" != *".claude/docs/catalog/"* ]]; then t "first-turn tools roster doesn't repeat" PASS; else t "first-turn tools roster doesn't repeat" FAIL; fi
@@ -133,6 +141,7 @@ cleanup
 TMPLOGDIR="$(mktemp -d)"
 DEBUG_LOG="$TMPLOGDIR/brain-hook-debug.log"
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 TMPBIN="$(mktemp -d)"
 cat > "$TMPBIN/uv" <<'EOF'
 #!/bin/sh
@@ -141,8 +150,8 @@ exit 1
 EOF
 chmod +x "$TMPBIN/uv"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
-      SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
-      SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+      SYMBIOSIS_BRAIN_TOOLS="$WORK/fake-tools" \
+      SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" \
       SYMBIOSIS_BRAIN_RULES_ENABLED=false \
       SYMBIOSIS_BRAIN_DEBUG_LOG="$DEBUG_LOG" \
       PATH="$TMPBIN:$PATH" \
@@ -176,7 +185,7 @@ if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "3" ]; then t "monotonic counter grows
 
 # (d) survives a SessionStart run with the same session_id (counter NOT reset)
 echo "{\"session_id\":\"${SESSION_ID}\",\"source\":\"compact\"}" | \
-  SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault CLAUDE_ENV_FILE="" bash "$SESSION_START_HOOK" >/dev/null 2>&1
+  SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" CLAUDE_ENV_FILE="" bash "$SESSION_START_HOOK" >/dev/null 2>&1
 if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "3" ]; then t "monotonic counter survives session-start (compact)" PASS; else t "monotonic counter survives session-start (compact)" FAIL; fi
 
 # (e) keeps growing after compact → 4
@@ -189,6 +198,7 @@ if [ "$(cat "$ROUTE_TURN" 2>/dev/null)" = "4" ]; then t "monotonic counter resum
 # below RECALL_SKIP_SHORT_CHARS — and recall was suppressed on a perfectly long prompt.
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 TMPBIN="$(mktemp -d)"
 ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/uv" <<'EOF'
@@ -199,8 +209,8 @@ EOF
 chmod +x "$TMPBIN/uv"
 esc_input="{\"session_id\":\"${SESSION_ID}\",\"prompt\":\"ok \\\"q\\\" and then a much longer tail that clears the guard\"}"
 echo "$esc_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
-  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools \
-  SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_TOOLS="$WORK/fake-tools" \
+  SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" \
   SYMBIOSIS_BRAIN_RULES_ENABLED=false \
   SB_TEST_ARGS_FILE="$ARGS_FILE" \
   PATH="$TMPBIN:$PATH" \
@@ -216,6 +226,7 @@ rm -rf "$TMPBIN"
 # fallback. The env var these hooks used to trust is never set in a hook process.
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 TMPBIN="$(mktemp -d)"
 ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/uv" <<'EOF'
@@ -229,7 +240,7 @@ mkdir -p "$PROJ_DIR"
 printf '<!-- symbiosis-brain v1: scope=alpha-net -->\n' > "$TMPBIN/proj/CLAUDE.md"
 cwd_input="{\"session_id\":\"${SESSION_ID}\",\"cwd\":\"$PROJ_DIR\",\"prompt\":\"a prompt long enough to clear the short-prompt guard\"}"
 out=$(echo "$cwd_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
-  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_TOOLS="$WORK/fake-tools" SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" \
   SYMBIOSIS_BRAIN_RULES_ENABLED=false SYMBIOSIS_BRAIN_SCOPE= \
   SB_TEST_ARGS_FILE="$ARGS_FILE" PATH="$TMPBIN:$PATH" bash "$HOOK" prompt-check 2>/dev/null)
 if grep -q -- "--scope alpha-net" "$ARGS_FILE" 2>/dev/null; then t "scope resolved from payload cwd is passed to search-gist" PASS; else t "scope resolved from payload cwd is passed to search-gist" FAIL; fi
@@ -241,6 +252,7 @@ rm -rf "$TMPBIN"
 # hid every project note.
 cleanup
 echo "10" > "$PCT_FILE"
+printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-state-${SESSION_ID}"
 TMPBIN="$(mktemp -d)"
 ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/uv" <<'EOF'
@@ -253,7 +265,7 @@ BARE_DIR="$TMPBIN/bare/sub"
 mkdir -p "$BARE_DIR"
 bare_input="{\"session_id\":\"no-bridge-$$\",\"cwd\":\"$BARE_DIR\",\"prompt\":\"a prompt long enough to clear the short-prompt guard\"}"
 out=$(echo "$bare_input" | SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
-  SYMBIOSIS_BRAIN_TOOLS=/tmp/fake-tools SYMBIOSIS_BRAIN_VAULT=/tmp/fake-vault \
+  SYMBIOSIS_BRAIN_TOOLS="$WORK/fake-tools" SYMBIOSIS_BRAIN_VAULT="$WORK/fake-vault" \
   SYMBIOSIS_BRAIN_RULES_ENABLED=false SYMBIOSIS_BRAIN_SCOPE= \
   SB_TEST_ARGS_FILE="$ARGS_FILE" PATH="$TMPBIN:$PATH" bash "$HOOK" prompt-check 2>/dev/null)
 if [ -s "$ARGS_FILE" ] && ! grep -q -- "--scope" "$ARGS_FILE"; then t "unresolved scope omits the --scope flag" PASS; else t "unresolved scope omits the --scope flag" FAIL; fi

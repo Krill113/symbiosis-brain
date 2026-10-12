@@ -25,17 +25,18 @@ sb_int() {  # integer part only — matches the old `cut -d. -f1`
   if [[ $data =~ \"$1\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then REPLY=${BASH_REMATCH[1]}; else REPLY=; fi
 }
 
-sb_str cwd;             cwd=${REPLY##*[/\\]}
-sb_str display_name;    model=${REPLY#Claude }
-sb_int used_percentage; ctx=$REPLY
-sb_str session_id;      session_id=$REPLY
-
-effort=
-sb_settings=~/.claude/settings.json
-if [ -r "$sb_settings" ]; then
-  settings=$(<"$sb_settings")
-  [[ $settings =~ \"effortLevel\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && effort=${BASH_REMATCH[1]}
+sb_dir=${BASH_SOURCE[0]}
+case $sb_dir in *[/\\]*) sb_dir=${sb_dir%[/\\]*} ;; *) sb_dir=. ;; esac
+. "$sb_dir/sb-hooklib.sh" 2>/dev/null || exit 0
+if [ -z "${SB_EXPORT_DONE:-}" ]; then
+  sb_status_observation "$data"
 fi
+sb_str cwd; cwd=${REPLY##*[/\\]}
+model=${SB_MODEL_NAME:-$SB_MODEL_ID}
+model=${model#Claude }
+ctx=$SB_CONTEXT_PCT
+effort=$SB_EFFORT
+sb_session_id "$data"; session_id=$SB_SESSION_ID
 
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
@@ -107,6 +108,8 @@ fi
 if [ -n "$ctx" ]; then
   sb_bar "$ctx"
   parts="$parts | ctx:$REPLY ${ctx}%"
+else
+  parts="$parts | ctx:?"
 fi
 # 5h reset timer (digits)
 if [ -n "$reset5h" ]; then

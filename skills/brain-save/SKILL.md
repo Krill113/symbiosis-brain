@@ -36,9 +36,9 @@ If triggered at session end or after a multi-step task — do a quick self-scan 
 - **Tool/API surprise?** Unexpected behavior worth remembering → save as `pattern`
 - **Insights worth keeping?** Brainstormed ideas, third-party suggestions, design alternatives, project ideas — anything useful for future work that isn't an error → save as `decision` / `pattern` / `wiki` / `research` (pick by content type)
 - **Routing gap?** Did I pick the wrong tool and get corrected, repeat a tool choice manually, or use a tool for a recurring intent that has no route? → if the trigger is concrete, recurring, and narrow (distinctive token, no barewords — like the symbol-token rule), draft a route and append it to `$SYMBIOSIS_BRAIN_VAULT/tool-routing.local.json` (bare array, merge by `id`; out-of-the-box — never ask the user to hand-edit JSON), then tell the user "added route X because Y; revert via `{"id": "X", "disabled": true}`. Unsure → don't add (precision-first).
-- **Session-close / parallel-session handoff?** Triggers: explicit "закрываем" / "запомни на чём остановились" / "продолжим в другом окне", or context > 70% after substantive work, or before starting parallel session in another window → update `## Handoff YYYY-MM-DD` section in `<scope>/<scope>.md (legacy fallback: projects/<scope>.md)` per [[wiki/handoff-pattern]] (4 bullets: shipped / WIP / parked / next-step). Same-day re-trigger → overwrite that block, don't duplicate. **After the handoff section is written**, invoke `brain_rotate_handoffs(scope=<current_scope>)` — tool автоматически переносит handoff'ы старше inline-window (2 distinct dates) в `archive/handoffs/<scope>-<date>[-<slug>].md`, no-op если ротировать нечего. Если `sections_archived > 0` — кратко сообщи пользователю «архивировано N handoff'ов». Не вызывай с `scope=None` (это для maintenance, не для brain-save). См. [[wiki/handoff-rotation]].
+- **Session-close / parallel-session handoff?** Triggers: explicit "закрываем" / "запомни на чём остановились" / "продолжим в другом окне", or context > 70% after substantive work, or before starting parallel session in another window → update `## Handoff YYYY-MM-DD` section in `<scope>/<scope>.md (legacy fallback: projects/<scope>.md)` with 4 bullets: shipped / WIP / parked / next-step. Same-day re-trigger → overwrite that block, don't duplicate. **After the handoff section is written**, invoke `brain_rotate_handoffs(scope=<current_scope>)` — tool автоматически переносит handoff'ы старше inline-window (2 distinct dates) в `archive/handoffs/<scope>-<date>[-<slug>].md`, no-op если ротировать нечего. Если `sections_archived > 0` — кратко сообщи пользователю «архивировано N handoff'ов». Не вызывай с `scope=None` (это для maintenance, не для brain-save).
 
-**Then two separate passes, in this order, after the scan above:** (1) invoke skill `brain-autolearn` — repeated mistakes and repeated actions → action rules / scripts / skills / proposals, owner kept in the loop; (2) **if the skill `brain-self-critique` is installed**, invoke it — how Symbiosis Brain itself served this session (noisy or missed recall, `brain_*` friction, workarounds, hook misfires); skip (2) silently when it is not. Each records its own findings through its own procedure — keep them out of this retrospective. On a clean session each must end in seconds with "nothing".
+**After the scan above, invoke skill `brain-autolearn`** — repeated mistakes and repeated actions → action rules / scripts / skills / proposals, owner kept in the loop. It records its own findings through its own procedure — keep them out of this retrospective. On a clean session it must end in seconds with "nothing".
 
 Most sessions produce 0 findings. Don't force it. If nothing stands out — skip to end.
 Each finding that passes the scan goes through Steps 1–7 as usual.
@@ -61,7 +61,7 @@ Decision tree:
 - **Related but distinct note exists** → create new, but the new note MUST `[[link]]` to the existing one (graph-connectedness gate, see Step 4).
 - **Nothing close** → continue.
 
-**Common failure mode** (see [[feedback/symbiosis-brain-usage-self-critique-2026-05-07]]): under flow pressure ("я уже знаю что писать"), this step gets skipped. Don't skip. The cost of a 2-second `brain_search` is far below the cost of a duplicate that fragments knowledge.
+**Common failure mode:** under flow pressure ("я уже знаю что писать"), this step gets skipped. Don't skip. The cost of a 2-second `brain_search` is far below the cost of a duplicate that fragments knowledge.
 
 If you're saving in a session where you already searched on the same topic in Step 1 of `brain-recall` — that result counts; you don't need to re-search.
 
@@ -139,4 +139,4 @@ If `brain_write` is unavailable, save to auto-memory (MEMORY.md) with a note:
 ### Dogfooding
 
 If you notice friction, bugs, or improvement ideas while using Symbiosis Brain,
-add them to `symbiosis-brain/projects/symbiosis-brain-backlog.md` via `brain_write`. Don't force analysis — just note real observations.
+append them to the current project's existing backlog note via `brain_append`. If no backlog note exists, report the observations to the user instead. Don't force analysis — just note real observations.

@@ -14,6 +14,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
 from symbiosis_brain import install_cli
 from symbiosis_brain.action_rules import META_BASENAME
 from symbiosis_brain.storage import Storage, vector_drift
@@ -32,6 +34,26 @@ def _write_meta(vault: Path, *, total: int, compiled: int) -> None:
 
 
 class TestActionRules:
+    @pytest.mark.parametrize("metadata,expected", [
+        ({"rules_total": 0, "rules_compiled": 0}, 0),
+        ({"rules_total": 0, "rules_compiled": 0, "skipped": []}, 0),
+        ({"rules_total": 0, "rules_compiled": 0, "skipped": [{"id": "fixture", "reason": "invalid"}]}, 1),
+        ({"rules_total": 0, "rules_compiled": 0, "unmatched_patterns": [{"id": "fixture"}]}, 1),
+        ({"rules_total": 0, "rules_compiled": 0, "prompt_route_warnings": [{"id": "fixture"}]}, 1),
+        ({"rules_total": 0, "rules_compiled": 0, "validation": "unavailable", "kept_previous": True}, 1),
+    ])
+    def test_no_declared_action_rules_respects_metadata_errors(self, tmp_path: Path, capsys, metadata, expected):
+        (_index_dir(tmp_path) / META_BASENAME).write_text(json.dumps(metadata), encoding="utf-8")
+        assert install_cli._report_action_rules(tmp_path) == expected
+        out = capsys.readouterr().out
+        if expected == 0:
+            assert "no action rules declared" in out
+            assert "NONE COMPILED" not in out
+            assert "compile-action-rules" not in out
+        else:
+            assert "NONE COMPILED" in out
+            assert "OK" not in out
+
     def test_zero_compiled_rules_is_an_issue(self, tmp_path: Path, capsys):
         """The state that used to print `✓ Action-recall OK`: hook wired,
         nothing to fire."""

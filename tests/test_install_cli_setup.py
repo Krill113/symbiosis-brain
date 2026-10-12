@@ -407,14 +407,17 @@ def test_copy_skills_backs_up_modified_user_file(tmp_path, monkeypatch):
     assert not list((target / "brain-autolearn").glob("SKILL.md.bak.*"))
 
 
-def test_brain_save_step0_guards_the_optional_pass():
-    """Decision 2: brain-self-critique stays personal, so Step 0 must be able to skip it."""
-    text = (install_cli._packaged_skills_dir() / "brain-save" / "SKILL.md").read_text(encoding="utf-8")
-    assert "brain-autolearn" in text
-    critique_lines = [ln for ln in text.splitlines() if "brain-self-critique" in ln]
-    assert critique_lines, "Step 0 lost the optional pass entirely"
-    for line in critique_lines:
-        assert "is installed" in line, line
+def test_brain_save_step0_invokes_only_shipped_autolearn():
+    """Self-learning ships; developer-only self-critique is never invoked by brain-save."""
+    skills = install_cli._packaged_skills_dir()
+    text = (skills / "brain-save" / "SKILL.md").read_text(encoding="utf-8")
+    step0 = text.split("### Step 0:", 1)[1].split("### Step 1:", 1)[0]
+    assert re.search(r"invoke skill\s+`brain-autolearn`", step0)
+    assert "brain-self-critique" not in text
+    assert "brain-autolearn" in install_cli.SKILL_NAMES
+    assert (skills / "brain-autolearn" / "SKILL.md").is_file()
+    assert "brain-self-critique" not in install_cli.SKILL_NAMES
+    assert not (skills / "brain-self-critique").exists()
 
 
 def test_setup_rollback_removes_skill_reference_files(tmp_path, monkeypatch):

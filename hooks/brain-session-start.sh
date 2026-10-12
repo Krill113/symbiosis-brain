@@ -182,7 +182,7 @@ if [ -n "$SESSION_ID" ]; then
         "$SB_TMP/brain-save-later-${SESSION_ID}" \
         "$SB_TMP/brain-rules-shown-${SESSION_ID}" \
         "$SB_TMP/brain-rules-turn-counter-${SESSION_ID}" \
-        "$SB_TMP/brain-context-pct-${SESSION_ID}"
+        "$SB_TMP/brain-context-pct-${SESSION_ID}" "$SB_TMP/brain-context-state-${SESSION_ID}"
   # NOTE: brain-route-turn-${SESSION_ID} is DELIBERATELY excluded here —
   # the monotonic routing counter must survive compact (SessionStart runs
   # on compact). See stage4 design §6.2. Orphan-GC reaps it by mtime only.

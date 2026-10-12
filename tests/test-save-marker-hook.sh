@@ -13,6 +13,7 @@ MARKER_HOOK="$HOOKS/brain-save-marker.sh"
 
 WORK="$(mktemp -d)"
 export TMPDIR="$WORK" TEMP="$WORK"
+SB_TMP="$WORK"
 SID="save-marker-$$"
 PCT="$WORK/brain-context-pct-${SID}"
 LAST="$WORK/brain-last-save-pct-${SID}"
@@ -30,6 +31,7 @@ run_marker() {  # stdin payload -> rc in $RC, output in $OUT
 # (1) context-pct present -> marker written with the same value, hook is mute
 rm -f "$PCT" "$LAST"
 echo "37" > "$PCT"
+printf '%s\t%s\n' "37" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"ok\":true}}"
 if [ "$RC" = "0" ] && [ -z "$OUT" ] && [ "$(cat "$LAST" 2>/dev/null)" = "37" ]; then
   t "writes marker from context-pct" PASS
@@ -41,6 +43,7 @@ fi
 #     used to disagree: session-start matched "session_id":"x", save-trigger "x": "y")
 rm -f "$PCT" "$LAST"
 echo "41" > "$PCT"
+printf '%s\t%s\n' "41" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\": \"${SID}\", \"tool_name\": \"mcp__symbiosis-brain__brain_patch\"}"
 if [ "$(cat "$LAST" 2>/dev/null)" = "41" ]; then
   t "parses session_id with a space after the colon" PASS
@@ -60,6 +63,7 @@ fi
 # (4) failed tool call -> not a save
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"is_error\":true}}"
 if [ "$RC" = "0" ] && [ ! -f "$LAST" ]; then
   t "is_error response does not write a marker" PASS
@@ -72,6 +76,7 @@ fi
 # whole payload would have made saving them silently skip the marker.
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_input\":{\"content\":\"the hook skips a response with \\\"is_error\\\":true in it\"},\"tool_response\":{\"ok\":true}}"
 if [ "$(cat "$LAST" 2>/dev/null)" = "50" ]; then
   t "is_error inside the note body still writes the marker" PASS
@@ -82,6 +87,7 @@ fi
 # (5) no session_id -> rc 0, nothing created anywhere
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker '{"tool_name":"mcp__symbiosis-brain__brain_write"}'
 if [ "$RC" = "0" ] && [ -z "$OUT" ] && [ ! -f "$LAST" ]; then
   t "missing session_id -> silent exit 0" PASS
@@ -93,6 +99,7 @@ fi
 rm -f "$PCT"
 echo "12" > "$LAST"
 echo "44" > "$PCT"
+printf '%s\t%s\n' "44" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_append\"}"
 if [ "$(cat "$LAST" 2>/dev/null)" = "44" ]; then
   t "marker is overwritten atomically" PASS
@@ -107,6 +114,7 @@ if [ ! -f "$LAST.tmp" ]; then t "no .tmp left behind" PASS; else t "no .tmp left
 # the Stop-hook delta-guard, so the 25/35 zones went quiet for another 10% of context.
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: gist required for this note type\"}]}}"
 if [ "$RC" = "0" ] && [ ! -f "$LAST" ]; then
   t "server refusal (Error: ...) does not write a marker" PASS
@@ -117,6 +125,7 @@ fi
 # (7b) the same with a space after the colon, the way a pretty-printed payload reads.
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_response\":{\"content\":[{\"type\": \"text\", \"text\": \"Error: path must be within vault\"}]}}"
 if [ "$RC" = "0" ] && [ ! -f "$LAST" ]; then
   t "server refusal with spaced JSON does not write a marker" PASS
@@ -132,6 +141,7 @@ fi
 # comment above the expansion honest.
 rm -f "$PCT" "$LAST"
 echo "50" > "$PCT"
+printf '%s\t%s\n' "50" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run_marker "{\"session_id\":\"${SID}\",\"tool_name\":\"mcp__symbiosis-brain__brain_write\",\"tool_input\":{\"payload\":{\"tool_response\":{\"is_error\":true}}},\"tool_response\":{\"ok\":true}}"
 if [ "$(cat "$LAST" 2>/dev/null)" = "50" ]; then
   t "cut uses the last tool_response key, not the first" PASS

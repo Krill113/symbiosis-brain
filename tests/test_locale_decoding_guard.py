@@ -31,8 +31,10 @@ forever.
 The failure mode is why this is worth a test at all: for `subprocess`, the decode
 error is raised inside the reader thread, so the caller sees no exception — only
 `None` where the output should be, or, more often, silently mojibake'd text that
-a negative assertion (`assert x not in out`) then passes on. See
-[[global/patterns/subprocess-text-true-decodes-by-locale]].
+a negative assertion (`assert x not in out`) then passes on. The general shape
+of the bug: `text=True` (like bare `open`/`Path.read_text`) decodes with
+whatever encoding the OS locale prefers, not UTF-8, so the failure is invisible
+wherever the locale happens to already be UTF-8.
 
 **The invariant is a pair, not a keyword.** The parent's decoder must match the
 child's encoder. `encoding="utf-8"` on the parent is correct here only because

@@ -480,20 +480,20 @@ def test_auto_discovery_walks_all_project_cards(tmp_path):
 
 
 def test_rotate_resolves_card_by_frontmatter_scope_when_filename_differs(tmp_path):
-    """scope given, but card filename != scope (e.g. iterisdiagnostics.md for
-    scope iteris-diagnostics) — resolve by frontmatter, don't 'card not found'.
+    """scope given, but card filename != scope (e.g. acmediagnostics.md for
+    scope acme-diagnostics) — resolve by frontmatter, don't 'card not found'.
     (backlog 2026-05-21)"""
     vault = _make_vault(tmp_path)
-    _write(vault / "projects" / "iterisdiagnostics.md", (
-        "---\ntype: project\nscope: iteris-diagnostics\n---\n# Diag\n\n"
+    _write(vault / "projects" / "acmediagnostics.md", (
+        "---\ntype: project\nscope: acme-diagnostics\n---\n# Diag\n\n"
         "## Handoff 2026-05-14\n**Shipped:** A.\n\n"
         "## Handoff 2026-05-08\n**Shipped:** B.\n"
     ))
-    report = rotate_handoffs(vault=vault, scope="iteris-diagnostics", inline_days=1)
+    report = rotate_handoffs(vault=vault, scope="acme-diagnostics", inline_days=1)
     assert report.cards_processed == 1
     assert report.sections_archived == 1
     assert not report.skipped  # NOT skipped as "card not found"
-    archives = list((vault / "archive" / "handoffs").glob("iteris-diagnostics-2026-05-08*.md"))
+    archives = list((vault / "archive" / "handoffs").glob("acme-diagnostics-2026-05-08*.md"))
     assert len(archives) == 1
 
 

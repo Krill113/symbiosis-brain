@@ -85,6 +85,65 @@ class TestActionRules:
         assert install_cli._report_action_rules(tmp_path) == 0
         assert "OK (19 compiled)" in capsys.readouterr().out
 
+    def test_partial_compile_names_each_skipped_rule(self, tmp_path: Path, capsys):
+        """A refused rule stays refused on recompile, so a count alone sends the
+        user to a command that changes nothing. Each rule, its reason and the
+        file to fix must be on screen."""
+        (_index_dir(tmp_path) / META_BASENAME).write_text(json.dumps({
+            "rules_total": 3, "rules_compiled": 2,
+            "skipped": [{"id": "fixture-rule", "reason": "powershell: no test_match vectors"}],
+        }), encoding="utf-8")
+        assert install_cli._report_action_rules(tmp_path) == 1
+        out = capsys.readouterr().out
+        assert "PARTIAL (2 of 3 compiled)" in out
+        assert "fixture-rule: powershell: no test_match vectors" in out
+        assert "tool-routing.local.json" in out
+
+    def test_none_compiled_with_skipped_names_them_too(self, tmp_path: Path, capsys):
+        (_index_dir(tmp_path) / META_BASENAME).write_text(json.dumps({
+            "rules_total": 1, "rules_compiled": 0,
+            "skipped": [{"id": "fixture-rule", "reason": "bad regex"}],
+        }), encoding="utf-8")
+        assert install_cli._report_action_rules(tmp_path) == 1
+        out = capsys.readouterr().out
+        assert "NONE COMPILED (0 of 1 compiled)" in out
+        assert "fixture-rule: bad regex" in out
+
+
+class TestCli:
+    """Commands doctor names must exist on the CLI people actually have."""
+
+    def test_doctor_advice_is_a_real_subcommand(self, tmp_path: Path, monkeypatch, capsys):
+        calls = []
+        monkeypatch.setattr(install_cli.action_rules, "compile_action_rules",
+                            lambda v: calls.append(v))
+        _write_meta(tmp_path, total=2, compiled=2)
+        args = install_cli.build_parser().parse_args(
+            ["compile-action-rules", "--vault", str(tmp_path)])
+        assert args.func(args) == 0
+        assert calls == [tmp_path]
+        assert "OK (2 compiled)" in capsys.readouterr().out
+
+    def test_compile_exit_code_keeps_a_refused_rule_visible(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(install_cli.action_rules, "compile_action_rules", lambda v: None)
+        _write_meta(tmp_path, total=2, compiled=1)
+        args = install_cli.build_parser().parse_args(
+            ["compile-action-rules", "--vault", str(tmp_path)])
+        assert args.func(args) == 1
+
+    def test_compile_missing_vault_is_an_error(self, tmp_path: Path):
+        args = install_cli.build_parser().parse_args(
+            ["compile-action-rules", "--vault", str(tmp_path / "absent")])
+        assert args.func(args) == 1
+
+    def test_version_flag(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            install_cli.build_parser().parse_args(["--version"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert out.startswith("symbiosis-brain ")
+        assert out.strip() != "symbiosis-brain"
+
 
 class TestVectorIndex:
     def _vault_with_notes(self, tmp_path: Path, n: int = 3) -> Path:

@@ -273,7 +273,7 @@ def test_disable_and_add(tmp_path):
                 "id": "civilbridge-live",
                 "class": "augment",
                 "priority": 90,
-                "triggers": [{"re": "civil3d", "flags": "i"}],
+                "triggers": [{"re": "cadlab", "flags": "i"}],
                 "hint": "local",
             },
         ]),
@@ -336,7 +336,7 @@ def test_stage4b_fixture_routes_compile(tmp_path):
             re.compile(trig["re"])  # raises on bad regex / mis-escape
     routes = _routes_with_fixture(tmp_path)
     ids = {r.id for r in routes}
-    assert {"serena-code-work", "civil3d-bridge-analysis", "debug-civil3d-plugin"} <= ids
+    assert {"serena-code-work", "cad-bridge-analysis", "debug-cadlab-plugin"} <= ids
 
 
 def test_serena_symbol_and_code_work_are_disjoint(tmp_path):
@@ -367,31 +367,31 @@ def test_serena_code_work_does_not_collide_with_debugging(tmp_path):
     assert not any(r.id == "serena-code-work" for r in m)
 
 
-def test_civil3d_route_requires_scope_and_bridge(tmp_path):
+def test_cadlab_route_requires_scope_and_bridge(tmp_path):
     routes = _routes_with_fixture(tmp_path)
     prompt = "снуп handle 1A2B в чертеже"
-    assert any(r.id == "civil3d-bridge-analysis"
+    assert any(r.id == "cad-bridge-analysis"
                for r in tr.match_routes(prompt, routes,
-                                        scope="civil3d", roster={"civil3d-bridge"}))
+                                        scope="cadlab", roster={"cad-bridge"}))
     # wrong scope → silent
-    assert not any(r.id == "civil3d-bridge-analysis"
+    assert not any(r.id == "cad-bridge-analysis"
                    for r in tr.match_routes(prompt, routes,
-                                            scope="global", roster={"civil3d-bridge"}))
+                                            scope="global", roster={"cad-bridge"}))
     # bridge absent → silent
-    assert not any(r.id == "civil3d-bridge-analysis"
+    assert not any(r.id == "cad-bridge-analysis"
                    for r in tr.match_routes(prompt, routes,
-                                            scope="civil3d", roster={"serena"}))
+                                            scope="cadlab", roster={"serena"}))
 
 
 def test_debug_route_requires_vs_mcp(tmp_path):
     routes = _routes_with_fixture(tmp_path)
     prompt = "поставь breakpoint в CreateProfileViewsRun"
     matched = tr.match_routes(prompt, routes, roster={"vs-mcp"})
-    assert any(r.id == "debug-civil3d-plugin" for r in matched)
-    dbg = next(r for r in matched if r.id == "debug-civil3d-plugin")
-    assert dbg.chain == ["systematic-debugging", "vs-mcp", "civil3d-bridge"]
+    assert any(r.id == "debug-cadlab-plugin" for r in matched)
+    dbg = next(r for r in matched if r.id == "debug-cadlab-plugin")
+    assert dbg.chain == ["systematic-debugging", "vs-mcp", "cad-bridge"]
     # vs-mcp absent → silent
-    assert not any(r.id == "debug-civil3d-plugin"
+    assert not any(r.id == "debug-cadlab-plugin"
                    for r in tr.match_routes(prompt, routes, roster=None))
 
 

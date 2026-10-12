@@ -2,7 +2,7 @@
 
 > **Stop re-explaining your project to Claude. Make it remember. Build your symbiosis.**
 
-Persistent memory for Claude Code — a markdown brain that lives next to your code, with skills and hooks that make Claude actually use it. Local, file-based, Obsidian-compatible.
+A memory for your coding agent that learns on the job. A markdown brain that lives next to your code, hooks that put the right note in front of the agent at the moment it acts, and skills that turn a mistake it keeps repeating into a rule that warns it next time. Local, file-based, Obsidian-compatible. Built for Claude Code — not locked to it.
 
 [![PyPI](https://img.shields.io/pypi/v/symbiosis-brain.svg)](https://pypi.org/project/symbiosis-brain/)
 [![Python](https://img.shields.io/pypi/pyversions/symbiosis-brain.svg)](https://pypi.org/project/symbiosis-brain/)
@@ -12,12 +12,14 @@ Persistent memory for Claude Code — a markdown brain that lives next to your c
 
 ## What changes
 
-You stop saying *"Hi Claude, my stack is X, last week we decided Y…"* every session. Claude remembers your stack, your projects, your past decisions. Painful lessons resurface **before** you trip on them. Knowledge flows between repos. A smart hook saves the session **before** `/compact` swallows it.
+You stop saying *"Hi Claude, my stack is X, last week we decided Y…"* every session. Claude remembers your stack, your projects, your past decisions. A lesson you wrote down comes back when the agent goes to edit the same file — **before** the edit, not after. A mistake it keeps making becomes a rule that warns it before the next one. Knowledge flows between repos. A hook stops `/compact` once, so the session is saved before it gets swallowed.
+
+Week by week the vault stops being a notebook and becomes the working memory of an assistant that knows your projects, your conventions — and the ways it has been wrong before.
 
 <p align="center">
   <img src="docs/images/vault-graph.png" alt="Symbiosis Brain vault — Obsidian graph view" width="500">
   <br>
-  <em>368 notes, 431 entities, all wiki-linked — and this is just a few weeks of real work. This is what your head looks like when you're juggling five projects at once. Don't panic — Claude knows exactly where to look.</em>
+  <em>368 notes, 431 entities, all wiki-linked — the first few weeks of real work. The same vault is past 1,700 notes today. This is what your head looks like when you're juggling five projects at once. Don't panic — Claude knows exactly where to look.</em>
 </p>
 
 ## Install (30 seconds)
@@ -66,17 +68,49 @@ Same result — installs the latest `main` branch directly from the repo. Useful
 
 ---
 
+## It learns on the job
+
+Most memory tools store what the agent chose to write down, then hope it looks. Symbiosis Brain closes the loop — and every step below is a hook or a skill you can read in this repo.
+
+**1. Recall at the moment of action.** Before an edit, a write or a subagent launch, the `PreToolUse` hook searches the vault with the tool's own arguments — the file name and the head of the edit, the subagent's prompt — and puts what it finds in front of the agent as `[recall: N hits]`. A subagent gets routing hints matched against its own prompt: the memory a subagent needs most is the memory it never had.
+
+**2. Mistakes and corrections are notes of their own.** `mistake` and `feedback` sit next to `decision`, `pattern` and `research` as first-class note types, and they are found by the same recall — so a lesson recorded against a file comes back the next time the agent is about to change it.
+
+**3. A retrospective when the work is done.** At the end of a session, `brain-save` asks itself: which paths were dead ends, which way of working paid off, where did the user have to step in and redirect — and writes the answers down as `mistake`, `pattern` and `user` notes. Most sessions produce nothing, and that's fine.
+
+**4. Repetition becomes leverage — `brain-autolearn`.** Rule of three: one occurrence is noise, two is a candidate, three is a signal. What isn't ripe yet waits in an inbox with a counter. When something is:
+
+| What repeated | What it becomes | Who decides |
+|---|---|---|
+| a mistake shaped like a command | an **action rule** — a pattern on Bash / PowerShell commands that warns the agent before the command runs | done, then reported to you |
+| a mistake that needs judgment | a patch to the existing `feedback` / `pattern` note | done, then reported to you |
+| an action with no judgment inside | a **script** | done, then reported to you |
+| an action that needs judgment | a **skill** draft, tested with and without the skill | installed on your OK |
+| something bigger than a script or a skill | a **proposal** | you |
+
+Every artifact gets a trigger in tool routing, so it surfaces when it applies — an artifact nobody recalls is just a second vault of forgotten things. And some things are deliberately never learned: quirks of one machine, errors that went away on their own, and "tool X is broken" — a claim like that hardens into a refusal long after the tool is fixed.
+
+**The agent starts with zero action rules.** The shipped routing catalog carries seven tool hints and not a single command rule. Every rule in your install grows out of your own work.
+
+**5. It shows whether recall helped.** Every search is logged locally, and `brain_report` shows which notes get opened after they surface — and which keep surfacing and are never read, so noisy memory is visible instead of quietly eating context.
+
+## Beyond Claude Code
+
+Symbiosis Brain is built for Claude Code and fully wired into it: one `setup` command installs the MCP server, the hooks and the skills.
+
+The memory itself isn't locked to it. The server is a standard stdio MCP server, and its 14 `brain_*` tools work from any MCP client on the same vault — search, read, write, the wiki-link graph. Register `symbiosis-brain serve --vault <path>` with your client. What another client doesn't get is the automatic part: memory pushed in at the moment the agent acts comes from Claude Code hooks, and `setup` wires Claude Code only.
+
 ## Why a markdown brain?
 
 - 📂 **Your knowledge, your files.** Plain `.md` in a folder you pick. Human-readable, git-trackable, opens in Obsidian as a graph.
-- 🔍 **Hybrid search, all local.** FTS5 + vector (sqlite-vec + fastembed), no API key — memory calls don't add an API bill on top of Claude.
+- 🔍 **Hybrid search, all local.** FTS5 + vector (sqlite-vec + fastembed), no API key — memory calls don't add an API bill on top of your agent. The embedding model is switchable, with a multilingual one registered for vaults not written in English.
 - 🔗 **Wiki-links connect your projects.** `brain_context` walks the graph N hops — decisions in one repo surface as context in another.
-- ⏰ **Bi-temporal.** Every fact has a `valid_from` / `valid_to` date. Stale knowledge gets a warning, not silent rot.
-- 🗂️ **Scoped per project.** Notes are tagged to a project scope; global notes always ride along. Switch repos and Claude picks up the right context automatically — via a one-line marker in `CLAUDE.md`.
+- ⏰ **Bi-temporal.** Every fact carries `valid_from` / `valid_to`. Old knowledge gets a staleness warning; a note you close stops being injected as current, and search still finds it.
+- 🗂️ **Scoped per project.** Notes are tagged to a project scope; global notes always ride along. Switch repos and the hooks pick up the right scope on their own — from a one-line marker in `CLAUDE.md`.
 - 🪶 **Quiet by design.** No Clippy, no nag. Hooks fire only when they earn the interruption (e.g., context at 35% → "save before /compact swallows this").
-- 🧩 **Skills shipped, not just storage.** `brain-init`, `brain-recall`, `brain-save`, `brain-tools` make Claude *use* the memory — not pray that it does.
-- 🪝 **Hooks make it automatic.** Six session-lifecycle events are wired by the installer — recall fires before you ask, saves happen before context is lost.
-- 🧭 **Tool routing.** Every prompt, a lightweight engine matches intent against a catalog of tool hints and injects `[route]` advice — so Claude reaches for the right tool (Serena for symbols, Playwright for JS-heavy pages, PowerShell on Windows) without manual prompting. `/brain-tools` onboards your own MCP servers.
+- 🧩 **Skills shipped, not just storage.** `brain-init`, `brain-recall`, `brain-save`, `brain-autolearn`, `brain-tools` make the agent *use* the memory and learn from it — not pray that it does.
+- 🪝 **Hooks make it automatic.** Seven session-lifecycle events are wired by the installer — recall fires before you ask, saves happen before context is lost.
+- 🧭 **Tool routing.** Every prompt, a lightweight engine matches intent against a catalog of tool hints and injects `[route]` advice — so the agent reaches for the right tool (Serena for symbols, Playwright for JS-heavy pages, PowerShell on Windows) without manual prompting. `/brain-tools` onboards your own MCP servers.
 - 🤝 **Layered, never invasive.** Adds capability without disabling any of Claude Code's defaults. Uninstall is one command.
 
 ## What it feels like
@@ -94,57 +128,60 @@ Same vault, days apart, different process. No prompt engineering, no copy-pastin
 
 ## How it works (60 seconds)
 
-A tiny MCP server backed by a folder of markdown notes. SQLite indexes them with FTS5 + vector search (sqlite-vec + fastembed); wiki-links form a graph; six bash hooks wire the recall/save loop into Claude Code's own session lifecycle.
+A tiny MCP server backed by a folder of markdown notes. SQLite indexes them with FTS5 + vector search (sqlite-vec + fastembed); wiki-links form a graph; seven bash hooks wire the recall / learn / save loop into Claude Code's own session lifecycle.
 
 ```mermaid
 flowchart TD
     subgraph session[Each Claude Code session]
         direction LR
         SS[SessionStart<br/>scope + context loaded] --> UP[UserPromptSubmit<br/>recall + route hints]
-        UP --> PT[PreToolUse<br/>recall before Edit/Write]
+        UP --> PT[PreToolUse<br/>recall before edits and subagents,<br/>action rules before commands]
         PT --> WK[Work happens]
-        WK --> ST[Stop / PreCompact<br/>save before /compact]
+        WK --> ST[Stop / PreCompact<br/>save + retrospective]
         ST --> SE[SessionEnd<br/>vault git sync]
     end
     WK <-->|MCP tools| V[(Markdown vault<br/>hybrid search + wiki-graph)]
+    ST -.->|repeated mistakes<br/>become rules| PT
     SE -.->|next session| SS
 ```
 
 **MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`. The `brain_report` text and the `[dedup]` hint on `brain_write` are Russian for now; localizing them is on the backlog.
 
-**Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill), `brain-autolearn` (repetition → action rule / script / skill).
+**Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-autolearn` (repetition → action rule / script / skill / proposal), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill).
 
 **Hooks (7 events, all bash):**
 - `SessionStart` — scope resolution, server prewarm, MCP roster cache
 - `UserPromptSubmit` — hybrid recall + tool-route hints, injected as `[memory: N hits]` / `[route]`
-- `PreToolUse` — pre-action recall before Edit / Write / Task / MultiEdit / NotebookEdit, plus instant action-rule warnings on risky Bash / PowerShell commands
+- `PreToolUse` — pre-action recall before Edit / Write / Task / Agent / MultiEdit / NotebookEdit, route hints for a subagent's prompt, plus instant action-rule warnings on Bash / PowerShell commands
 - `PostToolUse` — records the context % at the moment memory was written, so the `Stop` delta-guard measures growth since the last save
 - `Stop` — context-threshold save reminder (default zones 25 / 35 / 45%)
-- `PreCompact` — last-chance save before `/compact`
+- `PreCompact` — blocks compaction once for a last-chance save
 - `SessionEnd` — vault git sync
 
 **Every search is logged locally.** Every hit list the memory produces — from the MCP tools and from
 the hooks alike — goes into a pair of tables inside your own `<vault>/.index/brain.db`, together
 with the query, the number of hits and how long the hook took end to end. The query is stored in
-full (on the hook path, that means your prompt text), truncated to 2000 characters. It never leaves
-your machine, it is what `brain-cli report` and `brain_report` read, and it is rotated after 90 days.
-Two switches turn it off: `SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off` in the environment (server and hooks),
-or `"retrieval_log_enabled": false` in `~/.claude/symbiosis-brain-pre-action.json` (hooks only). The
+full (on the hook path, that means your prompt text), truncated to 2000 characters. Messages that
+reach the prompt hook from the harness rather than from you — another session, a task notification
+— are labelled as such. The log never leaves your machine, it is what `brain-cli report` and
+`brain_report` read, and it is rotated after 90 days. Two switches turn it off:
+`SYMBIOSIS_BRAIN_RETRIEVAL_LOG=off` in the environment (server and hooks), or
+`"retrieval_log_enabled": false` in `~/.claude/symbiosis-brain-pre-action.json` (hooks only). The
 environment variable wins over the file.
 
 **Every note the product writes is signed.** New and rewritten notes carry a `written_by:` line in
 their frontmatter — client and version, model, date. It records **who last wrote the note through the product**, not who thought it up: `brain_append` and `brain_patch` rebuild the frontmatter too,
-so the line always names the most recent write. Notes written before this release carry no such
-line, and none is invented for them.
+so the line always names the most recent write. Notes written before this was introduced carry no
+such line, and none is invented for them.
 
 You write nothing manually. The vault grows as you work.
 
 ## Why this, not…
 
-- **Plain `CLAUDE.md` / `MEMORY.md`** — they grow into a 10K-line blob with no search and no decay. Symbiosis Brain decomposes into searchable, scoped, time-stamped notes.
-- **basic-memory** — closest in spirit (markdown + Obsidian). We add hybrid search (FTS5 + vector), skills/hooks that drive use, bi-temporal `valid_to`, per-project + global scope, and tool routing.
-- **mem0 / Letta** — different category (cloud SaaS / agent SDK). We're local-first storage your existing Claude Code uses.
-- **mcp-memory-service** — they ship REST/dashboard. We ship human-readable markdown + skills + hooks.
+- **Claude Code's own memory (`CLAUDE.md`, auto-memory)** — keep it; Symbiosis Brain runs beside it and switches nothing off. What it adds: search across thousands of scoped, dated notes, recall pushed in at the moment the agent acts, and a loop that turns repeated mistakes into rules.
+- **basic-memory** — closest in spirit (markdown + Obsidian). Where we put the weight: recall pushed in at the moment the agent acts — before edits and subagents — a loop that turns repeated mistakes into rules, and tool routing.
+- **mem0 / Letta** — a different category: memory infrastructure and agent frameworks you build on. We're local-first memory for the agent you already use.
+- **Hermes Agent** — a complete agent of its own, with its own learning loop. If you want to switch agents, look there. If you want to keep Claude Code and give it a memory that learns, that's what this is.
 
 ## Configuration
 
@@ -178,20 +215,36 @@ you want something other than the default:
 symbiosis-brain doctor                       # health check
 symbiosis-brain setup claude-code --repair   # fix only what's broken
 symbiosis-brain uninstall                    # restore settings, vault preserved
-uv tool upgrade symbiosis-brain              # update
 ```
+
+### Upgrading
+
+Four steps, in this order:
+
+1. **Close every Claude Code window.** On Windows a running `symbiosis-brain serve` holds the executable, and the upgrade fails with `os error 32`.
+2. `uv tool upgrade symbiosis-brain`
+3. `symbiosis-brain setup claude-code --repair` — upgrading the package does not touch `~/.claude/hooks` or `~/.claude/skills`. Without the repair, a release's new hooks and skills never arrive.
+4. `symbiosis-brain doctor` — then start Claude Code again.
+
+Anything else worth knowing before a particular upgrade is in that release's notes, under [`docs/release-notes/`](docs/release-notes/).
 
 ## FAQ
 
-**Is my knowledge private?** 100%. Everything is local files + a local SQLite index. No cloud, no telemetry, no API calls.
+**Is my knowledge private?** Yes. Everything is local files + a local SQLite index: no cloud service, no telemetry, no API key. Two things touch the network, both under your control: the embedding model's weights are downloaded once, on first use; and if your vault is a git repository with an `origin` remote, the session-end hook commits and pushes it there. No remote, no push.
 
 **Will this break my Claude Code setup?** No. Symbiosis Brain layers **on top of** Claude Code — it never disables built-in features, overrides your hooks, or removes your existing skills. Config is deep-merged with a `.bak` backup. `uninstall` restores everything.
 
 **Can I open the vault in Obsidian?** Yes — that's a first-class use case. The welcome flow can install Obsidian for you and open your first note as a graph.
 
-**Does it work with other AI agents?** Today: tuned for Claude Code. The MCP layer is portable; skill-driven UX is Claude-Code-specific but the storage works anywhere MCP works.
+**Does it work with other AI agents?** Yes, at two depths. Any MCP client gets the memory itself — the tools and the vault. The automatic part, recall pushed in before the agent acts, comes from Claude Code hooks. See [Beyond Claude Code](#beyond-claude-code).
 
-**What about tool routing?** Run `/brain-tools` after install to onboard your MCP servers. The default catalog covers web search, registry version lookups, Serena (symbol work), Playwright (JS-heavy pages), PowerShell (Windows shell), systematic-debugging, and code-catalog discovery. Unknown tools get one short question; you decide their trigger. Per-install routing lives in `$VAULT/tool-routing.local.json` (git-ignored, never indexed).
+**Does it learn things I didn't ask for?** It learns only from repetition — three times, not once — and anything bigger than a small, reversible fix waits for your OK. What it made is reported in one line: what, why, where it lives, what triggers it. See [It learns on the job](#it-learns-on-the-job).
+
+**I pulled notes from another machine — why doesn't search see them?** Keyword search does, as soon as the next recall runs: the hooks re-sync the vault on every call. The vector half is maintained by the server, so semantic matches for those notes arrive after `brain_sync` or a restart of Claude Code.
+
+**Windows: a note that never gets indexed?** Unless long paths are enabled, Windows can't open a file whose full path — the vault folder plus the note's path inside it — is longer than 260 characters. The note is seen but can't be read: a new one never enters the index, an indexed one keeps its old content. `brain_sync` names it under `failed`, and a new one also shows up as not indexed in `brain_lint`. Enable long paths in Windows (`LongPathsEnabled`, the "Enable Win32 long paths" group policy), or keep the vault closer to the drive root with shorter folder names.
+
+**What about tool routing?** Run `/brain-tools` after install to onboard your MCP servers. The default catalog covers web search, registry version lookups, Serena (symbol work), Playwright (JS-heavy pages), PowerShell (Windows shell), systematic-debugging, and code-catalog discovery. Unknown tools get one short question; you decide their trigger. Per-install routing — including every action rule `brain-autolearn` grows — lives in `$VAULT/tool-routing.local.json` (git-ignored, never indexed).
 
 **What about the name?** *Symbiosis* — a mutually beneficial partnership. The tool lives next to Claude; Claude becomes more useful; your knowledge survives the next `/compact`. Build your symbiosis.
 

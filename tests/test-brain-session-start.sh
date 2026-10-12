@@ -167,16 +167,16 @@ OUT=$(run_hook "$PROJ")
 assert_contains "marker-override: basename alphanets → marker alpha-seti" "$OUT" '\[scope: alpha-seti\]'
 
 # Regression: camelCase folder name that does NOT kebab-match the vault scope
-# (the LWhisperer → l-whisperer bug; vault scope is "lwhisper"). Marker must win.
+# (the QStreamer → q-streamer bug; vault scope is "qstream"). Marker must win.
 setup_vault
-PROJ_CC="$FAKE_ROOT/My/others/LWhisperer"
+PROJ_CC="$FAKE_ROOT/My/others/QStreamer"
 mkdir -p "$PROJ_CC"
 cat > "$PROJ_CC/CLAUDE.md" <<'EOF'
-# LWhisper
-<!-- symbiosis-brain v1: scope=lwhisper -->
+# QStream
+<!-- symbiosis-brain v1: scope=qstream -->
 EOF
 OUT=$(run_hook "$PROJ_CC")
-assert_contains "marker-override: LWhisperer (basename l-whisperer) → lwhisper" "$OUT" '\[scope: lwhisper\]'
+assert_contains "marker-override: QStreamer (basename q-streamer) → qstream" "$OUT" '\[scope: qstream\]'
 
 # Marker parse is whitespace-tolerant and last-marker-wins (mirrors parse_marker).
 setup_vault

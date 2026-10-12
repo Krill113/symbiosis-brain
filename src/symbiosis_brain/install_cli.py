@@ -628,6 +628,19 @@ def _report_action_rules(vault: Path) -> int:
     )):
         print("✓ Action rules   OK (no action rules declared)")
         return 0
+    skipped = [s for s in (meta.get("skipped") or []) if isinstance(s, dict)]
+    if compiled < total and skipped:
+        # Recompiling does not help a rule the compiler refused: the fix is in
+        # the route itself, so name each one and where it lives. A bare count
+        # sent people to a command that would refuse the same rule again.
+        state = "NONE COMPILED" if compiled == 0 else "PARTIAL"
+        print(f"✗ Action rules   {state} ({compiled} of {total} compiled)"
+              f" — skipped {len(skipped)}:")
+        for s in skipped:
+            print(f"    - {s.get('id') or '?'}: {s.get('reason') or 'no reason given'}")
+        print(f"    Fix the route in {vault / 'tool-routing.local.json'},"
+              " then run `symbiosis-brain compile-action-rules`")
+        return 1
     if compiled == 0:
         print(f"✗ Action rules   NONE COMPILED ({total} declared)"
               " — run `symbiosis-brain compile-action-rules`")
@@ -1034,8 +1047,35 @@ def cmd_serve(args):
     server.main()
 
 
+def cmd_compile_action_rules(args) -> int:
+    """Recompile the vault's action rules and report what came out.
+
+    doctor names this command, and before it existed here it lived only behind
+    `python -m symbiosis_brain` for the hooks — the advice could not be followed.
+    The exit code is doctor's verdict on the result, so a rule that is still
+    refused stays visible instead of reading as fixed.
+    """
+    vault = Path(args.vault).expanduser() if args.vault else _resolve_vault_path()
+    if vault is None or not vault.exists():
+        print("✗ Vault not found — pass --vault PATH or run "
+              "`symbiosis-brain setup claude-code`", file=sys.stderr)
+        return 1
+    action_rules.compile_action_rules(vault)
+    return _report_action_rules(vault)
+
+
+def _package_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("symbiosis-brain")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="symbiosis-brain")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {_package_version()}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_serve = sub.add_parser("serve", help="Launch MCP server", add_help=False)
@@ -1054,6 +1094,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--deep", action="store_true",
                           help="also run PRAGMA integrity_check on the vault database")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_compile = sub.add_parser("compile-action-rules",
+                               help="Recompile action rules from tool routing")
+    p_compile.add_argument("--vault", help="Vault path (default: the installed one)")
+    p_compile.set_defaults(func=cmd_compile_action_rules)
 
     p_uninstall = sub.add_parser("uninstall", help="Remove Symbiosis Brain")
     p_uninstall.set_defaults(func=cmd_uninstall)

@@ -621,6 +621,13 @@ def _report_action_rules(vault: Path) -> int:
         # section exists to remove.
         print(f"⚠ Action rules   cannot read {meta_path.name}: {e}")
         return 0
+    if total == 0 and compiled == 0 and not any((
+        meta.get("skipped"), meta.get("unmatched_patterns"),
+        meta.get("prompt_route_warnings"), meta.get("kept_previous"),
+        meta.get("validation") == "unavailable",
+    )):
+        print("✓ Action rules   OK (no action rules declared)")
+        return 0
     if compiled == 0:
         print(f"✗ Action rules   NONE COMPILED ({total} declared)"
               " — run `symbiosis-brain compile-action-rules`")

@@ -41,9 +41,8 @@ case "$SB_RESP" in
 esac
 
 sb_tmp_dir
-PCT=
-PCT_FILE="$SB_TMP/brain-context-pct-${SB_SESSION_ID}"
-[ -r "$PCT_FILE" ] && read -r PCT < "$PCT_FILE"
+sb_context_read "$SB_SESSION_ID"
+PCT=$SB_CONTEXT_PCT
 [ -n "$PCT" ] || exit 0
 
 MARKER="$SB_TMP/brain-last-save-pct-${SB_SESSION_ID}"

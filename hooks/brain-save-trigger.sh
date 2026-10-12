@@ -34,6 +34,10 @@ SESSION_ID=$(echo "$INPUT" | grep -oE '"session_id": *"[^"]*"' | head -1 | sed -
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"
 
+SB_DIR=${BASH_SOURCE[0]}
+case $SB_DIR in *[/\\]*) SB_DIR=${SB_DIR%[/\\]*} ;; *) SB_DIR=. ;; esac
+. "$SB_DIR/sb-hooklib.sh" 2>/dev/null || exit 0
+
 TRIGGERED_FILE="$SB_TMP/brain-triggered-${SESSION_ID}"
 
 if [ "$MODE" = "stop" ]; then
@@ -41,7 +45,8 @@ if [ "$MODE" = "stop" ]; then
   echo "$INPUT" | grep -q '"stop_hook_active":true' && exit 0
 
   # Read context percentage from statusline export (per-session, updated every 10s)
-  PCT=$(cat "$SB_TMP/brain-context-pct-${SESSION_ID}" 2>/dev/null)
+  sb_context_read "$SESSION_ID"
+  PCT=$SB_CONTEXT_PCT
   [ -z "$PCT" ] && exit 0
 
   # Read last-save marker (written by skill brain-save after successful brain_write)
@@ -340,8 +345,8 @@ $(printf '%s\n' "$ROUTE_HINTS" | sed 's/^/- /')"
   # ── A2: rules ───────────────────────────────────────────
   RULES_BLOCK=""
   if [ "$RULES_ENABLED" = "true" ]; then
-    PCT=$(cat "$SB_TMP/brain-context-pct-${SESSION_ID}" 2>/dev/null || echo 0)
-    [ -z "$PCT" ] && PCT=0
+    sb_context_read "$SESSION_ID"
+    PCT=${SB_CONTEXT_PCT:-unknown}
     SHOWN_FILE="$SB_TMP/brain-rules-shown-${SESSION_ID}"
     TURN_FILE="$SB_TMP/brain-rules-turn-counter-${SESSION_ID}"
     TURNS=$(cat "$TURN_FILE" 2>/dev/null || echo 0)

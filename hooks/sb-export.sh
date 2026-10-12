@@ -44,10 +44,16 @@ if [ -z "${SB_NOW:-}" ]; then
 fi
 
 # 1. Context % per session (never machine-global: two windows would bleed into each other)
-sb_ctx=
-[[ $sb_data =~ \"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && sb_ctx=${BASH_REMATCH[1]}
-if [ -n "$sb_ctx" ] && [ -n "$SB_SESSION_ID" ]; then
+sb_status_observation "$sb_data"
+SB_SESSION_ID=$SB_OBS_SESSION_ID
+sb_ctx=$SB_CONTEXT_PCT
+if [[ $SB_SESSION_ID =~ ^[a-zA-Z0-9_-]+$ ]] && [ "${#SB_SESSION_ID}" -le 128 ]; then
+  # Invalidate before publication: partial/cancelled writes must fail closed.
+  printf 'unknown\t%s\n' "$SB_NOW" > "$SB_TMP/brain-context-state-${SB_SESSION_ID}" 2>/dev/null
   printf '%s\n' "$sb_ctx" > "$SB_TMP/brain-context-pct-${SB_SESSION_ID}" 2>/dev/null
+  if [ -n "$sb_ctx" ]; then
+    printf '%s\t%s\n' "$sb_ctx" "$SB_NOW" > "$SB_TMP/brain-context-state-${SB_SESSION_ID}" 2>/dev/null
+  fi
 fi
 
 # 2. Rate limits
@@ -73,12 +79,7 @@ fi
 # reads its OWN window's file without walking the process tree — which is impossible
 # fork-free anyway (MSYS reports ppid=1 when the parent is a native Windows process).
 # Cut the object first, then the two fields inside it, exactly like five_hour above.
-sb_model_id= sb_model_name=
-if [[ $sb_data =~ \"model\"[[:space:]]*:[[:space:]]*\{([^}]*)\} ]]; then
-  sb_md=${BASH_REMATCH[1]}
-  [[ $sb_md =~ \"id\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && sb_model_id=${BASH_REMATCH[1]}
-  [[ $sb_md =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && sb_model_name=${BASH_REMATCH[1]}
-fi
+sb_model_id=$SB_MODEL_ID; sb_model_name=$SB_MODEL_NAME
 sb_model_key=
 if [ -n "${CLAUDE_PID:-}" ]; then
   sb_model_key="brain-model-${CLAUDE_PID}"

@@ -145,7 +145,7 @@ flowchart TD
     SE -.->|next session| SS
 ```
 
-**MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`. The `brain_report` text and the `[dedup]` hint on `brain_write` are Russian for now; localizing them is on the backlog.
+**MCP tools (14):** `brain_search`, `brain_read`, `brain_write`, `brain_append`, `brain_patch`, `brain_context`, `brain_list`, `brain_status`, `brain_sync`, `brain_lint`, `brain_rename`, `brain_delete`, `brain_rotate_handoffs`, `brain_report`. The `brain_report` text, the `[dedup]` hint on `brain_write` and the Stop reminders are Russian for now. The default routing triggers are oriented toward Russian prompts; use `brain-tools` to configure triggers for your language. Localizing the built-in text is on the backlog.
 
 **Skills (8):** `brain-init` (session bootstrap + scope resolution), `brain-recall` (pre-task memory search), `brain-save` (write + retrospective self-scan), `brain-autolearn` (repetition → action rule / script / skill / proposal), `brain-tools` (tool-routing onboarding), `brain-welcome` (first-run setup), `brain-project-init` (new-project onboarding), `brain-backfill-gists` (hygiene backfill).
 
@@ -181,7 +181,6 @@ You write nothing manually. The vault grows as you work.
 - **Claude Code's own memory (`CLAUDE.md`, auto-memory)** — keep it; Symbiosis Brain runs beside it and switches nothing off. What it adds: search across thousands of scoped, dated notes, recall pushed in at the moment the agent acts, and a loop that turns repeated mistakes into rules.
 - **basic-memory** — closest in spirit (markdown + Obsidian). Where we put the weight: recall pushed in at the moment the agent acts — before edits and subagents — a loop that turns repeated mistakes into rules, and tool routing.
 - **mem0 / Letta** — a different category: memory infrastructure and agent frameworks you build on. We're local-first memory for the agent you already use.
-- **Hermes Agent** — a complete agent of its own, with its own learning loop. If you want to switch agents, look there. If you want to keep Claude Code and give it a memory that learns, that's what this is.
 
 ## Configuration
 

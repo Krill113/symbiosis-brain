@@ -21,7 +21,7 @@ PRECOMPACT="$SB_TMP/brain-precompact-${SID}"
 PENDING="$SB_TMP/brain-precompact-pending-${SID}"
 
 cleanup() {
-  rm -f "$PCT_FILE" "$TRIGGERED" "$LAST_SAVE" "$SAVE_LATER" "$PRECOMPACT" "$PENDING"
+  rm -f "$SB_TMP/brain-context-state-${SID}" "$PCT_FILE" "$TRIGGERED" "$LAST_SAVE" "$SAVE_LATER" "$PRECOMPACT" "$PENDING"
 }
 trap cleanup EXIT
 
@@ -53,12 +53,14 @@ run stop
 # 2. Below soft threshold (default 25) → exit 0
 cleanup
 echo "20" > "$PCT_FILE"
+printf '%s\t%s\n' "20" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run stop
 [ "$RC" = "0" ] && t "below soft threshold returns 0" PASS || t "below soft threshold returns 0" FAIL
 
 # 3. Soft zone (27% with 25/35/45) → exit 2, message + SAVE_LATER hint, triggered has 25
 cleanup
 echo "27" > "$PCT_FILE"
+printf '%s\t%s\n' "27" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run stop
 ok=PASS
 [ "$RC" = "2" ] || ok=FAIL
@@ -70,6 +72,7 @@ t "soft zone fires with default thresholds" $ok
 # 4. Serious (middle) zone (37%) → "пора сохранять"
 cleanup
 echo "37" > "$PCT_FILE"
+printf '%s\t%s\n' "37" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run stop
 ok=PASS
 [ "$RC" = "2" ] || ok=FAIL
@@ -79,6 +82,7 @@ t "serious zone message" $ok
 # 5. Last-chance zone (47% ≥ top 45) → "последний шанс"
 cleanup
 echo "47" > "$PCT_FILE"
+printf '%s\t%s\n' "47" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 run stop
 ok=PASS
 [ "$RC" = "2" ] || ok=FAIL
@@ -88,6 +92,7 @@ t "last-chance zone message" $ok
 # 6. Thresholds read from env (40,70,90; 42% marks 40 only, not 70)
 cleanup
 echo "42" > "$PCT_FILE"
+printf '%s\t%s\n' "42" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 SYMBIOSIS_BRAIN_SAVE_THRESHOLDS="40,70,90" run stop
 ok=PASS
 [ "$RC" = "2" ] || ok=FAIL
@@ -98,6 +103,7 @@ t "thresholds read from env" $ok
 # 7. Already-triggered zone → no refire
 cleanup
 echo "37" > "$PCT_FILE"
+printf '%s\t%s\n' "37" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 printf "25\n35\n" > "$TRIGGERED"
 run stop
 [ "$RC" = "0" ] && t "already-triggered zone does not refire" PASS || t "already-triggered zone does not refire" FAIL
@@ -105,6 +111,7 @@ run stop
 # 8. Delta-guard skips recent save (37%, last-save 30, delta 7 < 10) → exit 0
 cleanup
 echo "37" > "$PCT_FILE"
+printf '%s\t%s\n' "37" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 echo "30" > "$LAST_SAVE"
 run stop
 [ "$RC" = "0" ] && t "delta-guard skips recent save" PASS || t "delta-guard skips recent save" FAIL
@@ -112,6 +119,7 @@ run stop
 # 9. Delta-guard read from env (guard 5, delta 7 ≥ 5 → fires)
 cleanup
 echo "37" > "$PCT_FILE"
+printf '%s\t%s\n' "37" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 echo "30" > "$LAST_SAVE"
 SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD="5" run stop
 [ "$RC" = "2" ] && t "delta-guard read from env" PASS || t "delta-guard read from env" FAIL
@@ -119,6 +127,7 @@ SYMBIOSIS_BRAIN_SAVE_DELTA_GUARD="5" run stop
 # 10. SAVE_LATER one-shot skip in soft zone — consumed
 cleanup
 echo "27" > "$PCT_FILE"
+printf '%s\t%s\n' "27" "${EPOCHSECONDS:-$(date +%s)}" > "$SB_TMP/brain-context-state-${SID}"
 : > "$SAVE_LATER"
 run stop
 ok=PASS

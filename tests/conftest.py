@@ -30,7 +30,7 @@ def iter_source_files(*, include_tests: bool = False):
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*.py")):
-            if _SKIP_PARTS & set(path.parts):
+            if _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts):
                 continue
             yield path
 

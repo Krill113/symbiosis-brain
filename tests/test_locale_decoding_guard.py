@@ -46,6 +46,7 @@ import ast
 from pathlib import Path
 
 import pytest
+import conftest
 from conftest import iter_source_files
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,19 @@ def _python_files():
     # disagreeing about where our code lives is how the previous version of this
     # one reported clean for as long as it existed.
     return iter_source_files(include_tests=True)
+
+
+def test_source_scan_covers_checkout_inside_worktrees(tmp_path, monkeypatch):
+    root = tmp_path / ".worktrees" / "candidate"
+    source = root / "src" / "example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("pass\n", encoding="utf-8")
+    nested = root / "src" / ".venv" / "ignored.py"
+    nested.parent.mkdir()
+    nested.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(conftest, "REPO_ROOT", root)
+
+    assert list(iter_source_files()) == [source]
 
 
 def _subprocess_bindings(tree):

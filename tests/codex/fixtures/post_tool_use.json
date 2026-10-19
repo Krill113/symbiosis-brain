@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","session_id":"fixture-session","turn_id":"fixture-turn","tool_name":"mcp__symbiosis-brain__brain_write","tool_response":{"isError":false,"content":[{"type":"text","text":"Saved: synthetic/decision.md"}]}}

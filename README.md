@@ -10,6 +10,56 @@ A memory for your coding agent that learns on the job. A markdown brain that liv
 
 ---
 
+## Choose your client
+
+The published **0.7.1** release automatically installs the Claude Code
+integration and adds the OpenCode and Codex support described below. Install
+`symbiosis-brain==0.7.1` from PyPI for these adapters; older packages do not
+contain them.
+
+All three integrations use the same vault format, MCP tools, project/global
+memory semantics and hybrid search. Client-specific instructions only bridge
+native tools and lifecycle events; they do not create separate memory systems.
+
+| Capability | Claude Code | OpenCode | Codex |
+| --- | --- | --- | --- |
+| Automatic context and experience recall | Hooks | Server plugin; hints reach the next applicable model request | Native hooks |
+| Canonical Brain skills | Installed by setup | Packaged skills path and command wrappers | Semi-manual native skill installation |
+| Durable learning | Save skill and MCP writes | Same skill and MCP writes; soft checkpoint reminders | Same skill and MCP writes; Stop reminders |
+| Context-percentage save reminders | Claude integration | Not promised | Not provided |
+| Brain status UI | Shell status line | Separate minimalist TUI plugin | Native Codex status items; no custom Brain widget |
+| Client setup | Automatic | Automatic adapter setup | Documented semi-manual setup; automatic installer deferred |
+| Vault Git synchronization | Separate packaged command | Visible placeholder; Git sync deferred | Separate manual command; not MCP index refresh |
+
+An automatic hint is not a guarantee that a model will follow it. Saving useful
+knowledge remains an agent action through the skill and MCP; compaction alone is
+not a durable vault save. OpenCode does not cancel ordinary tools to force a
+memory retry, and does not promise a hard Stop/PreCompact replica.
+
+- **Claude Code:** follow the existing quick start below.
+- **OpenCode:** see [the adapter guide](opencode/README.md) for supported versions,
+  Node requirements, installation, restart, diagnostics and safe removal.
+- **Codex:** see [manual setup](docs/codex-quickstart.md). It includes first-vault
+  preparation, MCP and hooks, shared skills, validation, updates and disabling;
+  there is no automatic `setup codex` command in this release scope.
+- **Another MCP client:** use the generic MCP instructions below. MCP storage
+  access alone does not install automatic recall or the skill workflow.
+
+Client-neutral preparation in 0.7.1:
+
+```bash
+symbiosis-brain init-vault --vault /path/to/vault
+symbiosis-brain resources --skills
+```
+
+The first command prepares the vault structure without installing a client. It
+preserves existing notes and adds the standard vault metadata. The second only
+prints the packaged canonical skills directory; it does not copy, replace or
+remove user files. Claude Code does not need to be installed to use the other
+clients. Follow the native client guide for tool names, skill discovery and
+configuration, and do not overwrite a different existing skill with the same
+name without reviewing the difference.
+
 ## What changes
 
 You stop saying *"Hi Claude, my stack is X, last week we decided Y…"* every session. Claude remembers your stack, your projects, your past decisions. A lesson you wrote down comes back when the agent goes to edit the same file — **before** the edit, not after. A mistake it keeps making becomes a rule that warns it before the next one. Knowledge flows between repos. A hook stops `/compact` once, so the session is saved before it gets swallowed.
@@ -98,7 +148,7 @@ Every artifact gets a trigger in tool routing, so it surfaces when it applies �
 
 Symbiosis Brain is built for Claude Code and fully wired into it: one `setup` command installs the MCP server, the hooks and the skills.
 
-The memory itself isn't locked to it. The server is a standard stdio MCP server, and its 14 `brain_*` tools work from any MCP client on the same vault — search, read, write, the wiki-link graph. Register `symbiosis-brain serve --vault <path>` with your client. What another client doesn't get is the automatic part: memory pushed in at the moment the agent acts comes from Claude Code hooks, and `setup` wires Claude Code only.
+The memory itself is not locked to it. The server is a standard stdio MCP server, and its 14 `brain_*` tools work from any MCP client on the same vault — search, read, write and the wiki-link graph. Register `symbiosis-brain serve --vault <path>` with your client. Generic MCP registration alone does not install automatic recall. The published 0.7.1 setup targets Claude Code and adds the OpenCode plugin and native Codex hooks described in [Choose your client](#choose-your-client).
 
 ## Why a markdown brain?
 
@@ -235,7 +285,7 @@ Anything else worth knowing before a particular upgrade is in that release's not
 
 **Can I open the vault in Obsidian?** Yes — that's a first-class use case. The welcome flow can install Obsidian for you and open your first note as a graph.
 
-**Does it work with other AI agents?** Yes, at two depths. Any MCP client gets the memory itself — the tools and the vault. The automatic part, recall pushed in before the agent acts, comes from Claude Code hooks. See [Beyond Claude Code](#beyond-claude-code).
+**Does it work with other AI agents?** Yes. Any MCP client gets the tools and vault. Automatic recall additionally requires a client adapter: Claude Code hooks, the OpenCode plugin or Codex hooks. Release availability and setup differ; see [Choose your client](#choose-your-client).
 
 **Does it learn things I didn't ask for?** It learns only from repetition — three times, not once — and anything bigger than a small, reversible fix waits for your OK. What it made is reported in one line: what, why, where it lives, what triggers it. See [It learns on the job](#it-learns-on-the-job).
 

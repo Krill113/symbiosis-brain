@@ -8,6 +8,32 @@ description: >
 
 # Brain Backfill Gists — One-time vault migration
 
+## Client compatibility
+
+Names such as `brain_lint`, `brain_read`, `brain_patch`, and `brain_sync` below
+are logical Brain operation names. Use the actual exposed tool with the matching
+operation; the MCP prefix differs by client. Keep the same grouping, gist
+templates, per-note patching, verification, and idempotency ritual.
+
+### Codex
+
+Use the parallel-agent capability exposed by the current session with an explicit
+model and reasoning effort. If it is unavailable, process the same bounded
+buckets sequentially; do not issue a fake `Agent` call. Canonical skill files can
+be resolved with `symbiosis-brain resources --skills`.
+
+### OpenCode
+
+The package `skillsDir` is registered through `skills.paths`. Use the native
+parallel-agent interface when available; otherwise process the same bounded
+buckets sequentially. Prefer `SYMBIOSIS_BRAIN_OPENCODE_VAULT`,
+`SYMBIOSIS_BRAIN_OPENCODE_TOOLS`, and `SYMBIOSIS_BRAIN_OPENCODE_PYTHON`.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including the parallel
+`Agent(subagent_type=Explore)` shape and MCP calls.
+
 ## When to use
 
 - After implementing gist-layer (Step 4.5 in `brain-save` skill).
@@ -30,7 +56,18 @@ Typical buckets in our vault: `alpha-seti`, `alpha-details`, `alpha-pdf`, `alpha
 
 ### Step 3: Dispatch parallel Explore subagents
 
-For each scope bucket — dispatch one `Agent` (subagent_type=Explore) in parallel. Each subagent:
+**Native clients:** Codex uses its actual parallel-agent interface with an
+explicit model and reasoning effort; OpenCode uses its native parallel-agent
+interface. If that capability is unavailable, process the same bounded buckets
+sequentially. Do not issue a fake `Agent` call.
+
+**Dispatch — Claude Code default:**
+
+For each scope bucket — dispatch one `Agent` (subagent_type=Explore) in parallel.
+
+**All clients — per-bucket procedure:**
+
+Each dispatched worker or sequential bucket:
 
 1. Receives the list of paths in its scope.
 2. For each path:
@@ -47,12 +84,15 @@ For each scope bucket — dispatch one `Agent` (subagent_type=Explore) in parall
      - `wiki` — what reader learns
      - `reference` — where to look + why
    - Don't duplicate title. Don't write "what's inside" — write "what this note enables".
-3. **Set the gist with `brain_patch`**, one call per note:
+3. **Set the gist with the logical `brain_patch` operation**, one call per note.
+   Use the actual exposed tool name. Claude Code spelling example:
    `mcp__symbiosis-brain__brain_patch(path="<note-path>", gist="<generated>")`
    - Frontmatter fields are named arguments — `gist`, `tags`, `title`, `valid_to` and the rest. No anchor, and the body is not touched.
    - **Do not hand-escape YAML.** The server serialises the value, so a gist containing `:` or a backslash needs nothing from you. Hand-escaping was required by the old `Edit` recipe and is exactly how one unquoted colon once broke `brain_sync` for the whole vault.
    - `anchor` still cannot reach frontmatter, and that is deliberate rather than a gap — `gist:` occurs in bodies too, and substring edits break on quoting and folded values while leaving a file that still parses. See the reasoning in `server.py` beside the tool schema. Do not try to reach the YAML block with an anchor.
-4. No batch sync needed: `brain_patch` reindexes the note it wrote. Call `mcp__symbiosis-brain__brain_sync` only if you also changed files outside the tool.
+4. No batch sync needed: `brain_patch` reindexes the note it wrote. Call the
+   logical `brain_sync` operation only if you also changed files outside the
+   tool. Claude Code spelling example: `mcp__symbiosis-brain__brain_sync`.
 5. Report back which paths were backfilled.
 
 ### Step 4: Wait for all subagents to complete

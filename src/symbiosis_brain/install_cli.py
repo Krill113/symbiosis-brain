@@ -1072,6 +1072,62 @@ def _package_version() -> str:
         return "unknown"
 
 
+def _client_command(args, command: str) -> int:
+    if args.target == "opencode":
+        from importlib import import_module
+
+        backend = import_module("symbiosis_brain.adapters.opencode.install")
+        return getattr(backend, f"cmd_{command}")(args)
+    return {"setup": cmd_setup, "doctor": cmd_doctor,
+            "uninstall": cmd_uninstall}[command](args)
+
+
+def cmd_setup_client(args) -> int:
+    return _client_command(args, "setup")
+
+
+def cmd_doctor_client(args) -> int:
+    return _client_command(args, "doctor")
+
+
+def cmd_uninstall_client(args) -> int:
+    return _client_command(args, "uninstall")
+
+
+def cmd_codex_hooks(args) -> int:
+    """Render hook configuration for review; do not install it."""
+    from importlib import import_module
+
+    backend = import_module("symbiosis_brain.adapters.codex.manual")
+    return backend.run_cli(["hooks", "--executable", args.executable,
+                            "--vault", args.vault])
+
+
+def cmd_init_vault(args) -> int:
+    """Create the shared vault skeleton without installing a client."""
+    vault = Path(args.vault).expanduser().resolve()
+    install_lib.scaffold_vault(vault)
+    print(f"Vault initialized: {vault}")
+    return 0
+
+
+def cmd_resources(args) -> int:
+    """Print a packaged resource path without changing a client profile."""
+    if args.routing:
+        routing = Path(__file__).resolve().parent / "data" / "tool-routing.json"
+        if not routing.is_file():
+            print("Packaged routing catalog is missing; reinstall the package.", file=sys.stderr)
+            return 1
+        print(routing)
+        return 0
+    skills = _packaged_skills_dir()
+    if not skills.is_dir() or not (skills / "brain-init" / "SKILL.md").is_file():
+        print("Packaged skills are missing; reinstall the package.", file=sys.stderr)
+        return 1
+    print(skills.resolve())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="symbiosis-brain")
     parser.add_argument("--version", action="version",
@@ -1083,30 +1139,70 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Args forwarded to MCP server (e.g. --vault PATH)")
     p_serve.set_defaults(func=cmd_serve)
 
-    p_setup = sub.add_parser("setup", help="Install into Claude Code")
-    p_setup.add_argument("target", choices=["claude-code"])
+    p_codex_hooks = sub.add_parser("codex-hooks", help="Print Codex hooks JSON for manual setup")
+    p_codex_hooks.add_argument("--executable", required=True,
+                               help="Installed symbiosis-brain executable")
+    p_codex_hooks.add_argument("--vault", required=True, help="Explicit vault directory")
+    p_codex_hooks.set_defaults(func=cmd_codex_hooks)
+
+    p_init = sub.add_parser("init-vault", help="Create a vault without installing a client")
+    p_init.add_argument("--vault", required=True, help="Explicit vault directory")
+    p_init.set_defaults(func=cmd_init_vault)
+
+    p_resources = sub.add_parser("resources", help="Locate packaged resources")
+    resource = p_resources.add_mutually_exclusive_group(required=True)
+    resource.add_argument("--skills", action="store_true",
+                          help="Print the canonical skills directory")
+    resource.add_argument("--routing", action="store_true",
+                          help="Print the packaged tool-routing catalog")
+    p_resources.set_defaults(func=cmd_resources)
+
+    p_setup = sub.add_parser("setup", help="Install a client integration")
+    p_setup.add_argument("target", choices=["claude-code", "opencode"])
     p_setup.add_argument("--repair", action="store_true",
                          help="Fix only broken pieces, skip interactive question")
     p_setup.add_argument("--vault", help="Override vault path (skips prompt)")
-    p_setup.set_defaults(func=cmd_setup)
+    p_setup.add_argument("--config-dir", help="OpenCode configuration directory")
+    p_setup.add_argument("--node", help="Node executable for the OpenCode installer")
+    p_setup.set_defaults(func=cmd_setup_client)
 
     p_doctor = sub.add_parser("doctor", help="Health check")
+    p_doctor.add_argument("target", nargs="?", default="claude-code",
+                          choices=["claude-code", "opencode"])
     p_doctor.add_argument("--deep", action="store_true",
                           help="also run PRAGMA integrity_check on the vault database")
-    p_doctor.set_defaults(func=cmd_doctor)
+    p_doctor.add_argument("--config-dir", help="OpenCode configuration directory")
+    p_doctor.add_argument("--node", help="Node executable for the OpenCode installer")
+    p_doctor.set_defaults(func=cmd_doctor_client)
 
     p_compile = sub.add_parser("compile-action-rules",
                                help="Recompile action rules from tool routing")
     p_compile.add_argument("--vault", help="Vault path (default: the installed one)")
     p_compile.set_defaults(func=cmd_compile_action_rules)
 
-    p_uninstall = sub.add_parser("uninstall", help="Remove Symbiosis Brain")
-    p_uninstall.set_defaults(func=cmd_uninstall)
+    p_uninstall = sub.add_parser("uninstall", help="Remove a client integration")
+    p_uninstall.add_argument("target", nargs="?", default="claude-code",
+                             choices=["claude-code", "opencode"])
+    p_uninstall.add_argument("--config-dir", help="OpenCode configuration directory")
+    p_uninstall.add_argument("--node", help="Node executable for the OpenCode installer")
+    p_uninstall.set_defaults(func=cmd_uninstall_client)
 
     return parser
 
 
 def main():
+    # Hook transports must not parse or reject client-supplied arguments here.
+    if len(sys.argv) > 1 and sys.argv[1] == "codex-hook":
+        from importlib import import_module
+
+        backend = import_module("symbiosis_brain.adapters.codex.supervisor")
+        sys.exit(backend.run_cli(sys.argv[2:]) or 0)
+    if len(sys.argv) > 1 and sys.argv[1] == "packaged-sync":
+        from importlib import import_module
+
+        backend = import_module("symbiosis_brain.adapters.codex.sync_launcher")
+        sys.exit(backend.run_cli(sys.argv[2:]) or 0)
+
     # Legacy compat: if first arg starts with `--vault`, treat the whole call as `serve <args>`.
     # Old MCP registrations call `symbiosis-brain --vault PATH`; new is `symbiosis-brain serve --vault PATH`.
     if len(sys.argv) > 1 and sys.argv[1].startswith("--vault"):

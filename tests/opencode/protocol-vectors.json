@@ -1,0 +1,91 @@
+{
+  "request": {
+    "version": 1,
+    "requestId": "shared-request",
+    "sessionId": "shared-session",
+    "generation": 7,
+    "operation": "bootstrap",
+    "cwd": "C:/workspace/alpha",
+    "boundary": "C:/workspace",
+    "origin": "resume",
+    "capabilityRevision": 4,
+    "capabilities": { "tools": ["read"], "mcp": [], "skills": ["brain-init"] }
+  },
+  "result": {
+    "version": 1,
+    "kind": "result",
+    "requestId": "shared-request",
+    "sessionId": "shared-session",
+    "generation": 7,
+    "capabilityRevision": 4,
+    "status": "degraded",
+    "scope": null,
+    "blocks": [
+      { "id": "global", "text": "Synthetic global context", "priority": 100, "category": "bootstrap" }
+    ],
+    "diagnostics": ["project-boundary-unknown"]
+  },
+  "richResult": {
+    "version": 1,
+    "kind": "result",
+    "requestId": "shared-request",
+    "sessionId": "shared-session",
+    "generation": 7,
+    "capabilityRevision": 4,
+    "status": "ok",
+    "scope": "alpha",
+    "blocks": [],
+    "diagnostics": [],
+    "resources": {
+      "pythonExe": "python",
+      "packageDir": "package",
+      "skillsDir": "skills",
+      "grepExe": null,
+      "actionRulesFile": "rules.json",
+      "mcpCommand": ["brain-cli", "serve"]
+    },
+    "actionDescriptors": [
+      { "id": "shell-read", "shell": "bash", "pattern": "cat", "hint": "Use a bounded read.", "priority": 2, "capabilityRevision": 4 }
+    ]
+  },
+  "invalidRequests": [
+    { "change": { "operation": ["bootstrap"] }, "reason": "invalid-operation" },
+    { "change": { "origin": {} }, "reason": "invalid-origin" },
+    { "change": { "action": null }, "reason": "invalid-action" },
+    { "change": { "generation": 9007199254740992 }, "reason": "invalid-generation" },
+    { "change": { "boundary": null }, "reason": "invalid-boundary" },
+    { "change": { "scope": null }, "reason": "invalid-scope" },
+    { "change": { "requestId": null }, "reason": "invalid-request-id" }
+  ],
+  "invalidResults": [
+    {
+      "change": { "resources": { "pythonExe": "python", "packageDir": "pkg", "skillsDir": "skills", "grepExe": null, "actionRulesFile": "rules", "mcpCommand": [42] } },
+      "reason": "invalid-resources"
+    },
+    { "change": { "actionDescriptors": [null] }, "reason": "invalid-action-descriptor" },
+    {
+      "change": { "actionDescriptors": [{ "id": "a", "shell": "cmd", "pattern": "x", "hint": "h", "priority": 1, "capabilityRevision": 1 }] },
+      "reason": "invalid-action-descriptor"
+    },
+    {
+      "change": { "actionDescriptors": [{ "id": "a", "shell": "bash", "pattern": "x", "hint": "h", "priority": 9007199254740992, "capabilityRevision": 1 }] },
+      "reason": "invalid-action-descriptor"
+    },
+    { "change": { "status": [] }, "reason": "invalid-result" },
+    { "change": { "blocks": [{ "id": "x", "text": "x", "priority": 1, "category": [] }] }, "reason": "invalid-block" }
+  ],
+  "invalidHellos": [
+    { "frame": { "version": 1, "kind": "hello", "ready": true, "role": [] }, "reason": "invalid-hello" }
+  ],
+  "hugeIntegerFrameTemplates": {
+    "request": "{\"version\":1,\"requestId\":\"huge-request\",\"sessionId\":\"session\",\"generation\":__DIGITS__,\"operation\":\"bootstrap\",\"cwd\":\"/work/alpha\",\"origin\":\"user\",\"capabilityRevision\":0,\"capabilities\":{\"tools\":[],\"mcp\":[],\"skills\":[]}}",
+    "result": "{\"version\":1,\"kind\":\"result\",\"requestId\":\"huge-result\",\"sessionId\":\"session\",\"generation\":__DIGITS__,\"capabilityRevision\":0,\"status\":\"ok\",\"scope\":null,\"blocks\":[],\"diagnostics\":[]}",
+    "hello": "{\"version\":__DIGITS__,\"kind\":\"hello\",\"ready\":true,\"role\":\"control\"}"
+  },
+  "grepExeCases": [
+    { "value": null, "valid": true },
+    { "value": "", "valid": false, "reason": "invalid-grep-exe" },
+    { "value": " \t ", "valid": false, "reason": "invalid-grep-exe" },
+    { "value": "rg", "valid": true }
+  ]
+}

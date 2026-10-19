@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "entrypoint": "install/main.mjs",
+  "sources": [
+    {
+      "path": "install/cli.ts",
+      "sha256": "804486f3fed1584a24640b6b187f6996d7175ad99493ff36e837433cc35741d2",
+      "size": 56608
+    },
+    {
+      "path": "install/commands.ts",
+      "sha256": "2dd1c8b61e6dbddfd85d29ff44ad8f80c6f0d414325876b7f162af0f522a392c",
+      "size": 1324
+    },
+    {
+      "path": "install/config-edit.ts",
+      "sha256": "288e36631935f1c931ba6bd58c3b92a416e1c496de11c2914bc3d46da000a48d",
+      "size": 8695
+    },
+    {
+      "path": "install/install_lock.py",
+      "sha256": "61da2f5f785e26bc5884790a842af979cfcb6a37614d61d8a9aaec2003088b1d",
+      "size": 9067
+    },
+    {
+      "path": "install/legacy-discovery.ts",
+      "sha256": "c8af3bcf3f215cc92c43ebe3142d3ea2f31fa2066b3b57004b6f014b851e3f9f",
+      "size": 448
+    },
+    {
+      "path": "install/main.ts",
+      "sha256": "9ede0e2eda79281becb1f9493479d0cc8012df174e99272cccc0d38e139de6a3",
+      "size": 2732
+    },
+    {
+      "path": "install/migration.ts",
+      "sha256": "aed2674886056773dfe14a97572d2e3b6cf3741e2795685eefe89fc55e8fca97",
+      "size": 5080
+    },
+    {
+      "path": "install/ownership.ts",
+      "sha256": "62299253ddd509f96c102404383c97441f04f52dff42ebb1d515a3a6451af987",
+      "size": 11972
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "f0fff4d40487cbcb5f6a17fb196572bc678ff15e8ff39729cc42ba69165ed8aa",
+      "size": 70559
+    },
+    {
+      "path": "package.json",
+      "sha256": "932033a77b914687f83938d9180963aefc3485f59db563127566ed6b2258a1e6",
+      "size": 672
+    },
+    {
+      "path": "server.ts",
+      "sha256": "8d20d7b3fb1400f7b210bb36a2da37de7197c11b18c6cf1077f9c89370f2f500",
+      "size": 21624
+    },
+    {
+      "path": "src/action-matcher.ts",
+      "sha256": "35952fadefbe604f31985bb59a4be2cabcf7e55992998c9bfe2418f8fa04b392",
+      "size": 10346
+    },
+    {
+      "path": "src/capabilities.ts",
+      "sha256": "442670e30e180c3bf040a75e85e56f4d9c493fa3ce728203fd68b8ea7623804f",
+      "size": 1280
+    },
+    {
+      "path": "src/coordinator.ts",
+      "sha256": "d612ce528969dd69012f916cf1de7b1c65dd660af74001d837700d10308bedef",
+      "size": 29293
+    },
+    {
+      "path": "src/host-ui.ts",
+      "sha256": "0987a3324a192d2986ad57e3f7d994ceb7fbb9ff698074cfd9c5ba9ab03ca039",
+      "size": 572
+    },
+    {
+      "path": "src/normalize.ts",
+      "sha256": "54ad0e5059dbb11c77351e4590db638fc7de34fc652bb59b94c5971f245c65ad",
+      "size": 5473
+    },
+    {
+      "path": "src/protocol.ts",
+      "sha256": "0d250550c0d13b4779cdb2088dbb6f3832336f42f8a3a0d2134dc176e027d6a7",
+      "size": 11408
+    },
+    {
+      "path": "src/save-checkpoint.ts",
+      "sha256": "ea29b3786585ef982dad5f5121f40435b8167c28fe516836ea60f5616767be47",
+      "size": 9486
+    },
+    {
+      "path": "src/server-hooks.ts",
+      "sha256": "5cf7646705270d432a14810a7f74d10645f8a471cbbd6fac48a5faf619a5b8dd",
+      "size": 14205
+    },
+    {
+      "path": "src/status-view.ts",
+      "sha256": "befb69a3ea2b1e2c9e5e7d489e7047c82b783d31fec3e161950b7eee750b5ff3",
+      "size": 11054
+    },
+    {
+      "path": "src/worker-pool.ts",
+      "sha256": "e71b8bbb171a8516a6c85d98d31c4146fe5da990d6f5b30d7a6fc71b2c7b75ba",
+      "size": 15397
+    },
+    {
+      "path": "tui.tsx",
+      "sha256": "0b39f5361aaaff8b67309b04fac04e8140e12745837b09029cb3a8dfc81ad35b",
+      "size": 1216
+    }
+  ],
+  "files": [
+    {
+      "path": "install/cli.mjs",
+      "sha256": "bfa66ad38c8c12af4e62fdc1dc2ceec0724077fd7a9d80afe83732d52bcb061c",
+      "size": 56899
+    },
+    {
+      "path": "install/cli.ts",
+      "sha256": "804486f3fed1584a24640b6b187f6996d7175ad99493ff36e837433cc35741d2",
+      "size": 56608
+    },
+    {
+      "path": "install/commands.mjs",
+      "sha256": "5beaa2afb83050bcdf2c90d972ccebd18d4b451ee96a2505e236571fc1c7f41e",
+      "size": 1162
+    },
+    {
+      "path": "install/commands.ts",
+      "sha256": "2dd1c8b61e6dbddfd85d29ff44ad8f80c6f0d414325876b7f162af0f522a392c",
+      "size": 1324
+    },
+    {
+      "path": "install/config-edit.mjs",
+      "sha256": "91a7454efa1a42a587ded62608717ad520de627dc462e7fd5caa6afece058551",
+      "size": 8455
+    },
+    {
+      "path": "install/config-edit.ts",
+      "sha256": "288e36631935f1c931ba6bd58c3b92a416e1c496de11c2914bc3d46da000a48d",
+      "size": 8695
+    },
+    {
+      "path": "install/install_lock.py",
+      "sha256": "61da2f5f785e26bc5884790a842af979cfcb6a37614d61d8a9aaec2003088b1d",
+      "size": 9067
+    },
+    {
+      "path": "install/legacy-discovery.mjs",
+      "sha256": "cea0f8666420d3e0b7ea5528baa9d83cc106ad55b801b74a0a55b0d224895828",
+      "size": 409
+    },
+    {
+      "path": "install/legacy-discovery.ts",
+      "sha256": "c8af3bcf3f215cc92c43ebe3142d3ea2f31fa2066b3b57004b6f014b851e3f9f",
+      "size": 448
+    },
+    {
+      "path": "install/main.mjs",
+      "sha256": "71c45729089222118e96498380d563ff7b847b3de3047a17d6e8150b39ccd913",
+      "size": 2920
+    },
+    {
+      "path": "install/main.ts",
+      "sha256": "9ede0e2eda79281becb1f9493479d0cc8012df174e99272cccc0d38e139de6a3",
+      "size": 2732
+    },
+    {
+      "path": "install/migration.mjs",
+      "sha256": "52630b46586f15d4f49f6b8419a70b931c264cf119a25361f6df8915ec9691b9",
+      "size": 4807
+    },
+    {
+      "path": "install/migration.ts",
+      "sha256": "aed2674886056773dfe14a97572d2e3b6cf3741e2795685eefe89fc55e8fca97",
+      "size": 5080
+    },
+    {
+      "path": "install/ownership.mjs",
+      "sha256": "bb01e17737dd055303ed399f5c4bce329c3ec4926672a6abf4602957ae883e02",
+      "size": 11026
+    },
+    {
+      "path": "install/ownership.ts",
+      "sha256": "62299253ddd509f96c102404383c97441f04f52dff42ebb1d515a3a6451af987",
+      "size": 11972
+    },
+    {
+      "path": "node_modules/jsonc-parser/CHANGELOG.md",
+      "sha256": "e8e1c80842a20b52dc69cba3a92ab4822a12625dd242b45300c50164432b231e",
+      "size": 2903
+    },
+    {
+      "path": "node_modules/jsonc-parser/LICENSE.md",
+      "sha256": "c3a24c02d678e5f0711623dcf3ab3f243b273c2633f638a1fa8e35fb7c7f8e4d",
+      "size": 1092
+    },
+    {
+      "path": "node_modules/jsonc-parser/README.md",
+      "sha256": "dbd5441ae6226fb80684fd71dc400e27c65bfb6e74e78e1c66e9b620bd82cd82",
+      "size": 14273
+    },
+    {
+      "path": "node_modules/jsonc-parser/SECURITY.md",
+      "sha256": "830e94b83c3b6f45ceee5609de6249b2125927f95532e68427f09c99eed5e663",
+      "size": 2780
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/impl/edit.js",
+      "sha256": "7e7bf98e740f560026df079056d3b0f5f34628124a8d34e2765fb101dde12911",
+      "size": 8613
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/impl/format.js",
+      "sha256": "e57dee56700a844b18dea11548f9ba42b17bc857bde5bcd39554af06ca95bb1f",
+      "size": 11098
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/impl/parser.js",
+      "sha256": "74fae1bbebf290a04e46c5457ac5d97988146a5503ea35d9f0c4c3768acd5a26",
+      "size": 25765
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/impl/scanner.js",
+      "sha256": "e737e1774f87ca88d85d73e3bafff688b78cac06b81c53b96c54da8b3ca86cd9",
+      "size": 19188
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/impl/string-intern.js",
+      "sha256": "3a0aad3f56c3e0728812c7584568c0ff200bce1ca58cf40e946f01fdb54c5752",
+      "size": 1034
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/main.d.ts",
+      "sha256": "f1d603af05e59e26aae3d9fa7bb0138e744bfbfc9f4793ddeaabe5c85da1d30f",
+      "size": 14480
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/esm/main.js",
+      "sha256": "72ff182105e158a1505ca3ecbf3f30359abb138a3980edaef1db7f4010ffb7dc",
+      "size": 9363
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/impl/edit.js",
+      "sha256": "9ecd115039cf7a478f223e4a9649170c7f5e8fd8016df1b267723b57553f9483",
+      "size": 10061
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/impl/format.js",
+      "sha256": "f9e468e436bf1014a4395b1ac70374edb918739ba90b19e6e6a22ca0214564a9",
+      "size": 12888
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/impl/parser.js",
+      "sha256": "a35db1bfb9631dcba643fa42972e9ebe2a318b4de3cac239d29081577a43d688",
+      "size": 29455
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/impl/scanner.js",
+      "sha256": "581d82c4f1aa84b0605369c01f414fb0164ee462e03daa298cb960076a2a9e82",
+      "size": 21446
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/impl/string-intern.js",
+      "sha256": "e590d27909a7c132382fbf9b8c4668054ab425734c1e0789753063356826c30f",
+      "size": 1663
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/main.d.ts",
+      "sha256": "f1d603af05e59e26aae3d9fa7bb0138e744bfbfc9f4793ddeaabe5c85da1d30f",
+      "size": 14480
+    },
+    {
+      "path": "node_modules/jsonc-parser/lib/umd/main.js",
+      "sha256": "6dc132e2e792a9616688ff93d10dd671c1fbcfa3301d76bff3e81193d049337d",
+      "size": 11059
+    },
+    {
+      "path": "node_modules/jsonc-parser/package.json",
+      "sha256": "a7a9192caaac00d9330592f4fd572908bee037518128a0fc3db96d2cd652e2b5",
+      "size": 1180
+    },
+    {
+      "path": "server.ts",
+      "sha256": "8d20d7b3fb1400f7b210bb36a2da37de7197c11b18c6cf1077f9c89370f2f500",
+      "size": 21624
+    },
+    {
+      "path": "src/action-matcher.ts",
+      "sha256": "35952fadefbe604f31985bb59a4be2cabcf7e55992998c9bfe2418f8fa04b392",
+      "size": 10346
+    },
+    {
+      "path": "src/capabilities.ts",
+      "sha256": "442670e30e180c3bf040a75e85e56f4d9c493fa3ce728203fd68b8ea7623804f",
+      "size": 1280
+    },
+    {
+      "path": "src/coordinator.ts",
+      "sha256": "d612ce528969dd69012f916cf1de7b1c65dd660af74001d837700d10308bedef",
+      "size": 29293
+    },
+    {
+      "path": "src/host-ui.ts",
+      "sha256": "0987a3324a192d2986ad57e3f7d994ceb7fbb9ff698074cfd9c5ba9ab03ca039",
+      "size": 572
+    },
+    {
+      "path": "src/normalize.ts",
+      "sha256": "54ad0e5059dbb11c77351e4590db638fc7de34fc652bb59b94c5971f245c65ad",
+      "size": 5473
+    },
+    {
+      "path": "src/protocol.ts",
+      "sha256": "0d250550c0d13b4779cdb2088dbb6f3832336f42f8a3a0d2134dc176e027d6a7",
+      "size": 11408
+    },
+    {
+      "path": "src/save-checkpoint.ts",
+      "sha256": "ea29b3786585ef982dad5f5121f40435b8167c28fe516836ea60f5616767be47",
+      "size": 9486
+    },
+    {
+      "path": "src/server-hooks.ts",
+      "sha256": "5cf7646705270d432a14810a7f74d10645f8a471cbbd6fac48a5faf619a5b8dd",
+      "size": 14205
+    },
+    {
+      "path": "src/status-view.ts",
+      "sha256": "befb69a3ea2b1e2c9e5e7d489e7047c82b783d31fec3e161950b7eee750b5ff3",
+      "size": 11054
+    },
+    {
+      "path": "src/worker-pool.ts",
+      "sha256": "e71b8bbb171a8516a6c85d98d31c4146fe5da990d6f5b30d7a6fc71b2c7b75ba",
+      "size": 15397
+    },
+    {
+      "path": "tui.tsx",
+      "sha256": "0b39f5361aaaff8b67309b04fac04e8140e12745837b09029cb3a8dfc81ad35b",
+      "size": 1216
+    }
+  ]
+}

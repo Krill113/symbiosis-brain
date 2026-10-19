@@ -756,6 +756,16 @@ def _run_compile_action_rules(argv: list[str]) -> int:
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] == "codex-hook":
+        from symbiosis_brain.entry_cli import main as entry_main
+
+        entry_main()
+        return
+    if argv and argv[0] == "packaged-sync":
+        from symbiosis_brain.install_cli import main as install_main
+
+        install_main()
+        return
     if argv and argv[0] in ("search-gist", "pre-action-recall"):
         # Both hook entries are short-lived processes, and close() is flush
         # point (в) of §2.4 п. 4: the accumulated skip delta must not die with

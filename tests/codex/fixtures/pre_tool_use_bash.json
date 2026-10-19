@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"fixture-session","turn_id":"fixture-turn","tool_name":"Bash","tool_input":{"command":"git status"}}

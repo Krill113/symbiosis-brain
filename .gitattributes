@@ -1,0 +1,5 @@
+# Release artifact hashes require identical bytes on all platforms.
+opencode/** text eol=lf
+# Vendored release assets retain their exact manifest bytes, including licenses.
+opencode/dist/** -text
+opencode/dist/node_modules/** -whitespace

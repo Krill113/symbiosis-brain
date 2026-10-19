@@ -12,6 +12,33 @@ description: >
 
 # Brain Save — Knowledge Preservation
 
+## Client compatibility
+
+Names such as `brain_search`, `brain_write`, and `brain_patch` below are logical
+Brain operation names. Use the actual exposed tool with the matching operation;
+the MCP prefix differs by client. Do not replace the retrospective, deduplication,
+save, handoff, or autolearn ritual with an MCP-only shortcut.
+
+### Codex
+
+Use native skill invocation for `brain-autolearn` when available. Otherwise
+resolve the installed canonical skill root with `symbiosis-brain resources
+--skills` (a host may also expose it under `$CODEX_HOME/skills`), read its
+canonical `SKILL.md`, and execute the original ritual. Never invent a `Skill`
+tool. Prefer explicit `SYMBIOSIS_BRAIN_VAULT` and `SYMBIOSIS_BRAIN_TOOLS`.
+
+### OpenCode
+
+The package `skillsDir` is registered through `skills.paths`; invoke
+`brain-autolearn` natively, or read its canonical `SKILL.md` from that resource
+and execute the original ritual. Prefer `SYMBIOSIS_BRAIN_OPENCODE_VAULT`,
+`SYMBIOSIS_BRAIN_OPENCODE_TOOLS`, and `SYMBIOSIS_BRAIN_OPENCODE_PYTHON`.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including its skill invocation,
+MCP tools, environment, and MEMORY.md fallback.
+
 ## When to use
 
 Trigger proactively (don't wait for the user to ask) when:
@@ -132,6 +159,13 @@ Output 1 line: what was saved and where. Example: "Saved: decision about X → d
 - If you need to RENAME or DELETE an existing note (not just supersede via valid_to), use `brain_rename` or `brain_delete` MCP tools — never raw Edit on the file. Direct file edits leave inbound `[[old]]` references stale, which is the dominant source of vault broken-links. `brain_rename` rewrites inbound refs atomically; `brain_delete` (mode=safe) refuses if inbound refs exist, so you don't accidentally orphan callers.
 
 ### MCP fallback
+
+**Native clients:** if `brain_write` is unavailable, write only to
+`<resolved-vault>/MEMORY.md`, and only when the resolved vault is known and
+writable. Otherwise report the knowledge as unsaved and stop; do not guess a
+memory path.
+
+**Claude Code default:** the original auto-memory fallback remains:
 
 If `brain_write` is unavailable, save to auto-memory (MEMORY.md) with a note:
 "[Temporary — migrate to Symbiosis Brain when available]"

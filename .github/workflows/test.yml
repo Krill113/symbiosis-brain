@@ -26,6 +26,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  opencode-artifact:
+    name: OpenCode artifact freshness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: opencode/package-lock.json
+      - name: Install pinned build dependencies
+        run: npm ci --prefix opencode
+      - name: Type check and regenerate artifact
+        run: |
+          npm --prefix opencode run typecheck
+          npm --prefix opencode run build:installer
+          node --experimental-strip-types --test opencode/tests/artifact.test.ts
+      - name: Require committed artifact parity
+        shell: bash
+        run: |
+          git diff --exit-code -- opencode/dist
+          test -z "$(git ls-files --others --exclude-standard -- opencode/dist)"
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -9,6 +9,38 @@ description: >
 
 # Brain Init — Session Context Loading (post-C1)
 
+## Client compatibility
+
+Names such as `brain_status` and `brain_read` below are logical Brain operation
+names. Use the actual exposed tool with the matching operation; the MCP prefix
+differs by client. The ritual and its ordering stay unchanged.
+
+### Codex
+
+Use native skill invocation for `brain-welcome` and `brain-project-init` when it
+is available. Otherwise resolve the installed canonical skill root with
+`symbiosis-brain resources --skills` (a host may also expose it under
+`$CODEX_HOME/skills`), read its canonical `SKILL.md`, and execute the original
+ritual. Never invent a `Skill` tool call. For scope commands, prefer the installed
+`brain-cli`; if unavailable, use the current interpreter as
+`"<absolute current interpreter>" -m symbiosis_brain.scope_cli`. Do not use `uv run --directory`
+for a wheel-only install. Prefer explicit `SYMBIOSIS_BRAIN_VAULT` and
+`SYMBIOSIS_BRAIN_TOOLS`.
+
+### OpenCode
+
+The package `skillsDir` is registered through `skills.paths`; use native skill
+invocation for `brain-welcome` and `brain-project-init`, or read their canonical
+`SKILL.md` from that resource and execute the original ritual. Resolve paths from
+`SYMBIOSIS_BRAIN_OPENCODE_VAULT`, `SYMBIOSIS_BRAIN_OPENCODE_TOOLS`, and
+`SYMBIOSIS_BRAIN_OPENCODE_PYTHON`; run the latter with
+`-m symbiosis_brain.scope_cli`. Do not use `uv run --directory`.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including its installed skills,
+MCP tools, environment, and shell fallbacks.
+
 ## When to use
 
 - Beginning of every new conversation.
@@ -18,6 +50,28 @@ description: >
 ## Procedure
 
 ### Step 0: First-time onboarding check
+
+**Native clients — resolve the vault before probing its marker:**
+
+- **Codex:** use explicit `SYMBIOSIS_BRAIN_VAULT` when present. Otherwise inspect
+  `codex mcp get symbiosis-brain --json` and resolve the registered `--vault`
+  argument or `SYMBIOSIS_BRAIN_VAULT` from the registered server environment.
+  MCP registration environment is configuration data, not inherited parent
+  environment. Call logical `brain_status` and require its Vault to be the same
+  physical vault.
+- **OpenCode:** map `SYMBIOSIS_BRAIN_OPENCODE_VAULT` to the
+  `SYMBIOSIS_BRAIN_VAULT` placeholder used below, then call logical
+  `brain_status` and require the same physical vault.
+- If status is unavailable but there is a known resolved vault, that is not a
+  vault mismatch: read `<resolved-vault>/MEMORY.md` if readable, do not run
+  welcome or any write, do not execute the marker probe below, skip Steps 3-5,
+  and continue the session without MCP.
+- If status reports that the physical vault differs, stop Brain initialization
+  and report the mismatch.
+- If the resolved path is unknown, report that fallback memory is unavailable,
+  do not guess a path, and continue the session without Brain memory.
+
+**Claude Code default:** use the existing environment-backed probe below.
 
 Before any other initialization, check whether this vault has been onboarded.
 
@@ -32,6 +86,13 @@ This step runs at most once per vault (welcome-skill writes the marker on succes
 If welcome-skill fails before writing the marker, the next session retries.
 
 ### Step 1: Verify MCP server
+
+**Native clients:** the status-unavailable branch from Step 0 reads only
+`<resolved-vault>/MEMORY.md` when that resolved path is known and readable. With
+no resolved path, report the unavailable fallback and continue the session
+without memory. Do not run welcome or writes; skip Steps 3-5.
+
+**Claude Code default:** keep the original fallback below.
 
 Call `brain_status`. If it returns an error:
 - Inform the user: "Symbiosis Brain MCP unavailable, falling back to MEMORY.md".
@@ -48,19 +109,28 @@ Call `brain_read("CRITICAL_FACTS.md")`. ~120 tokens. Never skip.
 Use `brain-cli scope-resolve` to compute the canonical scope. Path to the tools repo
 comes from `$SYMBIOSIS_BRAIN_TOOLS` (exported by SessionStart hook).
 
-**On Windows** — PowerShell first (bash subshell launched by Claude Code often lacks `uv` on PATH, see [[mistakes/uv-not-on-bash-path-windows]] if recurring):
+**Native clients — scope resolve:**
+
+- **Codex:** run `brain-cli scope-resolve "$PWD"`. If the installed command is
+  unavailable, run `"<absolute current interpreter>" -m
+  symbiosis_brain.scope_cli scope-resolve "$PWD"`.
+- **OpenCode:** run `"$SYMBIOSIS_BRAIN_OPENCODE_PYTHON" -m
+  symbiosis_brain.scope_cli scope-resolve "$PWD"`.
+- Do not use the Claude `uv --directory` examples for a wheel-only native install.
+
+**Claude Code default — Windows** — PowerShell first (the bash subshell launched by Claude Code may lack `uv` on PATH):
 
 ```powershell
 uv run --directory "$env:SYMBIOSIS_BRAIN_TOOLS" brain-cli scope-resolve "$PWD"
 ```
 
-**On macOS/Linux** — bash:
+**Claude Code default — macOS/Linux** — bash:
 
 ```bash
 uv run --directory "$SYMBIOSIS_BRAIN_TOOLS" brain-cli scope-resolve "$PWD"
 ```
 
-If the primary call returns `uv: command not found` — retry through the other shell (PowerShell↔bash). If `$SYMBIOSIS_BRAIN_TOOLS` is unset, check `settings.json` env block for the absolute path, or use the module entry-point as a last resort:
+**Claude Code default fallback:** If the primary call returns `uv: command not found` — retry through the other shell (PowerShell↔bash). If `$SYMBIOSIS_BRAIN_TOOLS` is unset, check `settings.json` env block for the absolute path, or use the module entry-point as a last resort:
 
 ```bash
 uv run --directory "$SYMBIOSIS_BRAIN_TOOLS" python -m symbiosis_brain.scope_cli scope-resolve "$PWD"
@@ -109,6 +179,10 @@ Scan the project card **already loaded in Step 4** for the latest `## Handoff YY
 Format reference: [[wiki/handoff-pattern]] (4 bullets: shipped / WIP / parked / next-step).
 
 ### Step 5: Recovery scenarios
+
+**Native clients:** when a branch below says Edit, use the actual native
+file-edit capability. Do not issue a fake `Edit` tool call. Claude Code keeps the
+original Edit behavior below.
 
 The following pathological states are handled silently in priority order:
 

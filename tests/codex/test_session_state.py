@@ -474,6 +474,7 @@ except TimeoutError:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15,
         )
         assert (successor.returncode, successor.stdout, successor.stderr) == (
@@ -517,6 +518,7 @@ with session_lock("thread-crash", timeout_s=5.0):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
     )
     assert crashed.returncode == 23
@@ -538,6 +540,7 @@ with session_lock("thread-crash", timeout_s=1.0):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
     )
 
@@ -579,6 +582,7 @@ with session_lock("thread-live", timeout_s=5.0):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     try:
         _wait_for_subprocess_path(ready, owner)
@@ -600,6 +604,7 @@ except TimeoutError:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15,
         )
         assert (contender.returncode, contender.stdout, contender.stderr) == (
@@ -690,6 +695,7 @@ with session_lock("thread-gc", timeout_s=5.0):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     try:
         _wait_for_subprocess_path(ready, owner)
@@ -747,6 +753,7 @@ with session_lock('thread-1', timeout_s=5.0):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         )
         for _ in range(2)
     ]

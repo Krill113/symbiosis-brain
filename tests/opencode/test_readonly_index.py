@@ -299,7 +299,7 @@ reader.search("amber", scope="sample", mode="gist")
 '''
     process = subprocess.Popen(
         [sys.executable, "-c", code, str(path)], stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
     )
     executor = ThreadPoolExecutor(max_workers=1)
     try:

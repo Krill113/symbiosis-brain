@@ -221,15 +221,17 @@ def test_original_ritual_steps_remain_in_order(name: str) -> None:
 @pytest.mark.parametrize(
     ("name", "digest"),
     (
-        ("brain-recall", "c85d5388fcc79b292b23b28e25427ec12390f8b02097d87e18dd063b93c78606"),
-        ("brain-welcome", "6a4dd0dc990de9981a3a73e845c070c9fd65dccabab9ce30b1d2b01a625ca7cb"),
+        ("brain-recall", "52f83f15881866cbd2d05ef62728b2ba5f90c41a482bccdd8f0eaea35da5589e"),
+        ("brain-welcome", "fc6e39257fb2a3b2852e99c5bac63e35efaab39a64f9a6c05191806e02427271"),
     ),
 )
 def test_skills_without_unsupported_calls_stay_byte_for_byte_canonical(
     name: str,
     digest: str,
 ) -> None:
-    payload = (SKILLS / name / "SKILL.md").read_bytes()
+    # Git may materialize text files with CRLF on Windows. The canonical
+    # content invariant is line-ending independent; edits still change digest.
+    payload = (SKILLS / name / "SKILL.md").read_bytes().replace(b"\r\n", b"\n")
     assert hashlib.sha256(payload).hexdigest() == digest
 
 

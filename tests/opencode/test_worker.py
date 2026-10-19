@@ -116,7 +116,7 @@ def test_resources_reply_command_completes_public_mcp_initialize_handshake(tmp_p
     completed = subprocess.run(
         list(resources_result.resources.mcp_command),
         input=json.dumps(initialize) + "\n" + json.dumps(initialized) + "\n",
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", timeout=20, check=False,
     )
     assert completed.returncode == 0, completed.stderr
     frames = [json.loads(line) for line in completed.stdout.splitlines() if line.startswith("{")]
@@ -134,6 +134,6 @@ def test_control_resources_path_does_not_import_search_or_vector_stack(tmp_path)
     )
     completed = subprocess.run(
         [sys.executable, "-c", code, str(tmp_path)], capture_output=True,
-        text=True, timeout=5, check=False, env=os.environ.copy(),
+        text=True, encoding="utf-8", timeout=5, check=False, env=os.environ.copy(),
     )
     assert completed.returncode == 0, completed.stderr

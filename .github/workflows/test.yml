@@ -95,11 +95,6 @@ jobs:
             echo "ok  $f"
           done
 
-      - name: Diagnose Windows state ACL verification
-        if: runner.os == 'Windows'
-        shell: bash
-        run: uv run pytest -vv --tb=long --showlocals tests/codex/test_session_state.py::test_state_paths_live_only_under_private_codex_home
-
       # `shell: bash` is Git Bash on every OS, matching what a real Windows
       # user has installed (a bare `bash` from pwsh would instead hit the
       # WSL stub in System32).

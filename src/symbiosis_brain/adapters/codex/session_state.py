@@ -294,14 +294,130 @@ def _windows_access_sddl(path: Path) -> str:
                 pass
 
 
+def _windows_sddl_matches_user(sddl: str, sid: str) -> bool:
+    """Check a canonical private-directory DACL after resolving SDDL aliases."""
+    import ctypes
+    from ctypes import wintypes
+
+    descriptor = ctypes.c_void_p()
+    trustee_sid_text = wintypes.LPWSTR()
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        convert_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        convert_descriptor.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        convert_descriptor.restype = wintypes.BOOL
+        get_control = advapi32.GetSecurityDescriptorControl
+        get_control.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        get_control.restype = wintypes.BOOL
+        get_dacl = advapi32.GetSecurityDescriptorDacl
+        get_dacl.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        )
+        get_dacl.restype = wintypes.BOOL
+        get_acl_information = advapi32.GetAclInformation
+        get_acl_information.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        )
+        get_acl_information.restype = wintypes.BOOL
+        get_ace = advapi32.GetAce
+        get_ace.argtypes = (
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        get_ace.restype = wintypes.BOOL
+        convert_sid = advapi32.ConvertSidToStringSidW
+        convert_sid.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+        convert_sid.restype = wintypes.BOOL
+        local_free = kernel32.LocalFree
+        local_free.argtypes = (ctypes.c_void_p,)
+        local_free.restype = ctypes.c_void_p
+
+        if not convert_descriptor(sddl, 1, ctypes.byref(descriptor), None):
+            return False
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not get_control(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            return False
+        if not control.value & 0x1000:  # SE_DACL_PROTECTED
+            return False
+
+        present = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        defaulted = wintypes.BOOL()
+        if not get_dacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ) or not present.value or not dacl.value:
+            return False
+
+        class _AclSizeInformation(ctypes.Structure):
+            _fields_ = [
+                ("ace_count", wintypes.DWORD),
+                ("acl_bytes_in_use", wintypes.DWORD),
+                ("acl_bytes_free", wintypes.DWORD),
+            ]
+
+        information = _AclSizeInformation()
+        if not get_acl_information(
+            dacl, ctypes.byref(information), ctypes.sizeof(information), 2
+        ) or information.ace_count != 1:
+            return False
+
+        ace = ctypes.c_void_p()
+        if not get_ace(dacl, 0, ctypes.byref(ace)) or not ace.value:
+            return False
+        ace_header = ctypes.cast(ace, ctypes.POINTER(ctypes.c_ubyte * 4)).contents
+        if ace_header[0] != 0 or ace_header[1] != 0x03:  # ACCESS_ALLOWED_ACE; OI|CI
+            return False
+        ace_size = int.from_bytes(bytes(ace_header[2:4]), "little")
+        if ace_size < 16:
+            return False
+        access_mask = ctypes.cast(
+            ace.value + 4, ctypes.POINTER(wintypes.DWORD)
+        ).contents.value
+        if access_mask != 0x001F01FF:  # FILE_ALL_ACCESS (SDDL: FA)
+            return False
+        trustee_sid = ctypes.c_void_p(ace.value + 8)
+        if not convert_sid(trustee_sid, ctypes.byref(trustee_sid_text)):
+            return False
+        # Windows resolves SDDL aliases (e.g. LA) to their actual SID here.
+        return trustee_sid_text.value.casefold() == sid.casefold()
+    except Exception:
+        return False
+    finally:
+        if descriptor.value:
+            try:
+                local_free(descriptor)
+            except Exception:
+                pass
+        if trustee_sid_text:
+            try:
+                local_free(trustee_sid_text)
+            except Exception:
+                pass
+
+
 def _windows_acl_is_expected(first: Path, second: Path) -> bool:
     try:
         sid = _current_windows_sid(Path())
-        expected = re.compile(
-            rf"^D:P(?:AI)?\(A;OICI;FA;;;{re.escape(sid)}\)$"
-        )
         return all(
-            expected.fullmatch(_windows_access_sddl(path).strip())
+            _windows_sddl_matches_user(_windows_access_sddl(path).strip(), sid)
             for path in (first, second)
         )
     except Exception:
@@ -356,13 +472,13 @@ def _apply_and_verify_windows_acls(first: Path, second: Path) -> None:
         )
     except (OSError, subprocess.SubprocessError, UnicodeError):
         raise _privacy_failure() from None
-    expected = re.compile(
-        rf"^D:P(?:AI)?\(A;OICI;FA;;;{re.escape(sid)}\)$"
-    )
     descriptors = result.stdout.splitlines()
     if result.returncode != 0 or result.stderr.strip() or len(descriptors) != 2:
         raise _privacy_failure()
-    if any(not expected.fullmatch(descriptor.strip()) for descriptor in descriptors):
+    if any(
+        not _windows_sddl_matches_user(descriptor.strip(), sid)
+        for descriptor in descriptors
+    ):
         raise _privacy_failure()
 
 

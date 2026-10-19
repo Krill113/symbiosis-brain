@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"fixture-session","turn_id":"fixture-turn","tool_name":"apply_patch","tool_input":{"patch":"*** Begin Patch\n*** Update File: first.txt\n@@\n-old first\n+new first\n*** Update File: second.txt\n@@\n-old second\n+new second\n*** End Patch"}}

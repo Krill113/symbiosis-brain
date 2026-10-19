@@ -9,6 +9,38 @@ description: >
 
 # Brain Project Init — Onboarding
 
+## Client compatibility
+
+Names such as `brain_write`, `brain_search`, and `brain_sync` below are logical
+Brain operation names. Use the actual exposed tool with the matching operation;
+the MCP prefix differs by client. Preserve every onboarding, lock, recovery, and
+idempotency step.
+
+### Codex
+
+Use native skill invocation when this skill is exposed by the host. Otherwise
+resolve the canonical root with `symbiosis-brain resources --skills` (or the
+host-supported `$CODEX_HOME/skills`), read its canonical `SKILL.md`, and execute
+the original ritual rather than inventing a `Skill` tool. For lock and scope
+commands, prefer the installed `brain-cli`; if unavailable, use the current
+interpreter as `"<absolute current interpreter>" -m symbiosis_brain.scope_cli`. Do not use
+`uv run --directory` for a wheel-only install. Prefer explicit
+`SYMBIOSIS_BRAIN_VAULT` and `SYMBIOSIS_BRAIN_TOOLS`.
+
+### OpenCode
+
+The package `skillsDir` is registered through `skills.paths`; invoke this skill
+natively or read its canonical `SKILL.md` from that resource and execute the
+original ritual. Use `SYMBIOSIS_BRAIN_OPENCODE_PYTHON -m
+symbiosis_brain.scope_cli` for lock and scope commands, with
+`SYMBIOSIS_BRAIN_OPENCODE_VAULT` and `SYMBIOSIS_BRAIN_OPENCODE_TOOLS` for paths.
+Do not use `uv run --directory`.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including its Bash, `uv`,
+MCP, and Edit-tool paths.
+
 ## When to use
 
 NEVER call this directly. It is invoked by `brain-init` Step 3.1, Step 5,
@@ -26,6 +58,16 @@ The invoking skill or user passes:
 ## Procedure
 
 ### Step 1: Acquire lock
+
+**Native clients:**
+
+- **Codex:** run `brain-cli acquire-onboard-lock "$SCOPE" --timeout-s 120`.
+  If unavailable, run `"<absolute current interpreter>" -m
+  symbiosis_brain.scope_cli acquire-onboard-lock "$SCOPE" --timeout-s 120`.
+- **OpenCode:** run `"$SYMBIOSIS_BRAIN_OPENCODE_PYTHON" -m
+  symbiosis_brain.scope_cli acquire-onboard-lock "$SCOPE" --timeout-s 120`.
+
+**Claude Code default:**
 
 Run via Bash with **120s** timeout (onboarding can be slow on large vaults):
 
@@ -106,6 +148,10 @@ In `mode=recovery`: try `brain_search` for the same scope first. If a previous d
 
 ### Step 4: Append row to scope-taxonomy
 
+**Native clients:** use the actual native file-edit capability for the targeted
+table insertion below; do not issue a fake `Edit` tool call. Claude Code keeps
+the original Edit behavior.
+
 Read `vault/reference/scope-taxonomy.md`. Find the `## Whitelist` table. If a row already starts with `` | `<scope>` `` → leave it (idempotent, no duplicate). Otherwise, append a row matching the existing column layout:
 
 ```
@@ -115,6 +161,10 @@ Read `vault/reference/scope-taxonomy.md`. Find the `## Whitelist` table. If a ro
 `<kind>` defaults to `product`; use `umbrella-member` if `umbrella` is set, `umbrella` if this scope is itself a parent. Use Edit tool — DO NOT call `brain_write` (that creates new note). Insert the new row alphabetically, before the `## Антипаттерны` heading.
 
 ### Step 5: Append marker to <project>/CLAUDE.md
+
+**Native clients:** use the actual native file-edit capability to read, create,
+or append the marker; do not issue a fake `Edit` tool call. Claude Code keeps the
+original Read/Edit behavior.
 
 Read `<project_path>/CLAUDE.md` (or create with `# <ProjectName>\n` header if absent — never overwrite existing content).
 
@@ -132,6 +182,16 @@ If file already contains a `<!-- symbiosis-brain v` marker → exit (idempotent)
 Call `brain_sync` to refresh the SQLite index for the new card.
 
 ### Step 7: Release lock
+
+**Native clients:**
+
+- **Codex:** run `brain-cli release-onboard-lock "$SCOPE"`. If unavailable, run
+  `"<absolute current interpreter>" -m symbiosis_brain.scope_cli
+  release-onboard-lock "$SCOPE"`.
+- **OpenCode:** run `"$SYMBIOSIS_BRAIN_OPENCODE_PYTHON" -m
+  symbiosis_brain.scope_cli release-onboard-lock "$SCOPE"`.
+
+**Claude Code default:**
 
 Run via Bash:
 ```bash

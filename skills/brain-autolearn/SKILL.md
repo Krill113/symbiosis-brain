@@ -10,6 +10,35 @@ description: >
 
 # Brain Autolearn — Turn Repetition Into Leverage
 
+## Client compatibility
+
+Names such as `brain_search` below are logical Brain operation names. Use the
+actual exposed tool with the matching operation; the MCP prefix differs by
+client. Keep the repetition sweep, rule of three, artifact tiers, registration,
+inbox, and reporting ritual intact.
+
+### Codex
+
+Use the actual tool inventory exposed by the current session. Use `$CODEX_HOME`
+only for skill files and client configuration when the host supports them;
+otherwise resolve canonical skills with `symbiosis-brain resources --skills`,
+read the canonical `SKILL.md`, and execute the original ritual. Prefer explicit
+`SYMBIOSIS_BRAIN_VAULT` and `SYMBIOSIS_BRAIN_TOOLS`; the native-client command
+branch in the recipes overrides Claude-only `uv` and hook examples.
+
+### OpenCode
+
+The package `skillsDir` is registered through `skills.paths`; use that canonical
+source rather than creating a client-specific copy. Prefer
+`SYMBIOSIS_BRAIN_OPENCODE_VAULT`, `SYMBIOSIS_BRAIN_OPENCODE_TOOLS`, and
+`SYMBIOSIS_BRAIN_OPENCODE_PYTHON`; follow the native-client command branch in the
+recipes.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including its skill locations,
+MCP tools, routing files, and hook examples.
+
 ## Overview
 
 A mistake written to the vault is not a lesson learned; a snippet retyped four times

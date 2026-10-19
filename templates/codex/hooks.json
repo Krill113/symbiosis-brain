@@ -1,0 +1,77 @@
+{
+  "description": "Symbiosis Brain lifecycle hooks.",
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|resume|clear|compact",
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event SessionStart",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event SessionStart",
+        "timeout": 30,
+        "statusMessage": "Symbiosis Brain: loading context",
+        "additionalContextLimit": 4000
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event UserPromptSubmit",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event UserPromptSubmit",
+        "timeout": 15,
+        "statusMessage": "Symbiosis Brain: recalling context",
+        "additionalContextLimit": 1500
+      }]
+    }],
+    "PreToolUse": [{
+      "matcher": "Bash|PowerShell|apply_patch|Agent|spawn_agent|mcp__.*",
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event PreToolUse",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event PreToolUse",
+        "timeout": 15,
+        "statusMessage": "Symbiosis Brain: checking context",
+        "additionalContextLimit": 1500
+      }]
+    }],
+    "PostToolUse": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event PostToolUse",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event PostToolUse",
+        "timeout": 5
+      }]
+    }],
+    "PreCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event PreCompact",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event PreCompact",
+        "timeout": 5
+      }]
+    }],
+    "PostCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event PostCompact",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event PostCompact",
+        "timeout": 5
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event Stop",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event Stop",
+        "timeout": 5
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{{COMMAND}} --event SessionEnd",
+        "commandWindows": "{{COMMAND_WINDOWS}} --event SessionEnd",
+        "timeout": 3
+      }]
+    }]
+  }
+}

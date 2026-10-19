@@ -17,6 +17,32 @@ install, keeps the ones the shipped catalog already covers, and helps the user
 draft routes for anything new — then writes them to a per-install override that
 the routing engine merges on top of the package defaults.
 
+## Client compatibility
+
+Names such as `brain_search` and `brain_sync` below are logical Brain operation
+names. Use the actual exposed tool with the matching operation; the MCP prefix
+differs by client. Preserve the fail-open roster, one-question, confirmation, and
+merge-by-id ritual.
+
+### Codex
+
+Read the native tool inventory and effective skill inventory exposed by the
+current session; do not run `claude mcp list`. Resolve packaged skills with
+`symbiosis-brain resources --skills` when needed. Prefer explicit
+`SYMBIOSIS_BRAIN_VAULT` and `SYMBIOSIS_BRAIN_TOOLS`.
+
+### OpenCode
+
+Read the native tool inventory. The package `skillsDir` is registered through
+`skills.paths`; use that inventory rather than a Claude command. Prefer
+`SYMBIOSIS_BRAIN_OPENCODE_VAULT`, `SYMBIOSIS_BRAIN_OPENCODE_TOOLS`, and
+`SYMBIOSIS_BRAIN_OPENCODE_PYTHON`.
+
+### Claude Code (default)
+
+Keep the existing Claude behavior below unchanged, including its roster cache,
+`claude mcp list` fallback, and built-in tool names.
+
 ## Universality (why this is data, not code)
 
 The Symbiosis Brain package ships a universal default catalog
@@ -36,15 +62,29 @@ box. This skill is for tailoring routing to a specific toolbox.
 ## Fail-open contract
 
 Every step degrades to a no-op rather than blocking:
-- Roster cache absent → fall back to a live `claude mcp list`; if that fails
+- Native clients: if a cached roster is absent, continue from the actual tool
+  inventory described in Step 1; do not substitute a Claude command.
+- Claude Code default: roster cache absent → fall back to a live `claude mcp list`; if that fails
   too, work from the built-ins alone.
-- `$SYMBIOSIS_BRAIN_VAULT` unset / unwritable → tell the user once and stop; do
+- Native clients: if the resolved native vault is unknown, mismatched, or not
+  writable, tell the user once and stop this skill without writing.
+- Claude Code default: `$SYMBIOSIS_BRAIN_VAULT` unset / unwritable → tell the user once and stop; do
   not crash.
 - User declines to answer for an unknown tool → skip that tool, keep the rest.
 
 ## Procedure
 
 ### Step 1: List the tools available in THIS install
+
+**Native clients:**
+
+- **Codex:** start with the actual tool inventory exposed to this session;
+  supplement MCP server names with `codex mcp list --json`, and use the native
+  skill list exposed by the host.
+- **OpenCode:** start with the actual tool inventory exposed to this session and
+  the configured `skills.paths` inventory.
+
+**Claude Code default sources:**
 
 Build the candidate set from three best-effort sources, in order:
 
@@ -70,6 +110,23 @@ Build the candidate set from three best-effort sources, in order:
    server and are part of every install.
 
 ### Step 2: Split into KNOWN vs UNKNOWN
+
+**Native clients — resolve the vault and packaged catalog:**
+
+- **Codex:** use explicit `SYMBIOSIS_BRAIN_VAULT`; otherwise inspect
+  `codex mcp get symbiosis-brain --json` for the registered `--vault` argument or
+  `SYMBIOSIS_BRAIN_VAULT` in the registered server environment. That environment
+  is registration data, not inherited parent environment. Require logical
+  `brain_status` to report the same physical vault.
+- **OpenCode:** map `SYMBIOSIS_BRAIN_OPENCODE_VAULT` to the resolved vault and
+  require logical `brain_status` to report the same physical vault.
+- Unknown paths, status failure, or mismatch stop this skill without a write; do
+  not guess.
+- Locate the read-only packaged catalog with
+  `symbiosis-brain resources --routing` and read the path it prints. Do not infer
+  a checkout path and do not perform a Python resource lookup.
+
+**Claude Code default catalog path:**
 
 Read the shipped default catalog (fail-open — `2>/dev/null` so a missing file is
 silent):
@@ -104,6 +161,10 @@ Turn the answer into one route object (data, not prose). Map intent words to a
 case-insensitive regex; pick a `when`-gate that keeps the route silent when the
 tool is absent so it never bothers users who don't have it.
 
+For native clients, set `expected_tool` to the actual exposed tool identifier
+from Step 1. `mcp__<server>__<tool>` is only the Claude Code example below; do
+not manufacture that prefix for another client.
+
 Per-route schema (see Shared contracts / spec §3.1):
 
 ```json
@@ -122,12 +183,15 @@ Field guidance:
 - `when` — gate token so the route stays silent without the tool. Grammar:
   `null` | `<name>-present` (MCP server, matched against the roster) |
   `skill:<name>-present` | `catalog-present` | `scope:<x>` | `platform:windows`,
-  joined with `&`. For an MCP tool, use `<server>-present` (the server's display
-  name as it appears in `claude mcp list`).
+  joined with `&`. Native clients use the actual server name from Step 1.
+  For the Claude Code default, use `<server>-present` (the server's display name
+  as it appears in `claude mcp list`).
 - `priority` — integer; higher wins when more routes than the cap match.
 - `hint` — ≤120 chars; concrete ("use X for Y because Z"), not generic.
-- `observable` — `true` only if `expected_tool` is one of
-  `{Task, Edit, Write, MultiEdit, NotebookEdit, Bash}`; otherwise `false`.
+- `observable` — native clients use the actual observable tool identifier exposed
+  by the session; if observability is unknown, use `false`. The Claude Code
+  default set is `{Task, Edit, Write, MultiEdit, NotebookEdit, Bash}`; otherwise
+  `false`.
 
 Show the drafted route(s) to the user and confirm before writing.
 
@@ -137,6 +201,12 @@ The override file is a **bare top-level JSON array** — match the package defau
 shape: `[ { "id": "...", "class": "...", "...": "..." } ]`. (The engine also
 tolerates a `{"routes":[…]}` wrapper, but the package default ships a bare array,
 so emit the bare array to stay consistent.)
+
+**Native clients:** use
+`<resolved-vault>/tool-routing.local.json`, and write only when the resolved
+vault is known and writable.
+
+**Claude Code default path:**
 
 Path — under the vault, never a hard-coded location:
 

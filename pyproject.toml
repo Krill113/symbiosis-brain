@@ -47,7 +47,7 @@ dev = [
 ]
 
 [project.scripts]
-symbiosis-brain = "symbiosis_brain.install_cli:main"
+symbiosis-brain = "symbiosis_brain.entry_cli:main"
 brain-cli = "symbiosis_brain.scope_cli:main"
 
 [build-system]
@@ -63,9 +63,14 @@ packages = ["src/symbiosis_brain"]
 "skills" = "symbiosis_brain/skills"
 "commands" = "symbiosis_brain/commands"
 "templates" = "symbiosis_brain/templates"
+"opencode/dist" = "symbiosis_brain/opencode"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/symbiosis_brain", "hooks", "skills", "commands", "templates", "tests", "README.md", "LICENSE"]
+include = ["src/symbiosis_brain", "hooks", "skills", "commands", "templates", "tests", "opencode", "docs/codex-quickstart.md", ".gitattributes", "README.md", "LICENSE"]
+exclude = ["opencode/node_modules"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"opencode/dist" = "opencode/dist"
 
 [tool.hatch.version]
 path = "src/symbiosis_brain/__init__.py"

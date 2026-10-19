@@ -31,10 +31,16 @@ use» is a skill; a skill whose body is one command is a script.
 ## 3. Skill (tier 2)
 
 Follow `skill-creator` / `superpowers:writing-skills`: baseline run **without** the
-skill on a realistic prompt, then with it, compare, show both to the owner, install
-to `~/.claude/skills/` only on OK. Keep the dev copy under version control — the
-installed copy and the source drift otherwise. Description: «Use when …», triggering
-conditions only,
+skill on a realistic prompt, then with it, compare, and show both to the owner.
+Install only on OK, using the native client path: a host-supported
+`$CODEX_HOME/skills/` for Codex, or `~/.claude/skills/` for Claude Code. OpenCode's
+package `skillsDir` is read-only: NEVER install a new skill there. Keep an
+owner-approved new skill in a writable development source and register it through
+explicit `skills.paths`, or use a native writable user skill path. If native
+invocation is unavailable, keep one canonical source, read its `SKILL.md`, and
+execute that ritual rather than fabricating a skill tool. Keep the dev copy under
+version control — the installed copy and the source drift otherwise. Description:
+«Use when …», triggering conditions only,
 under ~500 characters. Register a route the same way as for a script.
 
 ## 4. Proposal (tier 3)

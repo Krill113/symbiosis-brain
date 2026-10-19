@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-19
+
+### Added
+- OpenCode integration: global memory server plugin, canonical Brain
+  skills and command wrappers, a separate minimalist TUI plugin, and client setup,
+  diagnostics and ownership-aware removal. OpenCode Git synchronization remains
+  a visible deferred command, not an index-refresh alias.
+- Codex integration: native lifecycle hooks with project/global hybrid
+  recall, canonical skills with small native-client branches, and a semi-manual
+  setup guide. Automatic Codex setup/repair/uninstall is deferred.
+- Client-neutral `init-vault --vault PATH`, read-only `resources --skills` and
+  `resources --routing`, and stdout-only `codex-hooks` configuration rendering.
+- Offline OpenCode artifact assets in wheels and source distributions, with
+  source/artifact hashes and an independent CI freshness check.
+
+### Changed
+- The console entry is lightweight for Codex hook supervision; existing Claude
+  commands remain on their original implementation path.
+- Client-specific invocation and path branches preserve the existing bootstrap,
+  recall, save, retrospective and autolearn procedures in the canonical skills.
+
+
 ## [0.7.0] — 2026-10-12
 
 ### Added

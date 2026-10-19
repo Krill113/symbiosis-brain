@@ -59,6 +59,23 @@ The hook uses `grep -E`. That means:
 
 ## 5. Compile and prove it
 
+### Native clients
+
+- **Codex installed command:**
+  `symbiosis-brain compile-action-rules --vault "<resolved-vault>"`.
+- **Codex fallback:** use the absolute interpreter for that same installed
+  package:
+  `"<absolute interpreter for the installed package>" -m symbiosis_brain
+  compile-action-rules --vault "<resolved-vault>"`.
+- **OpenCode:** run
+  `"$SYMBIOSIS_BRAIN_OPENCODE_PYTHON" -m symbiosis_brain
+  compile-action-rules --vault "<resolved-vault>"`.
+- Do not use `uv run --directory` for these wheel-only native paths. There is no
+  claimed native live-smoke command here. Report: `positive/negative compiler
+  vectors passed; no live hook proof`.
+
+**Claude Code default:**
+
 ```bash
 uv run --directory "$SYMBIOSIS_BRAIN_TOOLS" python -m symbiosis_brain compile-action-rules --vault "$SYMBIOSIS_BRAIN_VAULT"
 cat "$SYMBIOSIS_BRAIN_VAULT/.index/action-rules.meta.json"

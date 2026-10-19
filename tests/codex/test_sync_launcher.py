@@ -52,7 +52,7 @@ def test_find_bash_uses_the_pinned_windows_path(
     monkeypatch, candidate: Path, tmp_path: Path
 ):
     monkeypatch.setattr(sync_launcher, "load_codex_config", lambda: _config(candidate))
-    monkeypatch.setattr(sync_launcher.os, "name", "nt")
+    monkeypatch.setattr(sync_launcher, "_is_windows", lambda: True)
     monkeypatch.setattr(Path, "exists", lambda self: self == candidate)
     monkeypatch.setattr(
         sync_launcher,
@@ -227,7 +227,7 @@ def test_launch_auto_sync_detaches_all_standard_handles_and_returns_fast(
     vault = tmp_path / "vault"
     calls: list[tuple] = []
 
-    monkeypatch.setattr(sync_launcher.os, "name", "posix")
+    monkeypatch.setattr(sync_launcher, "_is_windows", lambda: False)
     monkeypatch.setattr(sync_launcher, "find_bash", lambda: bash)
     monkeypatch.setattr(sync_launcher, "packaged_sync_script", lambda: script)
 
@@ -259,7 +259,7 @@ def test_launch_auto_sync_supervised_posix_keeps_worker_process_group(
     vault = tmp_path / "vault"
     calls: list[dict[str, object]] = []
 
-    monkeypatch.setattr(sync_launcher.os, "name", "posix")
+    monkeypatch.setattr(sync_launcher, "_is_windows", lambda: False)
     monkeypatch.setattr(sync_launcher, "find_bash", lambda: bash)
     monkeypatch.setattr(sync_launcher, "packaged_sync_script", lambda: script)
     monkeypatch.setattr(
@@ -283,7 +283,7 @@ def test_launch_auto_sync_uses_windows_detached_flags(monkeypatch, tmp_path: Pat
     script.write_text("#!/bin/sh\n", encoding="utf-8")
     calls: list[dict] = []
 
-    monkeypatch.setattr(sync_launcher.os, "name", "nt")
+    monkeypatch.setattr(sync_launcher, "_is_windows", lambda: True)
     monkeypatch.setattr(sync_launcher, "find_bash", lambda: bash)
     monkeypatch.setattr(sync_launcher, "packaged_sync_script", lambda: script)
     monkeypatch.setattr(
@@ -318,7 +318,7 @@ def test_launch_auto_sync_supervised_windows_uses_no_window_without_detach(
     script.write_text("#!/bin/sh\n", encoding="utf-8")
     calls: list[dict[str, object]] = []
 
-    monkeypatch.setattr(sync_launcher.os, "name", "nt")
+    monkeypatch.setattr(sync_launcher, "_is_windows", lambda: True)
     monkeypatch.setattr(sync_launcher, "find_bash", lambda: bash)
     monkeypatch.setattr(sync_launcher, "packaged_sync_script", lambda: script)
     monkeypatch.setattr(

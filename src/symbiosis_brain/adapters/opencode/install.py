@@ -139,13 +139,13 @@ def _run_impl(command: str, args: argparse.Namespace) -> int:
         print("OpenCode installer artifact is missing or failed integrity verification", file=sys.stderr)
         return 2
     try:
-        version = subprocess.run([node, "--version"], text=True, capture_output=True,
+        version = subprocess.run([node, "--version"], text=True, encoding="utf-8", capture_output=True,
                                   check=False, timeout=10)
         match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", version.stdout.strip())
         if version.returncode or not match or tuple(map(int, match.groups())) < (22, 6, 0):
             print("OpenCode installer requires Node.js 22.6 or newer", file=sys.stderr)
             return 2
-        proc = subprocess.run([node, str(entrypoint)], input=json.dumps(request), text=True,
+        proc = subprocess.run([node, str(entrypoint)], input=json.dumps(request), text=True, encoding="utf-8",
                               capture_output=True, check=False, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         print("OpenCode installer could not start or timed out", file=sys.stderr)

@@ -188,7 +188,7 @@ def _service_factory(vault_path: str | None) -> Callable[[str], Callable[[Contex
                         reader = ExistingIndexReader(engine)
                         if request.operation == "warmup":
                             # Exercise the full hybrid path; hello alone is only transport readiness.
-                            reader.search("symbiosis retrieval warmup", scope="global", limit=1, mode="gist")
+                            reader.search("symbiosis retrieval warmup", scope="global", limit=1, mode="gist", include_closed=False)
                             return result(request)
                         from .recall import recall_hits
 

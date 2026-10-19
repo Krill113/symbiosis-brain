@@ -28,6 +28,10 @@ _MANIFEST_NAMES = (
 )
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _debug(message: str) -> None:
     pre_action_config._debug_log(f"sync launcher: {message}")
 
@@ -73,7 +77,7 @@ def find_bash(*, verify_prerequisites: bool = True) -> Path | None:
     pinned = Path(pinned)
     is_absolute = (
         PureWindowsPath(os.fspath(pinned)).is_absolute()
-        if os.name == "nt"
+        if _is_windows()
         else pinned.is_absolute()
     )
     if not is_absolute:
@@ -150,7 +154,7 @@ def launch_auto_sync(vault: Path, *, detach: bool = True) -> bool:
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
     }
-    if os.name == "nt":
+    if _is_windows():
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if detach:
             creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)

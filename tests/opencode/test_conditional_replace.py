@@ -17,7 +17,7 @@ HELPER = "from symbiosis_brain.adapters.opencode.conditional_replace import main
 
 
 def _run(request: dict[str, object], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True,
+    return subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True, encoding="utf-8",
                           capture_output=True, timeout=15, check=False, env=env)
 
 
@@ -29,7 +29,7 @@ def _barrier_child(target: Path, tmp_path: Path, phase: str) -> tuple[subprocess
                "replacementBase64": base64.b64encode(b'{"model":"installed"}').decode("ascii"),
                "testBarrier": {"phase": phase, "ready": str(ready), "release": str(release)}}
     child = subprocess.Popen([sys.executable, "-c", HELPER], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
     assert child.stdin is not None
     child.stdin.write(json.dumps(request))
     child.stdin.close()
@@ -63,7 +63,7 @@ def test_intervening_write_before_protected_commit_is_a_conflict(tmp_path: Path)
     target.write_text(user_version, encoding="utf-8")
     request = {"path": str(target), "expectedSha256": observed_hash,
                "replacementBase64": base64.b64encode(b'{"model":"installed"}').decode("ascii")}
-    result = subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True,
+    result = subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True, encoding="utf-8",
                             capture_output=True, timeout=10, check=False)
     assert result.returncode != 0
     assert json.loads(result.stdout)["code"] == "conditional-commit-conflict"
@@ -78,7 +78,7 @@ def test_intervening_write_prevents_owned_file_deletion(tmp_path: Path) -> None:
     user_version = "user-edited command after observation"
     target.write_text(user_version, encoding="utf-8")
     request = {"path": str(target), "expectedSha256": observed_hash, "replacementBase64": None}
-    result = subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True,
+    result = subprocess.run([sys.executable, "-c", HELPER], input=json.dumps(request), text=True, encoding="utf-8",
                             capture_output=True, timeout=10, check=False)
     assert result.returncode != 0
     assert json.loads(result.stdout)["code"] == "conditional-commit-conflict"
@@ -95,7 +95,7 @@ def test_external_writer_cannot_change_target_after_version_check(tmp_path: Path
     user_file.write_text("user replacement", encoding="utf-8")
     swapped = subprocess.run([sys.executable, "-c",
                               "import os,sys; os.replace(sys.argv[1],sys.argv[2])",
-                              str(user_file), str(target)], capture_output=True, text=True, timeout=10, check=False)
+                              str(user_file), str(target)], capture_output=True, text=True, encoding="utf-8", timeout=10, check=False)
     release.write_text("continue", encoding="utf-8")
     stdout, stderr = child.communicate(timeout=10)
     assert swapped.returncode != 0, "open target handle must deny pathname rename/delete"
@@ -174,7 +174,7 @@ def test_delete_crash_cleanup_recovery_does_not_restore_deleted_target(tmp_path:
     env = os.environ.copy()
     env["SB_TEST_SANDBOX"] = str(tmp_path)
     child = subprocess.Popen([sys.executable, "-c", HELPER], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
     assert child.stdin is not None
     child.stdin.write(json.dumps(request)); child.stdin.close(); child.stdin = None
     deadline = time.monotonic() + 10

@@ -42,6 +42,7 @@ def _directory_link(link: Path, target: Path) -> None:
         ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if completed.returncode != 0:

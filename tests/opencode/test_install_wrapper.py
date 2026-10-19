@@ -79,7 +79,7 @@ def test_old_node_is_rejected_without_launching_artifact(tmp_path, monkeypatch, 
         stderr = ""
 
     monkeypatch.setattr(install.subprocess, "run", lambda *_a, **_k: Result())
-    args = argparse.Namespace(config_dir=None, node="node")
+    args = argparse.Namespace(config_dir=str(tmp_path / "config"), node="node")
     assert install.cmd_doctor(args) == 2
     assert "requires Node.js" in capsys.readouterr().err
 

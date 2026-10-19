@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Client-specific invocation and path branches preserve the existing bootstrap,
   recall, save, retrospective and autolearn procedures in the canonical skills.
 
+### Fixed
+- Windows Codex state ACL verification compares resolved trustee SIDs and exact
+  access rules instead of literal SDDL spelling, accepting the local administrator
+  alias only when it resolves to the current process user.
+- OpenCode installer subprocesses explicitly use UTF-8; retrieval warmup explicitly
+  excludes closed notes. Cross-platform tests normalize skill line endings and
+  isolate platform selection from Python's global path implementation.
+
 
 ## [0.7.0] — 2026-10-12
 

@@ -105,6 +105,102 @@ def _windows_access_sddl(path: Path) -> str:
     return result.stdout.strip()
 
 
+def _assert_expected_acl(path: Path, sid: str) -> None:
+    powershell = (
+        _windows_system_directory()
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = (
+        "& { param([string]$p) $ErrorActionPreference='Stop'; "
+        "$acl=[System.IO.Directory]::GetAccessControl($p); "
+        "$rules=@($acl.GetAccessRules($true,$true,"
+        "[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { "
+        "[pscustomobject]@{sid=$_.IdentityReference.Value; "
+        "type=$_.AccessControlType.ToString(); rights=[int]$_.FileSystemRights; "
+        "inheritance=[int]$_.InheritanceFlags; propagation=[int]$_.PropagationFlags; "
+        "inherited=$_.IsInherited} }); "
+        "[pscustomobject]@{protected=$acl.AreAccessRulesProtected; rules=$rules} "
+        "| ConvertTo-Json -Compress -Depth 4 }"
+    )
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    snapshot = json.loads(result.stdout)
+    rules = snapshot["rules"]
+    if isinstance(rules, dict):
+        rules = [rules]
+    assert snapshot["protected"] is True
+    assert rules == [{
+        "sid": sid,
+        "type": "Allow",
+        "rights": 0x001F01FF,
+        "inheritance": 3,  # ObjectInherit | ContainerInherit
+        "propagation": 0,  # None
+        "inherited": False,
+    }]
+
+
+def _windows_sddl_trustee_sids(sddl: str) -> list[str]:
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    descriptor = ctypes.c_void_p()
+    convert_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert_descriptor.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    convert_descriptor.restype = wintypes.BOOL
+    get_dacl = advapi32.GetSecurityDescriptorDacl
+    get_dacl.argtypes = (
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+    )
+    get_dacl.restype = wintypes.BOOL
+    get_ace = advapi32.GetAce
+    get_ace.argtypes = (ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p))
+    get_ace.restype = wintypes.BOOL
+    get_acl_information = advapi32.GetAclInformation
+    get_acl_information.argtypes = (ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD)
+    get_acl_information.restype = wintypes.BOOL
+    convert_sid = advapi32.ConvertSidToStringSidW
+    convert_sid.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+    convert_sid.restype = wintypes.BOOL
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (ctypes.c_void_p,)
+    local_free.restype = ctypes.c_void_p
+    try:
+        assert convert_descriptor(sddl, 1, ctypes.byref(descriptor), None)
+        present, dacl, defaulted = wintypes.BOOL(), ctypes.c_void_p(), wintypes.BOOL()
+        assert get_dacl(descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
+        assert present.value and dacl.value
+        class _AclSizeInformation(ctypes.Structure):
+            _fields_ = [("ace_count", wintypes.DWORD), ("bytes_used", wintypes.DWORD), ("bytes_free", wintypes.DWORD)]
+
+        information = _AclSizeInformation()
+        assert get_acl_information(dacl, ctypes.byref(information), ctypes.sizeof(information), 2)
+        trustees = []
+        for index in range(information.ace_count):
+            ace = ctypes.c_void_p()
+            assert get_ace(dacl, index, ctypes.byref(ace))
+            trustee_sid = ctypes.c_void_p(ace.value + 8)
+            sid_text = wintypes.LPWSTR()
+            assert convert_sid(trustee_sid, ctypes.byref(sid_text))
+            try:
+                trustees.append(sid_text.value)
+            finally:
+                local_free(sid_text)
+        return trustees
+    finally:
+        if descriptor:
+            local_free(descriptor)
+
+
 def _grant_windows_everyone_full_control(path: Path) -> None:
     result = subprocess.run(
         [
@@ -116,6 +212,7 @@ def _grant_windows_everyone_full_control(path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -201,7 +298,7 @@ def test_windows_acl_uses_process_sid_not_poisoned_identity_environment(
 
     directory = state_path("thread-1").parent
 
-    assert _windows_access_sddl(directory) == f"D:PAI(A;OICI;FA;;;{sid})"
+    _assert_expected_acl(directory, sid)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
@@ -214,13 +311,105 @@ def test_windows_acl_repairs_preexisting_everyone_access(
     directory.mkdir(parents=True)
     _grant_windows_everyone_full_control(private_root)
     _grant_windows_everyone_full_control(directory)
-    assert "WD" in _windows_access_sddl(directory)
+    assert "S-1-1-0" in _windows_sddl_trustee_sids(_windows_access_sddl(directory))
     sid = _windows_current_sid()
 
     state_path("thread-1")
 
-    assert _windows_access_sddl(private_root) == f"D:PAI(A;OICI;FA;;;{sid})"
-    assert _windows_access_sddl(directory) == f"D:PAI(A;OICI;FA;;;{sid})"
+    _assert_expected_acl(private_root, sid)
+    _assert_expected_acl(directory, sid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+def test_windows_acl_sddl_alias_must_resolve_to_exact_token_sid():
+    # Parse LA on this machine, then prove that alias is accepted only when its
+    # resolved SID is exactly the supplied token SID. No admin rights required.
+    alias_sddl = "D:PAI(A;OICI;FA;;;LA)"
+    local_admin_sid = _windows_sddl_trustee_sids(alias_sddl)[0]
+    sid_parts = local_admin_sid.split("-")
+    assert sid_parts[-1] == "500"
+    foreign_sid = "-".join(
+        [*sid_parts[:-2], str((int(sid_parts[-2]) + 1) % (2**32)), "500"]
+    )
+    assert state_module._windows_sddl_matches_user(alias_sddl, local_admin_sid)
+    assert foreign_sid.endswith("-500") and foreign_sid != local_admin_sid
+    assert not state_module._windows_sddl_matches_user(alias_sddl, foreign_sid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+@pytest.mark.parametrize(
+    "sddl_template",
+    [
+        "D:PAI(D;OICI;FA;;;{sid})",  # Deny ACE
+        "D:PAI(A;OICI;FR;;;{sid})",  # Not FullControl
+        "D:PAI(A;OICIIO;FA;;;{sid})",  # Inherit-only
+        "D:PAI(A;OICIID;FA;;;{sid})",  # Already inherited
+        "D:PAI(A;OI;FA;;;{sid})",  # Missing container inheritance
+        "D:PAI(A;OICI;FA;;;{sid})(A;OICI;FA;;;WD)",  # Extra trustee
+        "D:PAI(A;OICI;FA;;;WD)",  # Wrong trustee alias
+        "D:P",  # Empty DACL
+        "D:NO_ACCESS_CONTROL",  # Null DACL
+        "not an SDDL descriptor",  # Malformed descriptor
+    ],
+)
+def test_windows_acl_semantic_verifier_rejects_invalid_dacls(sddl_template: str):
+    sid = _windows_current_sid()
+    assert state_module._windows_sddl_matches_user(
+        f"D:PAI(A;OICI;FA;;;{sid})", sid
+    )
+    assert not state_module._windows_sddl_matches_user(
+        sddl_template.format(sid=sid), sid
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+def test_windows_acl_wrapper_fast_path_resolves_alias_and_checks_both_directories(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    first, second = Path("private-root"), Path("private-state")
+    alias_sddl = "D:PAI(A;OICI;FA;;;LA)"
+    local_admin_sid = _windows_sddl_trustee_sids(alias_sddl)[0]
+    parts = local_admin_sid.split("-")
+    foreign_sid = "-".join([*parts[:-2], str((int(parts[-2]) + 1) % (2**32)), "500"])
+    descriptors = {first: alias_sddl, second: alias_sddl}
+    monkeypatch.setattr(state_module, "_current_windows_sid", lambda _path: local_admin_sid)
+    monkeypatch.setattr(
+        state_module, "_windows_access_sddl", lambda path: descriptors[path]
+    )
+
+    assert state_module._windows_acl_is_expected(first, second)
+    descriptors[second] = f"D:PAI(A;OICI;FA;;;{foreign_sid})"
+    assert not state_module._windows_acl_is_expected(first, second)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+def test_windows_acl_apply_wrapper_resolves_alias_and_rejects_foreign_second_dacl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    first, second = tmp_path / "root", tmp_path / "state"
+    alias_sddl = "D:PAI(A;OICI;FA;;;LA)"
+    local_admin_sid = _windows_sddl_trustee_sids(alias_sddl)[0]
+    parts = local_admin_sid.split("-")
+    foreign_sid = "-".join([*parts[:-2], str((int(parts[-2]) + 1) % (2**32)), "500"])
+    monkeypatch.setattr(state_module, "_windows_acl_is_expected", lambda *_paths: False)
+    monkeypatch.setattr(state_module, "_windows_system_directory", lambda: tmp_path)
+    monkeypatch.setattr(state_module, "_current_windows_sid", lambda _path: local_admin_sid)
+
+    def completed(stdout: str):
+        monkeypatch.setattr(
+            state_module.subprocess,
+            "run",
+            lambda args, **_kwargs: subprocess.CompletedProcess(args, 0, stdout, ""),
+        )
+
+    completed(f"{alias_sddl}\n{alias_sddl}\n")
+    state_module._apply_and_verify_windows_acls(first, second)
+
+    completed(f"{alias_sddl}\nD:PAI(A;OICI;FA;;;{foreign_sid})\n")
+    with pytest.raises(
+        state_module.PersistentStatePrivacyError, match=f"^{_PRIVACY_ERROR}$"
+    ):
+        state_module._apply_and_verify_windows_acls(first, second)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")

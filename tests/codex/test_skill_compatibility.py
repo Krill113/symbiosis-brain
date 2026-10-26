@@ -87,10 +87,8 @@ description: >
   user tailors routing to their own toolbox without editing package code.""",
     "brain-welcome": """name: brain-welcome
 description: >
-  First-time onboarding for a new Symbiosis Brain installation. Triggered ONLY
-  by brain-init Step 0 when <vault>/.sb-initialized is absent. Shows pitch,
-  collects user introduction → CRITICAL_FACTS.md, optionally offers tour and
-  Obsidian. Writes .sb-initialized marker on success — never re-runs.""",
+  Use when brain-init Step 0 finds <vault>/.sb-initialized absent on a new
+  Symbiosis Brain installation, or the user explicitly requests re-onboarding.""",
 }
 
 INTENT_ANCHORS = {
@@ -199,6 +197,27 @@ def _between(text: str, start: str, end: str) -> str:
     return text[start_at:end_at]
 
 
+def test_welcome_uses_plain_language_without_promising_unsupported_actions() -> None:
+    text = _text("brain-welcome")
+    readme = (ROOT / "templates" / "vault-readme.md").read_text(encoding="utf-8")
+    assert "/brain-help" not in text + readme
+    assert "Speak the user's language" in text
+    assert "not text to print verbatim" in _squash(text)
+    assert "do not ask about answer style" in text
+    assert "Wait for confirmation or corrections" in text
+    assert text.index("### Step 3 — Reflect understanding") < text.index(
+        "write `CRITICAL_FACTS.md` via `brain_write`"
+    )
+    assert "There is no dedicated forget skill" in text
+    assert "Запомни: отвечай кратко, без жаргона" in text + readme
+    assert "Если хочешь, расскажу подробнее" in text
+    assert "Do not start a detailed tutorial" in text
+    assert "MCP and skill are acceptable only with a" in _squash(text)
+    assert "silence is not consent" in text
+    assert "Google Диск" in readme and "OneDrive" in readme
+    assert "Git не обязателен" in readme
+
+
 def test_canonical_skill_inventory_and_frontmatter_are_preserved() -> None:
     actual = {
         path.parent.name
@@ -222,7 +241,7 @@ def test_original_ritual_steps_remain_in_order(name: str) -> None:
     ("name", "digest"),
     (
         ("brain-recall", "52f83f15881866cbd2d05ef62728b2ba5f90c41a482bccdd8f0eaea35da5589e"),
-        ("brain-welcome", "fc6e39257fb2a3b2852e99c5bac63e35efaab39a64f9a6c05191806e02427271"),
+        ("brain-welcome", "31ccbde2e129d954f8ca965f8d3ecd4111a8069088782f668b474181a8db3a9d"),
     ),
 )
 def test_skills_without_unsupported_calls_stay_byte_for_byte_canonical(

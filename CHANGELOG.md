@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `brain-autolearn` closes the loop instead of growing the inbox: inbox lines
+  carry a status (`candidate` → `ready` → `done`, or `proposed` / `blocked`) and a
+  last-seen date; at most one cheap, allowed `ready` item is done in the same pass;
+  candidates unseen for 45 days move to an archive section. Mid-session capture of
+  expensive failures; retries of one operation no longer count as repetitions.
+- `brain-autolearn` learns about the owner's own tools: a registry of in-house
+  tools and a per-tool ledger (use, friction with cost and workaround, improvement
+  ideas). A data-loss or safety defect is recorded on first sight; recurring friction
+  becomes a proposed task for that tool. Guards inside the tool are preferred over
+  teaching the agent to dodge the defect.
+
 ## [0.7.1] — 2026-10-19
 
 ### Added

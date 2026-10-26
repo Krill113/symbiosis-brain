@@ -180,7 +180,7 @@ tool.
 
 Only when this session used a tool the owner (or their team) builds: an MCP server,
 a CLI, a script set, a plugin of their own. Third-party tools are out of scope here;
-Symbiosis Brain itself is covered by `brain-self-critique` — link to it, do not file
+if `brain-self-critique` is installed, it covers Symbiosis Brain itself — link to it, do not file
 it twice.
 
 1. **Registry.** `global/projects/tool-registry.md` (create on first use) lists

@@ -190,6 +190,6 @@ def test_resources_rejects_ambiguous_selection():
         install_cli.build_parser().parse_args(["resources", "--skills", "--routing"])
 
 
-def test_candidate_version_is_071():
+def test_candidate_version_is_072():
     import symbiosis_brain
-    assert symbiosis_brain.__version__ == "0.7.1"
+    assert symbiosis_brain.__version__ == "0.7.2"

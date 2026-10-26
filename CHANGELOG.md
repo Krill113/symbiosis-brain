@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-10-26
+
 ### Changed
+- `brain-welcome` uses plain language for non-programmers, a friendly informal tone,
+  and a summary of what was understood before saving. The nonexistent `/brain-help`
+  command is removed. Storage guidance is neutral: Google Drive, OneDrive or Git
+  are optional choices, not a requirement to use Git.
 - `brain-autolearn` closes the loop instead of growing the inbox: inbox lines
   carry a status (`candidate` → `ready` → `done`, or `proposed` / `blocked`) and a
   last-seen date; at most one cheap, allowed `ready` item is done in the same pass;

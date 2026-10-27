@@ -5,6 +5,15 @@ import type { TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from '@opencode-ai/
 import type { JSX } from '@opentui/solid';
 
 const hookContracts = {
+  'chat.params': async (input, output) => {
+    const resolvedModelId: string = input.model.api.id;
+    input.sessionID;
+    void resolvedModelId;
+    void output;
+  },
+  'tool.execute.before': async (_input, output) => {
+    output.args.model = 'synthetic-executor';
+  },
   'chat.message': async (input, output) => {
     input.sessionID;
     output.message;

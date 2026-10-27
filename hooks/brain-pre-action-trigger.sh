@@ -132,9 +132,11 @@ if [ -z "$SYMBIOSIS_BRAIN_TOOLS" ] || [ -z "$SYMBIOSIS_BRAIN_VAULT" ]; then
   exit 0
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
-  exit 0
-fi
+SB_DIR=${BASH_SOURCE[0]}
+case $SB_DIR in *[/\\]*) SB_DIR=${SB_DIR%[/\\]*} ;; *) SB_DIR=. ;; esac
+. "$SB_DIR/sb-hooklib.sh" 2>/dev/null || exit 0
+sb_python_command
+[ "${#SB_PY_CMD[@]}" -eq 0 ] && exit 0
 
 DEBUG_LOG="${TMPDIR:-${TEMP:-/tmp}}/brain-hook-debug.log"
 
@@ -145,8 +147,8 @@ DEBUG_LOG="${TMPDIR:-${TEMP:-/tmp}}/brain-hook-debug.log"
 SB_T0=${EPOCHREALTIME/[.,]/}
 [ -n "$SB_T0" ] || SB_T0="$(date +%s)000000"
 
-OUTPUT=$(printf '%s' "$INPUT" | timeout 30 uv run --quiet --directory "$SYMBIOSIS_BRAIN_TOOLS" \
-  python -m symbiosis_brain pre-action-recall \
+OUTPUT=$(printf '%s' "$INPUT" | timeout 30 "${SB_PY_CMD[@]}" \
+  -m symbiosis_brain pre-action-recall \
   --vault "$SYMBIOSIS_BRAIN_VAULT" \
   --hook-started-at "$SB_T0" 2>>"$DEBUG_LOG")
 EXIT=$?

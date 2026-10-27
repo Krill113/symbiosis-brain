@@ -221,12 +221,11 @@ def test_trigger_script_computes_and_forwards_the_timestamp(name):
     assert '--hook-started-at "$SB_T0"' in text
 
 
-def test_save_trigger_forwards_the_timestamp_on_both_branches():
-    """brain-save-trigger.sh calls the CLI twice — the uv branch and the plain
-    PY_BIN branch (brain-save-trigger.sh:233-246). A flag on one of them only
-    would make e2e_ms depend on whether uv happens to be on PATH."""
+def test_save_trigger_forwards_timestamp_on_the_shared_launch():
+    """Direct and fallback interpreters use the same timestamped CLI call."""
     text = _hook_text("brain-save-trigger.sh")
-    assert text.count('--hook-started-at "$SB_T0"') == 2
+    assert text.count('--hook-started-at "$SB_T0"') == 1
+    assert '"${SB_PY_CMD[@]}"' in text
 
 
 @pytest.mark.parametrize("name", ["brain-save-trigger.sh", "brain-pre-action-trigger.sh"])

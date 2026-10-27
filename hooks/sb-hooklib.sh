@@ -9,6 +9,21 @@
 # The functions set variables instead of echoing, so callers never need a command
 # substitution (which would fork). Sourced, never executed.
 
+# -> SB_PY_CMD: direct installed interpreter, checkout venv, or legacy uv.
+# Selection is fork-free; a selected interpreter's failure is never retried.
+sb_python_command() {
+  SB_PY_CMD=()
+  if [ -n "${SYMBIOSIS_BRAIN_PYTHON:-}" ] && [ -f "$SYMBIOSIS_BRAIN_PYTHON" ]; then
+    SB_PY_CMD=("$SYMBIOSIS_BRAIN_PYTHON")
+  elif [ -f "${SYMBIOSIS_BRAIN_TOOLS:-}/.venv/Scripts/python.exe" ]; then
+    SB_PY_CMD=("$SYMBIOSIS_BRAIN_TOOLS/.venv/Scripts/python.exe")
+  elif [ -f "${SYMBIOSIS_BRAIN_TOOLS:-}/.venv/bin/python" ]; then
+    SB_PY_CMD=("$SYMBIOSIS_BRAIN_TOOLS/.venv/bin/python")
+  elif [ -n "${SYMBIOSIS_BRAIN_TOOLS:-}" ] && command -v uv >/dev/null 2>&1; then
+    SB_PY_CMD=(uv run --quiet --directory "$SYMBIOSIS_BRAIN_TOOLS" python)
+  fi
+}
+
 # -> SB_TMP: the temp dir every hook artifact lives in.
 sb_tmp_dir() {
   SB_TMP="${TMPDIR:-${TEMP:-/tmp}}"

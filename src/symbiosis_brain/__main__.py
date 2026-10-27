@@ -175,6 +175,37 @@ def _hook_log_ctx(source, vault_path, cfg, *, session_id=None, origin="unknown",
         return None
 
 
+def _hook_prompt_gates(prompt: str) -> tuple[bool, bool]:
+    """The prompt-check shell gates, without an extra interpreter startup."""
+    import os
+    if not isinstance(prompt, str):
+        return False, False
+    normalized = prompt.replace("\r", " ").replace("\n", " ")
+    route = not normalized.startswith("/") and normalized.lower() not in {
+        "да", "нет", "ок", "yes", "no", "ok", "continue", "продолжай",
+    }
+    try:
+        minimum = int(os.environ.get("SYMBIOSIS_BRAIN_RECALL_SKIP_SHORT_CHARS", "15"))
+    except ValueError:
+        minimum = 0  # bash's invalid numeric comparison did not suppress recall
+    recall = (route and bool(prompt) and len(normalized) >= minimum
+              and os.environ.get("SYMBIOSIS_BRAIN_RECALL_ENABLED", "true") == "true")
+    return recall, route
+
+
+def _emit_hook_blocks(memory_hits: list, route_hints: list) -> None:
+    """Line-tagged data for bash read -r; never shell expressions or eval."""
+    supersede = any(r.get("class") == "supersede" for r in route_hints)
+    print("S1" if supersede else "S0")
+    memory = "\n".join(f"- {n['path']} — {n.get('gist', '')}" for n in memory_hits).rstrip("\n")
+    hints = "\n".join((r.get("hint") or "").strip() for r in route_hints
+                      if (r.get("hint") or "").strip()).rstrip("\n")
+    for tag, text in (("M", memory), ("R", hints)):
+        if text:
+            for line in text.split("\n"):
+                print(tag + line)
+
+
 def _run_search_gist(argv: list[str]):
     import argparse
     import json
@@ -202,6 +233,7 @@ def _run_search_gist(argv: list[str]):
     parser.add_argument("--query", default=None)
     parser.add_argument("--prompt-from-stdin", action="store_true")
     parser.add_argument("--envelope", action="store_true")
+    parser.add_argument("--hook-blocks", action="store_true")
     parser.add_argument("--scope", default=None)
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--skip-memory", action="store_true")
@@ -246,6 +278,14 @@ def _run_search_gist(argv: list[str]):
             prompt = (data.get("prompt") if isinstance(data, dict) else "") or ""
         except (json.JSONDecodeError, ValueError):
             prompt = ""
+
+    route_allowed = True
+    if args.hook_blocks:
+        recall_allowed, route_allowed = _hook_prompt_gates(prompt)
+        args.skip_memory = args.skip_memory or not recall_allowed
+        if not route_allowed:
+            _emit_hook_blocks([], [])
+            return 0
 
     started_at = parse_hook_started_at(args.hook_started_at)
     vault_path = Path(args.vault).expanduser().resolve()
@@ -329,7 +369,10 @@ def _run_search_gist(argv: list[str]):
                 ),
             )
 
-    _emit_json({"memory_hits": memory_hits, "route_hints": route_hint_list})
+    if args.hook_blocks:
+        _emit_hook_blocks(memory_hits, route_hint_list)
+    else:
+        _emit_json({"memory_hits": memory_hits, "route_hints": route_hint_list})
     return 0
 
 

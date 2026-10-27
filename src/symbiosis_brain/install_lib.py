@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import shutil
+import sys
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -350,6 +351,7 @@ def merge_settings_json(settings_path: Path,
         env_defaults["SYMBIOSIS_BRAIN_VAULT"] = vault_path
     if tools_path:
         env_defaults["SYMBIOSIS_BRAIN_TOOLS"] = tools_path
+        env_defaults["SYMBIOSIS_BRAIN_PYTHON"] = sys.executable
     cur_env = settings.get("env") or {}
     seed_env = {k: v for k, v in env_defaults.items() if k not in cur_env}
     # The one exception to non-clobbering: values the owner explicitly asked for

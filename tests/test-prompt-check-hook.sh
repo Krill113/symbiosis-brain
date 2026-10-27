@@ -5,7 +5,13 @@ set -e
 # Pin tmp dir so the hook's SB_TMP=${TMPDIR:-${TEMP:-/tmp}} matches the /tmp paths
 # used below (Linux CI often presets TMPDIR to a non-/tmp dir).
 WORK="$(mktemp -d)"
-export TMPDIR="$WORK" TEMP="$WORK"
+export TMPDIR="$WORK" TEMP="$WORK" HOME="$WORK" USERPROFILE="$WORK"
+unset SYMBIOSIS_BRAIN_VAULT SYMBIOSIS_BRAIN_PYTHON
+# SessionStart's roster probe must never start real client/MCP processes.
+mkdir -p "$WORK/stubs"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/stubs/claude"
+chmod +x "$WORK/stubs/claude"
+export PATH="$WORK/stubs:$PATH"
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/hooks/brain-save-trigger.sh"
 SESSION_ID="test-prompt-$$"
@@ -103,7 +109,7 @@ printf '%s\t%s\n' "10" "${EPOCHSECONDS:-$(date +%s)}" > "$WORK/brain-context-sta
 TMPBIN="$(mktemp -d)"
 cat > "$TMPBIN/uv" <<'EOF'
 #!/bin/sh
-echo '[{"path":"x.md","title":"X","scope":"global","gist":"g"}]'
+printf 'S0\nM- x.md — g\n'
 EOF
 chmod +x "$TMPBIN/uv"
 out=$(SYMBIOSIS_BRAIN_RECALL_ENABLED=true \
@@ -232,7 +238,7 @@ ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/uv" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
-echo '{"memory_hits":[{"path":"x.md","title":"X","scope":"s","gist":"g"}],"route_hints":[]}'
+printf 'S0\nM- x.md — g\n'
 EOF
 chmod +x "$TMPBIN/uv"
 PROJ_DIR="$TMPBIN/proj/sub"
@@ -258,7 +264,7 @@ ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/uv" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
-echo '{"memory_hits":[{"path":"x.md","title":"X","scope":"s","gist":"g"}],"route_hints":[]}'
+printf 'S0\nM- x.md — g\n'
 EOF
 chmod +x "$TMPBIN/uv"
 BARE_DIR="$TMPBIN/bare/sub"

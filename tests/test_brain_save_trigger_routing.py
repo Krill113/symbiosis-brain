@@ -102,7 +102,11 @@ def test_silent_turn_no_system_reminder():
 def _stub_search_gist(sb, envelope):
     bindir = pathlib.Path(sb) / 'bin'; bindir.mkdir(exist_ok=True)
     uv = bindir / 'uv'
-    uv.write_text('#!/bin/bash\ncat <<\'EOF\'\n' + json.dumps(envelope) + '\nEOF\n', encoding="utf-8")
+    # The hook now asks the CLI to render tagged blocks, not a JSON envelope.
+    hints = envelope.get('route_hints', [])
+    blocks = ('S1' if any(r.get('class') == 'supersede' for r in hints) else 'S0')
+    blocks += ''.join('\nR' + r['hint'] for r in hints)
+    uv.write_text('#!/bin/bash\ncat <<\'EOF\'\n' + blocks + '\nEOF\n', encoding="utf-8")
     uv.chmod(0o755)
     return str(bindir)
 
@@ -113,7 +117,9 @@ def _run_route(prompt, sb, route_class):
     env['SYMBIOSIS_BRAIN_TOOLS'] = sb
     env['SYMBIOSIS_BRAIN_ROUTING_MODE'] = 'decompose'
     env['SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL'] = '1'
-    envelope = {'memory_hits': [], 'route_hints': [{'id': 'serena-symbol-work', 'class': route_class, 'hint': 'Serena до правки.'}]}
+    # Prompt gates moved into the CLI, so the CLI stub must model that boundary.
+    gated = prompt.startswith('/') or prompt.lower() in {'да', 'нет', 'ок', 'yes', 'no', 'ok', 'continue', 'продолжай'}
+    envelope = {'memory_hits': [], 'route_hints': [] if gated else [{'id': 'serena-symbol-work', 'class': route_class, 'hint': 'Serena до правки.'}]}
     env['PATH'] = _stub_search_gist(sb, envelope) + os.pathsep + env['PATH']
     r = subprocess.run([_bash(), str(HOOK), 'prompt-check'],
         input=json.dumps({'session_id': 'sup', 'prompt': prompt}), text=True, encoding='utf-8', env=env, capture_output=True)

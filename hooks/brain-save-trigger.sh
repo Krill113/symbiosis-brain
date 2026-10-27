@@ -114,35 +114,7 @@ if [ "$MODE" = "precompact" ]; then
 fi
 
 if [ "$MODE" = "prompt-check" ]; then
-  # ── Inputs ──────────────────────────────────────────────
-  # Parse the payload as JSON: the regex below stopped at the first ESCAPED quote, so
-  # a prompt containing \" was silently truncated and every downstream gate
-  # (PROMPT_LEN → SKIP_RECALL, the slash-command case, ROUTE_GATE) judged the stub.
-  # Newlines collapse to spaces so the `case`/`grep` gates keep working on one line.
-  # ONE python start per turn: this same call also prints the CHARACTER length that
-  # :170 used to compute with a second interpreter start (bash ${#var} counts BYTES on
-  # git-bash/Windows). Line 1 = prompt, line 2 = its length.
-  # PYTHONIOENCODING=utf-8: Python's default stdin/stdout codec on Windows is cp1251.
-  SB_PROMPT_OUT=$(printf '%s' "$INPUT" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c 'import sys, json
-try:
-    p = json.load(sys.stdin).get("prompt") or ""
-except Exception:
-    p = ""
-p = p.replace("\r", " ").replace("\n", " ")
-sys.stdout.write(p + "\n" + str(len(p)) + "\n")' 2>/dev/null)
-  PROMPT=""; PROMPT_LEN=""
-  # IFS= on purpose: bare `read` strips leading/trailing spaces, which would make
-  # PROMPT_LEN (counted by python on the untrimmed text) disagree with PROMPT.
-  { IFS= read -r PROMPT; IFS= read -r PROMPT_LEN; } <<EOF
-$SB_PROMPT_OUT
-EOF
-  # Fail-open: no Python, or a payload that is not JSON — fall back to the old regex
-  # and to bash's byte-count. Both fallbacks are the pre-CP-7 behaviour, unchanged.
-  if [ -z "$PROMPT" ]; then
-    PROMPT=$(echo "$INPUT" | grep -oE '"prompt": *"[^"]*"' | head -1 | sed -E 's/.*: *"//;s/"$//')
-    PROMPT_LEN=${#PROMPT}
-  fi
-  case "$PROMPT_LEN" in ''|*[!0-9]*) PROMPT_LEN=${#PROMPT} ;; esac
+  # Prompt parsing, length and recall/routing gates run in search-gist once.
   # Scope for the recall below. It cannot come from SYMBIOSIS_BRAIN_SCOPE alone:
   # SessionStart writes that into CLAUDE_ENV_FILE, which Claude Code sources before
   # Bash TOOL commands only — never before a hook — so the variable is empty here and
@@ -219,123 +191,48 @@ EOF
   MEMORY_BLOCK=""
   ROUTE_BLOCK=""
   SUPERSEDE_FIRED=0
-  SKIP_RECALL=0
-  # PROMPT_LEN is computed once, above, alongside PROMPT itself (one Python start
-  # per turn instead of two).
-  if [ "$RECALL_ENABLED" != "true" ]; then SKIP_RECALL=1; fi
-  if [ "$PROMPT_LEN" -lt "$RECALL_SKIP_SHORT_CHARS" ]; then SKIP_RECALL=1; fi
-  case "$PROMPT" in
-    /*) SKIP_RECALL=1 ;;
-  esac
-  if echo "$PROMPT" | grep -qiE '^(да|нет|ок|yes|no|ok|continue|продолжай)$'; then
-    SKIP_RECALL=1
-  fi
 
-  # ── Routing-gate (C3/C4 §6.1) — DISTINCT from the recall-gate. ──
-  # Routing must run on terse intent too, so it drops the 15-char floor and the
-  # RECALL_ENABLED toggle: gate is VAULT-set AND not-slash AND not-bare-
-  # affirmation. Memory recall (the heavier search) is suppressed via
-  # --skip-memory whenever SKIP_RECALL=1 (short prompt / recall disabled).
-  ROUTE_GATE=1
-  case "$PROMPT" in
-    /*) ROUTE_GATE=0 ;;
-  esac
-  if echo "$PROMPT" | grep -qiE '^(да|нет|ок|yes|no|ok|continue|продолжай)$'; then
-    ROUTE_GATE=0
-  fi
-
-  if [ "$ROUTE_GATE" = "1" ] && [ -n "$VAULT" ]; then
+  if [ -n "$VAULT" ]; then
     DEBUG_LOG="${SYMBIOSIS_BRAIN_DEBUG_LOG:-$SB_TMP/brain-hook-debug.log}"
-    GIST_TOOLS="${SYMBIOSIS_BRAIN_TOOLS:-}"
-
-    SKIP_FLAG=""
-    [ "$SKIP_RECALL" = "1" ] && SKIP_FLAG="--skip-memory"
-
-    # e2e_ms telemetry (I-10, §2.8). WHOLE MICROSECONDS, no separator at all:
-    # EPOCHREALTIME prints the fraction with the CURRENT LOCALE's decimal mark
-    # (measured on bash 5.2.37: LC_ALL=C -> 1787768444.480857,
-    # LC_NUMERIC=de_DE.UTF-8 -> 1787768444,536060). The pattern eats both the
-    # dot and the comma, so what reaches argparse is digits and nothing else —
-    # a comma there means SystemExit(2), EXIT=2 below, GIST_JSON='[]' and the
-    # user's memory silently gone. EPOCHREALTIME is a bash-5 builtin (no fork);
-    # the fallback forks once, which is fine here — this is a trigger script,
-    # not the fork-free status line (hooks/sb-hooklib.sh:4-9).
+    sb_python_command
+    # Preserve the old system-Python fallback when no tools checkout is known.
+    SB_TIMEOUT=30
+    if [ "${#SB_PY_CMD[@]}" -eq 0 ]; then
+      SB_PY_CMD=("$PY_BIN")
+      SB_TIMEOUT=12
+    fi
     SB_T0=${EPOCHREALTIME/[.,]/}
     [ -n "$SB_T0" ] || SB_T0="$(date +%s)000000"
-
-    # Prefer uv-managed run if SYMBIOSIS_BRAIN_TOOLS is set and uv is on PATH.
-    # Fixes silent failure on machines where `python -m symbiosis_brain` does
-    # not resolve (e.g. system Python without the package installed). See
-    # [[mistakes/uv-not-on-bash-path-windows]] — same root cause for hooks.
-    EXIT=0
-    if [ -n "$GIST_TOOLS" ] && command -v uv >/dev/null 2>&1; then
-      # 30s timeout absorbs cold uv-run start (~25s); warm path is <2s.
-      GIST_JSON=$(printf '%s' "$INPUT" | timeout 30 uv run --quiet --directory "$GIST_TOOLS" \
-        python -m symbiosis_brain search-gist \
-        --vault "$VAULT" --prompt-from-stdin "${SCOPE_ARG[@]}" \
-        --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
-        --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
-        --hook-started-at "$SB_T0" \
-        $SKIP_FLAG 2>>"$DEBUG_LOG")
-      EXIT=$?
-    else
-      GIST_JSON=$(printf '%s' "$INPUT" | timeout 12 "$PY_BIN" -m symbiosis_brain search-gist \
-        --vault "$VAULT" --prompt-from-stdin "${SCOPE_ARG[@]}" \
-        --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
-        --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
-        --hook-started-at "$SB_T0" \
-        $SKIP_FLAG 2>>"$DEBUG_LOG")
-      EXIT=$?
-    fi
-
-    if [ "$EXIT" -ne 0 ] || [ -z "$GIST_JSON" ]; then
+    BLOCKS=$(printf '%s' "$INPUT" | timeout "$SB_TIMEOUT" "${SB_PY_CMD[@]}" -m symbiosis_brain search-gist \
+      --vault "$VAULT" --prompt-from-stdin --hook-blocks "${SCOPE_ARG[@]}" \
+      --limit "$RECALL_TOP_K" --session-id "$SESSION_ID" \
+      --routing-mode "$ROUTING_MODE" --monotonic-turn "$ROUTE_TURN" \
+      --hook-started-at "$SB_T0" 2>>"$DEBUG_LOG")
+    EXIT=$?
+    HITS=""; ROUTE_HINTS=""
+    if [ "$EXIT" -ne 0 ] || [ -z "$BLOCKS" ]; then
       printf '[%s] search-gist EXIT=%s VAULT=%s SCOPE=%s SRC=%s\n' \
         "$(date -Iseconds 2>/dev/null || date)" "$EXIT" "$VAULT" "${SCOPE:-<unresolved>}" "$SCOPE_SRC" >> "$DEBUG_LOG"
-      GIST_JSON="[]"
+    else
+      # Each line is tagged data. read -r and parameter expansion never eval it.
+      while IFS= read -r LINE; do
+        case "$LINE" in
+          S1|$'S1\r') SUPERSEDE_FIRED=1 ;;
+          M*) HITS="${HITS}${LINE#M}
+" ;;
+          R*) ROUTE_HINTS="${ROUTE_HINTS}${LINE#R}
+" ;;
+        esac
+      done <<< "$BLOCKS"
+      HITS="${HITS%$'\n'}"; ROUTE_HINTS="${ROUTE_HINTS%$'\n'}"
+      # Match command-substitution trimming of the old Python extractors on MSYS.
+      HITS="${HITS%$'\r'}"; ROUTE_HINTS="${ROUTE_HINTS%$'\r'}"
     fi
-
-    # PYTHONIOENCODING=utf-8: Python's default stdout codec on Windows is cp1251.
-    # json.dumps upstream ASCII-escapes non-ASCII, so print() of Cyrillic gists
-    # would emit cp1251 bytes (e.g. 0xe4 for 'д') and corrupt the reminder. Force
-    # UTF-8 so the block is byte-correct for any reader. (Same fix as PROMPT_LEN above.)
-    HITS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
-try:
-    d=json.load(sys.stdin)
-    hits=d.get('memory_hits',[]) if isinstance(d,dict) else (d or [])
-    for n in hits:
-        print(f\"- {n['path']} — {n.get('gist','')}\")
-except Exception:
-    pass
-" 2>/dev/null)
     if [ -n "$HITS" ]; then
       HIT_COUNT=$(echo "$HITS" | grep -c '^- ')
       MEMORY_BLOCK="[memory: ${HIT_COUNT} hits, scope=${SCOPE_LABEL}]
 $HITS"
     fi
-
-    # ── Routing: extract route_hints[] from the SAME envelope (C3/C4) ──
-    # PYTHONIOENCODING=utf-8: see HITS extractor above. The route hint is the
-    # primary Cyrillic emitter (e.g. 'Serena до правки.'); without this, print()
-    # encodes 'д' as cp1251 0xe4 on Windows and breaks UTF-8 capture/consumers.
-    ROUTE_HINTS=$(echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
-try:
-    d=json.load(sys.stdin)
-    rh=d.get('route_hints',[]) if isinstance(d,dict) else []
-    for r in rh:
-        h=(r.get('hint') or '').strip()
-        if h: print(h)
-except Exception:
-    pass
-" 2>/dev/null)
-    SUPERSEDE_FIRED=0
-    if echo "$GIST_JSON" | PYTHONIOENCODING=utf-8 "$PY_BIN" -c "import sys,json
-try:
-    d=json.load(sys.stdin)
-    rh=d.get('route_hints',[]) if isinstance(d,dict) else []
-    sys.exit(0 if any((r.get('class')=='supersede') for r in rh) else 1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; then SUPERSEDE_FIRED=1; fi
     if [ -n "$ROUTE_HINTS" ]; then
       ROUTE_BLOCK="[route]
 $(printf '%s\n' "$ROUTE_HINTS" | sed 's/^/- /')"

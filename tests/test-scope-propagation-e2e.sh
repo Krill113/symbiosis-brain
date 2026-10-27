@@ -60,7 +60,7 @@ printf '#!/bin/sh\nexit 0\n' > "$BIN/claude"
 cat > "$BIN/uv" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$SB_TEST_ARGS_FILE"
-echo '{"memory_hits":[{"path":"x.md","title":"X","scope":"fixture-net","gist":"g"}],"route_hints":[]}'
+printf 'S0\nM- x.md — g\n'
 EOF
 chmod +x "$BIN/claude" "$BIN/uv"
 export PATH="$BIN:$PATH"

@@ -121,3 +121,70 @@ def test_selected_interpreter_failure_does_not_retry_uv(tmp_path, event):
     assert result.returncode == 0
     assert result.stdout == ''
     assert not marker.exists()
+
+
+@pytest.mark.parametrize('tool', ['brain_write', 'brain_append', 'brain_patch', 'brain_rotate_handoffs'])
+def test_signature_branch_precedes_all_recall_imports(tmp_path, monkeypatch, tool):
+    import builtins
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text(json.dumps({'type': 'assistant', 'message': {'model': 'executor-model', 'content': []}}) + '\n', encoding='utf-8')
+    payload = {'tool_name': 'mcp__symbiosis-brain__' + tool,
+               'tool_input': {'model': 'self-report', 'role': 'colleague', 'body': 'business data'},
+               'transcript_path': str(transcript)}
+    real_import = builtins.__import__
+    forbidden = {'symbiosis_brain.pre_action_config', 'symbiosis_brain.pre_action_recall',
+                 'symbiosis_brain.storage', 'symbiosis_brain.search', 'symbiosis_brain.sync'}
+    def checked_import(name, *args, **kwargs):
+        if name in forbidden:
+            pytest.fail('signature path imported recall/config/database: ' + name)
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', checked_import)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    monkeypatch.delenv('SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED', raising=False)
+    assert cli._run_pre_action_recall(['--vault', str(tmp_path / 'nonexistent-vault')]) == 0
+    assert json.loads(out.getvalue()) == {'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'updatedInput': {'model': 'executor-model', 'role': 'colleague', 'body': 'business data'},
+    }}
+
+
+def test_signature_branch_obeys_whole_hook_kill_switch(tmp_path, monkeypatch):
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text(json.dumps({'type': 'assistant', 'message': {'model': 'executor', 'content': []}}) + '\n', encoding='utf-8')
+    monkeypatch.setenv('SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED', '1')
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps({
+        'tool_name': 'mcp__symbiosis-brain__brain_write', 'tool_input': {}, 'transcript_path': str(transcript),
+    })))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    assert cli._run_pre_action_recall(['--vault', str(tmp_path)]) == 0
+    assert out.getvalue() == ''
+
+
+def test_signature_thin_hook_runs_one_python_with_disabled_recall(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text(json.dumps({'type': 'assistant', 'message': {'model': 'executor', 'content': []}}) + '\n', encoding='utf-8')
+    profile = tmp_path / 'home'
+    (profile / '.claude').mkdir(parents=True)
+    (profile / '.claude/symbiosis-brain-pre-action.json').write_text(
+        json.dumps({'enabled': False, 'matchers': []}), encoding='utf-8')
+    calls = tmp_path / 'python-calls'
+    shim = tmp_path / 'python-shim'
+    shim.write_text('#!/bin/bash\nprintf "call\\n" >> "$SIGNATURE_CALLS"\nexec "$SIGNATURE_PYTHON" "$@"\n', encoding='utf-8')
+    shim.chmod(0o755)
+    env = {**os.environ, 'HOME': str(profile), 'USERPROFILE': str(profile),
+           'TMPDIR': str(tmp_path), 'TEMP': str(tmp_path),
+           'SYMBIOSIS_BRAIN_TOOLS': str(root), 'SYMBIOSIS_BRAIN_VAULT': str(tmp_path / 'missing-vault'),
+           'SYMBIOSIS_BRAIN_PYTHON': str(shim), 'SIGNATURE_CALLS': str(calls), 'SIGNATURE_PYTHON': sys.executable}
+    env.pop('SYMBIOSIS_BRAIN_PRE_ACTION_DISABLED', None)
+    result = subprocess.run([_bash(), str(root / 'hooks/brain-pre-action-trigger.sh')],
+        input=json.dumps({'session_id': 'synthetic-session', 'tool_name': 'mcp__symbiosis-brain__brain_append',
+                          'tool_input': {'content': 'business data', 'role': 'lead'}, 'transcript_path': str(transcript)}),
+        env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding='utf-8').splitlines() == ['call']
+    assert json.loads(result.stdout) == {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+        'updatedInput': {'content': 'business data', 'role': 'lead', 'model': 'executor'}}}

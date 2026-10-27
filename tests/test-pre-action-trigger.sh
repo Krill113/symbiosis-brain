@@ -138,6 +138,20 @@ echo "$INPUT" | bash "$HOOK" >/dev/null 2>&1
 if [ -f "$EVT2" ] && grep -q '"event":"tool_used"' "$EVT2" && grep -q '"monotonic_turn":4' "$EVT2" && grep -q 'WebSearch' "$EVT2"; then echo 'PASS: spaced-JSON routed tool appends tool_used'; PASS=$((PASS+1)); else echo "FAIL: spaced-JSON append (got: $(cat "$EVT2" 2>/dev/null))"; FAIL=$((FAIL+1)); fi
 rm -f "$EVT2" "/tmp/brain-route-turn-${SID}"
 
+# Signature-only writing calls use the same thin Python launch and never decide permissions.
+TRANSCRIPT="$TMP_VAULT/synthetic-session.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"model":"synthetic-executor","content":[]}}' > "$TRANSCRIPT"
+WIN_TRANSCRIPT=$(cygpath -w "$TRANSCRIPT" 2>/dev/null || printf '%s' "$TRANSCRIPT")
+PAYLOAD=$(uv run --quiet python -c 'import json,sys; print(json.dumps({"tool_name":"mcp__symbiosis-brain__brain_write","tool_input":{"model":"self-report","role":"lead","body":"synthetic business data"},"transcript_path":sys.argv[1]}))' "$WIN_TRANSCRIPT")
+OUT=$(printf '%s' "$PAYLOAD" | bash "$HOOK")
+if printf '%s' "$OUT" | uv run --quiet python -c 'import json,sys; p=json.load(sys.stdin); assert p == {"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"model":"synthetic-executor","role":"lead","body":"synthetic business data"}}}'; then
+  echo 'PASS: signature overrides model and preserves business input without permissionDecision'
+  PASS=$((PASS+1))
+else
+  echo "FAIL: signature-only payload (got: $OUT)"
+  FAIL=$((FAIL+1))
+fi
+
 # Cleanup
 rm -rf "$TMP_VAULT"
 

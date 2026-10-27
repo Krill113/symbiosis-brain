@@ -116,8 +116,12 @@ def context_response(
     *,
     additional_context: str | None = None,
     system_message: str | None = None,
+    updated_input: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     hook_output: dict[str, Any] = {"hookEventName": event.value}
+    if event is HookEvent.PRE_TOOL_USE and updated_input is not None:
+        hook_output["permissionDecision"] = "allow"
+        hook_output["updatedInput"] = dict(updated_input)
     if additional_context:
         hook_output["additionalContext"] = _bounded_context(
             event, additional_context

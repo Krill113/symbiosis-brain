@@ -473,19 +473,27 @@ def _pre_tool(
     context: AdapterContext,
     resolution: ScopeResolution | None = None,
 ) -> dict[str, Any]:
-    resolution = resolution or _resolve(request, context)
+    from symbiosis_brain.provenance import is_brain_write_tool
+
     tool_name = request.payload.get("tool_name")
     tool_input = request.payload.get("tool_input")
+    updated_input = None
+    if (isinstance(tool_name, str) and is_brain_write_tool(tool_name)
+            and isinstance(tool_input, Mapping)
+            and isinstance(request.model, str) and request.model.strip()):
+        updated_input = {**tool_input, "model": request.model}
     if not isinstance(tool_name, str) or not isinstance(tool_input, Mapping):
-        return context_response(request.event)
-    query = normalize_tool_call(
-        tool_name,
-        tool_input,
-        max_chars=context.config.recall.query_max_chars,
-    )
-    if not query:
-        return context_response(request.event)
+        return context_response(request.event, updated_input=updated_input)
+    block = ""
     try:
+        resolution = resolution or _resolve(request, context)
+        query = normalize_tool_call(
+            tool_name,
+            tool_input,
+            max_chars=context.config.recall.query_max_chars,
+        )
+        if not query:
+            return context_response(request.event, updated_input=updated_input)
         with open_recall_runtime(context.vault) as runtime:
             block = action_recall(
                 query,
@@ -498,7 +506,7 @@ def _pre_tool(
             )
     except Exception:
         block = ""
-    return context_response(request.event, additional_context=block)
+    return context_response(request.event, additional_context=block, updated_input=updated_input)
 
 
 def _response_text(response: object) -> str:

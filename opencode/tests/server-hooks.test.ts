@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-function setup(options: { capabilityFailure?: boolean; hostFailure?: boolean } = {}) {
+function setup(options: { capabilityFailure?: boolean; hostFailure?: boolean; staleLocation?: boolean } = {}) {
   const calls: string[] = []
   const diagnostics: string[] = []
   const generations = new Map<string, number>()
@@ -37,6 +37,7 @@ function setup(options: { capabilityFailure?: boolean; hostFailure?: boolean } =
       return { shell: 'bash' as const, cwd: '/synthetic/project', boundary: '/synthetic' }
     },
     runtime: () => ({ python: '/synthetic/python', vault: '/synthetic/vault', tools: '/synthetic/tools', scope: 'demo' }),
+    ...(options.staleLocation ? { resolveSessionLocation: async () => ({ cwd: '/synthetic/project', stale: true }) } : {}),
     onDiagnostic: (code: string) => { diagnostics.push(code); calls.push(`diagnostic:${code}`) },
   }, { cwd: '/synthetic/project', boundary: '/synthetic', scope: 'demo' })
   return { hooks, calls, checkpoints, diagnostics }
@@ -575,4 +576,106 @@ test('project-entry discovery disables the new advisory plugin when a legacy cop
     assert.equal(workerStarts, 0)
     await hooks.dispose?.()
   } finally { await rm(project, { recursive: true, force: true }) }
+})
+
+
+for (const server of ['symbiosis-brain', 'symbiosis_brain']) {
+  for (const tool of ['brain_write', 'brain_append', 'brain_patch', 'brain_rotate_handoffs']) {
+    test(`signature injects resolved chat.params api.id in place for ${server}_${tool}`, async () => {
+      const { hooks } = setup()
+      await selectSignatureAgent(hooks, 'root', 'build')
+      await selectSignatureAgent(hooks, 'child', 'task-worker')
+      await hooks['chat.params']!({ sessionID: 'root', agent: 'build', model: { api: { id: 'provider/root-model' } } } as never, {} as never)
+      await hooks['chat.params']!({ sessionID: 'child', agent: 'task-worker', model: { api: { id: 'provider/child-model' } } } as never, {} as never)
+      for (const [sessionID, expected] of [['root', 'provider/root-model'], ['child', 'provider/child-model']]) {
+        const args = { model: 'self-report', role: 'colleague', body: 'business', nested: { keep: [1, 2] } }
+        const output = { args }
+        await hooks['tool.execute.before']!({ sessionID, tool: `${server}_${tool}`, callID: 'same-call' }, output)
+        assert.equal(output.args, args)
+        assert.deepEqual(args, { model: expected, role: 'colleague', body: 'business', nested: { keep: [1, 2] } })
+      }
+      await hooks['chat.params']!({ sessionID: 'root', agent: 'build', model: { api: { id: 'switched-model' } } } as never, {} as never)
+      const repeated = { args: { model: 'self-report', role: 'lead' } }
+      await hooks['tool.execute.before']!({ sessionID: 'root', tool: `${server}_${tool}`, callID: 'same-call' }, repeated)
+      assert.equal(repeated.args.model, 'switched-model', 'dedup must not suppress signature')
+    })
+  }
+}
+
+test('signature survives location failure before business normalization', async () => {
+  const { hooks } = setup({ hostFailure: true })
+  await selectSignatureAgent(hooks, 's')
+  await hooks['chat.params']!({ sessionID: 's', agent: 'build', model: { api: { id: 'executor' } } } as never, {} as never)
+  const args = { model: 'self-report', role: 'lead' }
+  await hooks['tool.execute.before']!({ sessionID: 's', tool: 'symbiosis-brain_brain_write', callID: 'call' }, { args })
+  assert.deepEqual(args, { model: 'executor', role: 'lead' })
+})
+
+test('signature clears unavailable chat.params model and never borrows chat.message selection', async () => {
+  const { hooks } = setup()
+  await selectSignatureAgent(hooks, 's')
+  await hooks['chat.params']!({ sessionID: 's', agent: 'build', model: { api: { id: 'initial' } } } as never, {} as never)
+  await selectSignatureAgent(hooks, 's')
+  await hooks['chat.params']!({ sessionID: 's', agent: 'build', model: { api: {} } } as never, {} as never)
+  await hooks['chat.message']!({ sessionID: 's', model: { providerID: 'provider', modelID: 'not-signature-source' } } as never,
+    { message: { role: 'user', id: 'message' }, parts: [{ type: 'text', text: 'synthetic task' }] } as never)
+  for (const sessionID of ['s', 'unknown-session']) {
+    const args = { model: 'self-report', role: 'lead' }
+    await hooks['tool.execute.before']!({ sessionID, tool: 'symbiosis-brain_brain_patch', callID: sessionID }, { args })
+    assert.deepEqual(args, { model: 'self-report', role: 'lead' })
+  }
+})
+
+test('signature does not mutate unrelated tools even with executor model available', async () => {
+  const { hooks } = setup()
+  await selectSignatureAgent(hooks, 's')
+  await hooks['chat.params']!({ sessionID: 's', agent: 'build', model: { api: { id: 'executor' } } } as never, {} as never)
+  for (const tool of ['edit', 'other_brain_write', 'symbiosis-brain_brain_read', 'symbiosis-brain_brain_write_extra']) {
+    const args = { model: 'self-report', role: 'lead' }
+    await hooks['tool.execute.before']!({ sessionID: 's', tool, callID: tool }, { args })
+    assert.deepEqual(args, { model: 'self-report', role: 'lead' })
+  }
+})
+
+
+test('signature precedes stale-location return', async () => {
+  const options = { staleLocation: false }
+  const { hooks } = setup(options)
+  await selectSignatureAgent(hooks, 's')
+  await hooks['chat.params']!({ sessionID: 's', agent: 'build', model: { api: { id: 'executor' } } } as never, {} as never)
+  options.staleLocation = true
+  const args = { model: 'self-report', role: 'subagent' }
+  await hooks['tool.execute.before']!({ sessionID: 's', tool: 'symbiosis-brain_brain_rotate_handoffs', callID: 'call' }, { args })
+  assert.deepEqual(args, { model: 'executor', role: 'subagent' })
+})
+
+
+async function selectSignatureAgent(hooks: ReturnType<typeof createServerHooks>, sessionID: string, agent = 'build') {
+  await hooks['chat.message']!({ sessionID, agent } as never, {
+    message: { role: 'user', id: `${sessionID}-${agent}` },
+    parts: [{ type: 'text', text: 'Synthetic task for selected agent' }],
+  } as never)
+}
+
+test('title params cannot replace main signature and child task keeps its own model', async () => {
+  const { hooks } = setup()
+  await selectSignatureAgent(hooks, 'root', 'build')
+  await hooks['chat.params']!({ sessionID: 'root', agent: 'build', model: { api: { id: 'main-sol' } } } as never, {} as never)
+  await hooks['chat.params']!({ sessionID: 'root', agent: 'title', model: { api: { id: 'title-terra' } } } as never, {} as never)
+  const main = { args: { model: 'self-report' } }
+  await hooks['tool.execute.before']!({ sessionID: 'root', tool: 'symbiosis-brain_brain_write', callID: 'root-write' }, main)
+  assert.equal(main.args.model, 'main-sol')
+  await selectSignatureAgent(hooks, 'child', 'task-worker')
+  await hooks['chat.params']!({ sessionID: 'child', agent: 'task-worker', model: { api: { id: 'child-model' } } } as never, {} as never)
+  const child = { args: { model: 'self-report', role: 'subagent' } }
+  await hooks['tool.execute.before']!({ sessionID: 'child', tool: 'symbiosis-brain_brain_write', callID: 'child-write' }, child)
+  assert.deepEqual(child.args, { model: 'child-model', role: 'subagent' })
+})
+
+test('params before the session agent is known leave self-report untouched', async () => {
+  const { hooks } = setup()
+  await hooks['chat.params']!({ sessionID: 'unknown-agent', agent: 'title', model: { api: { id: 'title-terra' } } } as never, {} as never)
+  const args = { model: 'self-report' }
+  await hooks['tool.execute.before']!({ sessionID: 'unknown-agent', tool: 'symbiosis-brain_brain_write', callID: 'write' }, { args })
+  assert.deepEqual(args, { model: 'self-report' })
 })

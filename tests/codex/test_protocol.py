@@ -126,6 +126,24 @@ def test_response_helpers_omit_empty_optional_fields():
     assert continue_response(system_message="") == {"continue": True}
 
 
+@pytest.mark.parametrize("updated_input", [{}, {"model": "executor", "role": "lead", "path": "demo/note.md"}])
+def test_pretool_update_emits_allow_only_with_updated_input(updated_input):
+    result = context_response(HookEvent.PRE_TOOL_USE, additional_context="hint", updated_input=updated_input)
+    assert result == {"continue": True, "hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "additionalContext": "hint",
+        "permissionDecision": "allow", "updatedInput": updated_input,
+    }}
+    assert result["hookSpecificOutput"]["updatedInput"] is not updated_input
+    plain = context_response(HookEvent.PRE_TOOL_USE, additional_context="hint")
+    assert "permissionDecision" not in plain["hookSpecificOutput"]
+    assert "updatedInput" not in plain["hookSpecificOutput"]
+
+
+@pytest.mark.parametrize("event", [event for event in HookEvent if event is not HookEvent.PRE_TOOL_USE])
+def test_input_update_does_not_change_other_event_permission_envelopes(event):
+    assert context_response(event, updated_input={"model": "executor"}) == context_response(event)
+
+
 def test_stop_continuation_shape():
     assert continuation_response("save first") == {
         "decision": "block",

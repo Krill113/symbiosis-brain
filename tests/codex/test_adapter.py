@@ -489,6 +489,53 @@ def test_pretool_uses_normalizer_and_returns_only_advisory_context(
     assert calls == ["normalize", "recall"]
 
 
+@pytest.mark.parametrize("tool", ["brain_write", "brain_append", "brain_patch", "brain_rotate_handoffs"])
+@pytest.mark.parametrize("server", ["symbiosis-brain", "symbiosis_brain"])
+@pytest.mark.parametrize("recall_mode", ["empty-query", "recall-failure", "recall-context"])
+def test_pretool_signature_survives_normalization_and_recall_returns(tmp_path, monkeypatch, tool, server, recall_mode):
+    args = {"path": "demo/note.md", "model": "self-report", "role": "colleague", "business": {"nested": [1, 2]}}
+    monkeypatch.setattr(adapter_module, "normalize_tool_call", lambda *a, **kw: "" if recall_mode == "empty-query" else "synthetic query")
+    monkeypatch.setattr(adapter_module, "open_recall_runtime", lambda *a: nullcontext(object()))
+    def recall(*a, **kw):
+        if recall_mode == "recall-failure":
+            raise RuntimeError("synthetic recall failure")
+        return "advisory"
+    monkeypatch.setattr(adapter_module, "action_recall", recall)
+    for session_id, model in [("root", "root-model"), ("child", "child-model"), ("root", "switched-model")]:
+        request = replace(_request(HookEvent.PRE_TOOL_USE, session_id=session_id, cwd=tmp_path,
+            payload={"tool_name": f"mcp__{server}__{tool}", "tool_input": args}), model=model)
+        result = handle_event(request, _context(tmp_path))
+        output = result["hookSpecificOutput"]
+        assert result["continue"] is True
+        assert output["updatedInput"] == {**args, "model": model}
+        assert output["updatedInput"] is not args
+        assert output["permissionDecision"] == "allow"
+        if recall_mode == "recall-context":
+            assert output["additionalContext"] == "advisory"
+        else:
+            assert "additionalContext" not in output
+    assert args["model"] == "self-report"
+
+
+@pytest.mark.parametrize("model", [None, "", "   "])
+def test_pretool_missing_executor_model_keeps_self_report_and_permissions(tmp_path, monkeypatch, model):
+    monkeypatch.setattr(adapter_module, "normalize_tool_call", lambda *a, **kw: "")
+    args = {"model": "self-report", "role": "lead"}
+    request = replace(_request(HookEvent.PRE_TOOL_USE, cwd=tmp_path,
+        payload={"tool_name": "mcp__symbiosis-brain__brain_write", "tool_input": args}), model=model)
+    result = handle_event(request, _context(tmp_path))
+    assert result == {"continue": True, "hookSpecificOutput": {"hookEventName": "PreToolUse"}}
+    assert args == {"model": "self-report", "role": "lead"}
+
+
+@pytest.mark.parametrize("tool", ["Edit", "mcp__other__brain_write", "mcp__symbiosis-brain__brain_read"])
+def test_unrelated_pretool_does_not_emit_signature_or_allow(tmp_path, monkeypatch, tool):
+    monkeypatch.setattr(adapter_module, "normalize_tool_call", lambda *a, **kw: "")
+    result = handle_event(_request(HookEvent.PRE_TOOL_USE, cwd=tmp_path,
+        payload={"tool_name": tool, "tool_input": {"model": "self-report"}}), _context(tmp_path))
+    assert result == {"continue": True, "hookSpecificOutput": {"hookEventName": "PreToolUse"}}
+
+
 @pytest.mark.parametrize(
     ("tool_name", "marker"),
     [

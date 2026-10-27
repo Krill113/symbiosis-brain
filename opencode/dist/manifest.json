@@ -94,8 +94,8 @@
     },
     {
       "path": "src/server-hooks.ts",
-      "sha256": "5cf7646705270d432a14810a7f74d10645f8a471cbbd6fac48a5faf619a5b8dd",
-      "size": 14205
+      "sha256": "a23f6f97f39b1541ba1046c1e788edc1b1e59481f9f07116a20680fd82774fd6",
+      "size": 15033
     },
     {
       "path": "src/status-view.ts",
@@ -326,8 +326,8 @@
     },
     {
       "path": "src/server-hooks.ts",
-      "sha256": "5cf7646705270d432a14810a7f74d10645f8a471cbbd6fac48a5faf619a5b8dd",
-      "size": 14205
+      "sha256": "a23f6f97f39b1541ba1046c1e788edc1b1e59481f9f07116a20680fd82774fd6",
+      "size": 15033
     },
     {
       "path": "src/status-view.ts",

@@ -32,6 +32,10 @@ const SAVE_TOOLS = new Set([
   'symbiosis-brain_brain_write', 'symbiosis-brain_brain_append', 'symbiosis-brain_brain_patch',
   'symbiosis_brain_brain_write', 'symbiosis_brain_brain_append', 'symbiosis_brain_brain_patch',
 ])
+const SIGNATURE_TOOLS = new Set([
+  'symbiosis-brain_brain_write', 'symbiosis-brain_brain_append', 'symbiosis-brain_brain_patch', 'symbiosis-brain_brain_rotate_handoffs',
+  'symbiosis_brain_brain_write', 'symbiosis_brain_brain_append', 'symbiosis_brain_brain_patch', 'symbiosis_brain_brain_rotate_handoffs',
+])
 const MAX_HOOK_SESSIONS = 256
 
 function record(value: unknown): AnyRecord | undefined {
@@ -78,7 +82,7 @@ function shellEnvValue(output: { env: Record<string, string> }, key: string, val
 }
 
 export function createServerHooks(input: ServerHookDependencies, settings: CoordinatorSettings, coordinator: Coordinator = input.coordinator, capabilities: ServerHookDependencies['capabilities'] = input.capabilities, checkpoints: SaveCheckpoints = input.checkpoints): Hooks {
-  const sessions = new Map<string, { cwd?: string; boundary?: string; scope?: string; staleLocation: boolean; child: boolean; childKnown: boolean; agent?: string; model?: { providerID: string; modelID: string }; seenMessages: Set<string>; seenCalls: Set<string> }>()
+  const sessions = new Map<string, { cwd?: string; boundary?: string; scope?: string; staleLocation: boolean; child: boolean; childKnown: boolean; signatureModel?: string; agent?: string; model?: { providerID: string; modelID: string }; seenMessages: Set<string>; seenCalls: Set<string> }>()
   const bootstrapped = new Set<string>()
   let envOwnership = new WeakMap<Record<string, string>, Map<string, string>>()
   const diagnostics = new Set<string>()
@@ -141,6 +145,14 @@ export function createServerHooks(input: ServerHookDependencies, settings: Coord
       reportSessionDiagnostics(hookInput.sessionID)
     }),
 
+    'chat.params': async (hookInput) => safe(() => {
+      if (!hookInput.sessionID) return
+      const state = stateFor(hookInput.sessionID)
+      if (!state.agent || hookInput.agent !== state.agent) return
+      const model = hookInput.model?.api?.id
+      state.signatureModel = typeof model === 'string' && model.trim() ? model : undefined
+    }),
+
     'chat.message': async (hookInput, output) => safe(async () => {
       const sessionId = hookInput.sessionID
       if (!sessionId) return
@@ -184,10 +196,13 @@ export function createServerHooks(input: ServerHookDependencies, settings: Coord
     'tool.execute.before': async (hookInput, output) => safe(async () => {
       const sessionId = hookInput.sessionID
       const state = stateFor(sessionId)
+      const args = output.args
+      if (SIGNATURE_TOOLS.has(hookInput.tool) && state.signatureModel && record(args)) {
+        args.model = state.signatureModel
+      }
       if (state.seenCalls.has(hookInput.callID)) return
       state.seenCalls.add(hookInput.callID)
       if (state.seenCalls.size > 512) state.seenCalls.delete(state.seenCalls.values().next().value!)
-      const args = output.args
       await ensureSessionLocation(sessionId, state.cwd)
       if (state.staleLocation) return
       const host = input.hostContext(sessionId, state.cwd)

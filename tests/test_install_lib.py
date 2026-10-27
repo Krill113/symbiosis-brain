@@ -198,6 +198,8 @@ def test_merge_settings_seeds_paths_and_does_not_clobber_user_env(tmp_path):
     env = json.loads(settings.read_text(encoding="utf-8"))["env"]
     assert env["SYMBIOSIS_BRAIN_VAULT"] == "/home/u/my-vault"
     assert env["SYMBIOSIS_BRAIN_TOOLS"] == "/opt/symbiosis-brain"
+    import sys
+    assert env["SYMBIOSIS_BRAIN_PYTHON"] == sys.executable
     # Non-clobbering: the user's tuned threshold is preserved, not reset to the default
     assert env["SYMBIOSIS_BRAIN_SAVE_THRESHOLDS"] == "40,70,90"
     # RULES_ZONES is intentionally never seeded (left to the hook fallback)

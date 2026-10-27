@@ -327,6 +327,22 @@ def test_hooks_block_session_start_has_four_matchers():
         assert hook["timeout"] == 5
 
 
+def test_pre_tool_matcher_registers_exact_signature_tools_without_extra_hook():
+    import re
+
+    entries = install_lib._hooks_block('~/.claude/hooks')['PreToolUse']
+    assert len(entries) == 1 and len(entries[0]['hooks']) == 1
+    matcher = entries[0]['matcher']
+    for server in ('symbiosis-brain', 'symbiosis_brain'):
+        for tool in ('brain_write', 'brain_append', 'brain_patch', 'brain_rotate_handoffs'):
+            assert re.fullmatch(matcher, f'mcp__{server}__{tool}')
+    for tool in ('Task', 'Agent', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell'):
+        assert re.fullmatch(matcher, tool)
+    assert not re.search(matcher, 'mcp__other__brain_write')
+    assert not re.search(matcher, 'mcp__symbiosis-brain__brain_write_extra')
+    assert not re.search(matcher, 'prefix_mcp__symbiosis-brain__brain_write')
+
+
 def test_hooks_block_has_post_tool_use_save_marker():
     """The last-save marker is written by a hook, not by the brain-save skill: the hook
     gets session_id from its own stdin payload, so it is correct in resumed / forked /

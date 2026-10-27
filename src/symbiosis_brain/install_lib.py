@@ -234,7 +234,11 @@ def _hooks_block(hook_dir: str) -> dict:
                         "command": f"bash {hook_dir}/brain-save-trigger.sh prompt-check"}]},
         ],
         "PreToolUse": [
-            {"matcher": "Task|Agent|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+            {"matcher": ("Task|Agent|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|"
+                         "^(?:mcp__symbiosis-brain__brain_write|mcp__symbiosis-brain__brain_append|"
+                         "mcp__symbiosis-brain__brain_patch|mcp__symbiosis-brain__brain_rotate_handoffs|"
+                         "mcp__symbiosis_brain__brain_write|mcp__symbiosis_brain__brain_append|"
+                         "mcp__symbiosis_brain__brain_patch|mcp__symbiosis_brain__brain_rotate_handoffs)$"),
              "hooks": [{"type": "command",
                         "command": 'bash "$SYMBIOSIS_BRAIN_TOOLS/hooks/brain-pre-action-trigger.sh"'}]},
         ],

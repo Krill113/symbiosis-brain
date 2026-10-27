@@ -613,7 +613,24 @@ def _run_pre_action_recall(argv: list[str]) -> int:
     except json.JSONDecodeError:
         return 0  # fail-open
 
+    if not isinstance(payload, dict):
+        return 0
+
+    from symbiosis_brain.provenance import is_brain_write_tool
     tool_name = payload.get("tool_name") or ""
+    if isinstance(tool_name, str) and is_brain_write_tool(tool_name):
+        from symbiosis_brain.adapters.claude.provenance import pre_tool_update
+        try:
+            updated_input = pre_tool_update(payload)
+            if updated_input is not None:
+                _emit_json({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": updated_input,
+                }})
+        except Exception:
+            pass  # signature failures never block writes or trigger recall
+        return 0
+
     tool_input = payload.get("tool_input") or {}
     session_id = payload.get("session_id") or ""
 

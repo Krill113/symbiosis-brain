@@ -1018,7 +1018,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 new_body = append_to_section(
                     post.content,
                     arguments["section"],
-                    arguments["content"] + "\n\n*— " + footer + "*",
+                    "\n" + arguments["content"] + "\n\n*— " + footer + "*",
                     create_if_missing=arguments.get("create_if_missing", False),
                 )
             except (SectionNotFoundError, SectionAmbiguousError) as e:

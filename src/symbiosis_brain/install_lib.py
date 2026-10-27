@@ -329,9 +329,9 @@ def merge_settings_json(settings_path: Path,
     - Seeds SB_ENV_DEFAULTS plus VAULT/TOOLS paths, non-clobbering (existing user
       values are never overwritten) — required for PreToolUse recall and SessionEnd
       sync to resolve their paths and knobs.
-    - `override_env` is the one exception: those keys are written even over an
-      existing value, because the caller knows the owner asked for exactly that
-      on this run (`setup --vault <path>`).
+    - `override_env` replaces explicit owner choices (`setup --vault <path>`).
+      The installer-owned PYTHON value always follows this run's interpreter,
+      replacing stale environments without changing unrelated user values.
     - Deduplicates permissions.allow.
     """
     if not settings_path.exists():
@@ -351,12 +351,12 @@ def merge_settings_json(settings_path: Path,
         env_defaults["SYMBIOSIS_BRAIN_VAULT"] = vault_path
     if tools_path:
         env_defaults["SYMBIOSIS_BRAIN_TOOLS"] = tools_path
-        env_defaults["SYMBIOSIS_BRAIN_PYTHON"] = sys.executable
     cur_env = settings.get("env") or {}
     seed_env = {k: v for k, v in env_defaults.items() if k not in cur_env}
-    # The one exception to non-clobbering: values the owner explicitly asked for
-    # on this run. deep_merge lets the overlay win over an existing scalar.
+    # Exceptions to non-clobbering: explicit owner choices and the interpreter
+    # owned by this installation. Never retain a Python from an old environment.
     seed_env.update(override_env or {})
+    seed_env["SYMBIOSIS_BRAIN_PYTHON"] = sys.executable
 
     ours_hooks = _hooks_block(hook_dir)
     cur_hooks = settings.get("hooks") or {}

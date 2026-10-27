@@ -61,14 +61,8 @@ async def test_brain_write_no_warning_when_gist_present(tmp_vault: Path, db_path
 # требует `_in_both`, то есть обеих половин поиска, и мок здесь проверял бы
 # мок. Модель эмбеддера в dev-окружении уже прогрета фикстурами других файлов.
 #
-# Провенанс здесь НЕ подменяется, и это осознанно (шов CP-4/CP-5 -> CP-7).
-# brain_write после CP-4 штампует written_by, а после CP-5 model_from_bridge
-# читает живой TEMP; ни один assert ниже значения штампа не касается, а
-# model_from_bridge по контракту не бросает и на мусоре отдаёт 'unknown'
-# (I-14 п. 3). Фикстура stub_provenance из tests/test_server_write_gates.py
-# сюда не видна (она не в conftest) и не нужна — если тесту CP-7 когда-нибудь
-# понадобится точное значение written_by, фикстуру переносят в conftest, а не
-# заводят вторую копию.
+# Provenance is not stubbed: these calls omit model and legitimately stamp
+# unknown. Dedup assertions do not depend on the client or executor signature.
 
 
 def _wire_server(tmp_vault: Path, db_path: Path):

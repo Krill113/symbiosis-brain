@@ -145,13 +145,9 @@ from symbiosis_brain import provenance
 
 @pytest.fixture
 def stub_provenance(monkeypatch):
-    """Значение штампа делаем детерминированным, но НЕ подменяем written_by_value —
-    иначе тест перестаёт проверять её композицию. Подменяются обе половины:
-    client_id (в тесте нет MCP-рукопожатия) и model_from_bridge (в CP-5 у моста
-    появится настоящий читатель, и тест не должен от него зависеть)."""
+    """No MCP handshake in this fixture; old clients have unknown model."""
     monkeypatch.setattr(provenance, "client_id", lambda app: "testclient/9.9.9")
-    monkeypatch.setattr(provenance, "model_from_bridge", lambda *a, **kw: "test-model-9")
-    return f"testclient/9.9.9 test-model-9 {date.today().isoformat()}"
+    return f"testclient/9.9.9 unknown {date.today().isoformat()}"
 
 
 async def _seed(path: str, **extra) -> None:
@@ -264,6 +260,133 @@ async def test_empty_valid_from_erases_the_key_instead_of_writing_a_blank(
     assert str(meta["valid_to"]) == "2026-02-01"    # не передан → взят из файла
 
 
+@pytest.mark.parametrize("tool", ["brain_write", "brain_append", "brain_patch", "brain_rotate_handoffs"])
+async def test_writing_tool_schema_has_optional_signature(tool):
+    schema = next(t.inputSchema for t in await server_mod.list_tools() if t.name == tool)
+    assert schema["properties"]["model"]["type"] == "string"
+    assert schema["properties"]["role"] == {"type": "string"}
+    assert schema["properties"]["model"]["description"] == (
+        "Your exact model ID as stated in your system prompt. Adapters may overwrite it; omitted = unknown."
+    )
+    assert not {"model", "role"} & set(schema.get("required", []))
+
+
+@pytest.mark.parametrize("tool", ["brain_write", "brain_append", "brain_patch", "brain_rotate_handoffs"])
+async def test_four_tools_use_explicit_signature_once(
+    initialized_server, tmp_vault_with_taxonomy, stub_provenance, monkeypatch, tool,
+):
+    path = "projects/beta.md"
+    await _seed(path, scope="beta", body=(
+        "## Handoff 2026-01-03\nRecent\n\n"
+        "## Handoff 2026-01-01\nOld\n"
+    ))
+    calls = []
+    real = provenance.written_by_value
+
+    def counting(app, today=None, **kwargs):
+        calls.append(kwargs)
+        return real(app, today, **kwargs)
+
+    monkeypatch.setattr(provenance, "written_by_value", counting)
+    args = {"model": "test-model-7", "role": "subagent"}
+    if tool == "brain_write":
+        args.update(path=path, title="Changed", body="New", gist="changed")
+    elif tool == "brain_append":
+        args.update(path=path, section="Handoff 2026-01-03", content="Added")
+    elif tool == "brain_patch":
+        args.update(path=path, anchor="Recent", replacement="Changed")
+    else:
+        args.update(scope="beta", inline_days=1)
+    text = await _call(tool, args)
+    assert not text.startswith("Error:"), text
+    expected = f"testclient/9.9.9 test-model-7 {date.today().isoformat()} · subagent"
+    assert _meta(tmp_vault_with_taxonomy, path)["written_by"] == expected
+    assert calls == [{"model": "test-model-7", "role": "subagent"}]
+    if tool == "brain_rotate_handoffs":
+        archives = list((tmp_vault_with_taxonomy / "archive/handoffs").glob("beta-*.md"))
+        assert len(archives) == 1
+        assert _meta(tmp_vault_with_taxonomy, archives[0].relative_to(tmp_vault_with_taxonomy).as_posix())["written_by"] == expected
+
+
+@pytest.mark.parametrize("tool", ["brain_write", "brain_append", "brain_patch", "brain_rotate_handoffs"])
+async def test_invalid_string_role_does_not_block_real_mcp_handler(
+    initialized_server, tmp_vault_with_taxonomy, stub_provenance, tool,
+):
+    from mcp import types
+
+    path = "projects/beta.md"
+    await _seed(path, scope="beta", body=(
+        "## Handoff 2026-01-03\nRecent\n\n## Handoff 2026-01-01\nOld\n"
+    ))
+    args = {"model": "test-model", "role": "unsupported\nrole"}
+    if tool == "brain_write":
+        args.update(path=path, title="Changed", body="New", gist="changed")
+    elif tool == "brain_append":
+        args.update(path=path, section="Handoff 2026-01-03", content="Added")
+    elif tool == "brain_patch":
+        args.update(path=path, anchor="Recent", replacement="Changed")
+    else:
+        args.update(scope="beta", inline_days=1)
+    request = types.CallToolRequest(method="tools/call", params=types.CallToolRequestParams(name=tool, arguments=args))
+    result = await server_mod.app.request_handlers[types.CallToolRequest](request)
+    assert not result.root.isError, result.root.content
+    assert _meta(tmp_vault_with_taxonomy, path)["written_by"] == (
+        f"testclient/9.9.9 test-model {date.today().isoformat()}"
+    )
+
+
+async def test_append_preserves_signed_history_and_rejection_is_atomic(
+    initialized_server, tmp_vault_with_taxonomy, stub_provenance,
+):
+    import frontmatter
+
+    await _seed("wiki/history.md", body="## Updates\nLegacy block")
+    for model, content in [("model-a", "First block"), ("model-b", "Second block")]:
+        text = await _call("brain_append", {
+            "path": "wiki/history.md", "section": "Updates", "content": content,
+            "model": model, "role": "colleague",
+        })
+        assert text.startswith("Appended"), text
+    note = tmp_vault_with_taxonomy / "wiki/history.md"
+    raw = note.read_text(encoding="utf-8")
+    body = frontmatter.loads(raw).content
+    day = date.today().isoformat()
+    footers = re.findall(r"\*— testclient/9\.9\.9 model-[ab] " + day + r" \d{2}:\d{2} · colleague\*", body)
+    assert len(footers) == 2
+    assert "model-a" in footers[0] and "model-b" in footers[1]
+    assert body.index("First block") < body.index(footers[0]) < body.index("Second block") < body.index(footers[1])
+    assert _meta(tmp_vault_with_taxonomy, "wiki/history.md")["written_by"] == f"testclient/9.9.9 model-b {day} · colleague"
+    for extra in [{"section": "Missing", "content": "Rejected"}, {"section": "Updates", "content": "[[wiki/missing-target]]"}]:
+        text = await _call("brain_append", {"path": "wiki/history.md", "model": "model-c", **extra})
+        assert text.startswith("Error:"), text
+        assert note.read_text(encoding="utf-8") == raw
+
+
+async def test_append_footer_uses_local_time_without_changing_frontmatter_date(
+    initialized_server, tmp_vault_with_taxonomy, stub_provenance, monkeypatch,
+):
+    from datetime import datetime
+
+    class LocalClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is None
+            return cls(2026, 2, 3, 14, 7)
+
+    await _seed("wiki/timed.md", body="## Updates\nLegacy")
+    monkeypatch.setattr(server_mod, "datetime", LocalClock, raising=False)
+    text = await _call("brain_append", {
+        "path": "wiki/timed.md", "section": "Updates", "content": "New block",
+        "model": "model-a", "role": "lead",
+    })
+    assert text.startswith("Appended"), text
+    raw = (tmp_vault_with_taxonomy / "wiki/timed.md").read_text(encoding="utf-8")
+    assert "*— testclient/9.9.9 model-a 2026-02-03 14:07 · lead*" in raw
+    assert _meta(tmp_vault_with_taxonomy, "wiki/timed.md")["written_by"] == (
+        "testclient/9.9.9 model-a 2026-02-03 · lead"
+    )
+
+
 async def test_brain_write_stamps_written_by(
     initialized_server, tmp_vault_with_taxonomy: Path, stub_provenance,
 ):
@@ -301,9 +424,9 @@ async def test_written_by_value_called_exactly_once_per_call(
     calls = []
     real = provenance.written_by_value
 
-    def counting(app, today=None):
+    def counting(app, today=None, **kwargs):
         calls.append(app)
-        return real(app, today)
+        return real(app, today, **kwargs)
 
     monkeypatch.setattr(provenance, "written_by_value", counting)
     await _call("brain_write", {

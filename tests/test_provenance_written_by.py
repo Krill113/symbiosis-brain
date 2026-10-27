@@ -5,6 +5,8 @@
 """
 from datetime import date
 
+import pytest
+
 from symbiosis_brain import provenance
 
 
@@ -64,14 +66,50 @@ def test_value_is_never_date_like():
     assert "/" in value and value.count(" ") == 2
 
 
-def test_model_from_bridge_is_unknown_without_a_writer(tmp_path, monkeypatch):
-    """Слайс 2: моста нет. Тест переживает CP-5 — в пустом каталоге ни своего
-    файла, ни чужих, значит `unknown` и там."""
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
-    monkeypatch.setenv("TEMP", str(tmp_path))
-    assert provenance.model_from_bridge() == "unknown"
+@pytest.mark.parametrize("model", [None, "", "   ", 7, False, [], {}])
+def test_invalid_model_is_unknown(model):
+    assert provenance.written_by_value(_App(), date(2026, 1, 2), model=model) == (
+        "testclient/9.9.9 unknown 2026-01-02"
+    )
 
 
-def test_bridge_constants_are_the_contract():
-    assert provenance.BRIDGE_PREFIX == "brain-model-"
-    assert provenance.BRIDGE_TTL_SECONDS == 900
+def test_explicit_model_is_trimmed_and_normalized():
+    assert provenance.written_by_value(
+        _App(), date(2026, 1, 2), model=" Test Model 9 ", role="colleague",
+    ) == "testclient/9.9.9 Test-Model-9 2026-01-02 · colleague"
+
+
+@pytest.mark.parametrize(("model", "expected"), [
+    ("  provider/model.v2:tag@host+variant_9  ", "provider/model.v2:tag@host+variant_9"),
+    ("test   model---9", "test-model-9"),
+    ("[model](https://example.invalid)\n*forged*", "-model-https://example.invalid-forged-"),
+    ("x\ry\nz", "x-y-z"),
+    ("m" * 100, "m" * 80),
+])
+def test_model_is_safe_single_token(model, expected):
+    assert provenance.written_by_value(_App(), date(2026, 1, 2), model=model) == (
+        f"testclient/9.9.9 {expected} 2026-01-02"
+    )
+
+
+@pytest.mark.parametrize("role", ["lead", "colleague", "subagent"])
+def test_allowed_roles_are_appended(role):
+    assert provenance.written_by_value(_App(), model="test-model", role=role).endswith(" · " + role)
+
+
+@pytest.mark.parametrize("role", [None, "", "other", "lead\nforged", [], 7])
+def test_invalid_role_is_omitted(role):
+    value = provenance.written_by_value(_App(), model="test-model", role=role)
+    assert " · " not in value
+    assert "\n" not in value and "\r" not in value
+
+
+@pytest.mark.parametrize("tool", ["brain_write", "brain_append", "brain_patch", "brain_rotate_handoffs"])
+@pytest.mark.parametrize("server", ["symbiosis-brain", "symbiosis_brain"])
+def test_brain_write_tool_accepts_only_explicit_mcp_aliases(tool, server):
+    assert provenance.is_brain_write_tool(f"mcp__{server}__{tool}")
+
+
+@pytest.mark.parametrize("tool", ["brain_write", "mcp__other__brain_write", "prefix_brain_append", "mcp__symbiosis-brain__brain_read", "mcp__symbiosis-brain__brain_write_extra"])
+def test_brain_write_tool_rejects_unrelated_names(tool):
+    assert not provenance.is_brain_write_tool(tool)

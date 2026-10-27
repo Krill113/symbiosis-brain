@@ -553,6 +553,8 @@ async def list_tools() -> list[Tool]:
         Tool(name="brain_write", description="Write or update a knowledge note. Creates markdown file in vault.", inputSchema={
             "type": "object",
             "properties": {
+                "model": {"type": "string", "description": "Your exact model ID as stated in your system prompt. Adapters may overwrite it; omitted = unknown."},
+                "role": {"type": "string"},
                 "path": {"type": "string", "description": "Relative path (e.g. 'wiki/dapper-patterns.md')"},
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown body. Use [[wiki links]] for connections."},
@@ -568,6 +570,8 @@ async def list_tools() -> list[Tool]:
         Tool(name="brain_append", description="Append content to an existing section of a note without rewriting the whole file. Matches a heading of any level (h1-h6). Use for incremental updates.", inputSchema={
             "type": "object",
             "properties": {
+                "model": {"type": "string", "description": "Your exact model ID as stated in your system prompt. Adapters may overwrite it; omitted = unknown."},
+                "role": {"type": "string"},
                 "path": {"type": "string", "description": "Relative path in vault"},
                 "section": {"type": "string", "description": "Exact heading text without the leading '#'/'##' marker. Matches any heading level (h1-h6). Case-sensitive."},
                 "content": {"type": "string", "description": "Markdown fragment to append at end of the section."},
@@ -578,6 +582,8 @@ async def list_tools() -> list[Tool]:
         Tool(name="brain_patch", description="Pinpoint edit of a note: replace a unique anchor in the BODY, and/or set frontmatter fields (gist, tags, valid_to, …). Body and fields are independent — pass either or both.", inputSchema={
             "type": "object",
             "properties": {
+                "model": {"type": "string", "description": "Your exact model ID as stated in your system prompt. Adapters may overwrite it; omitted = unknown."},
+                "role": {"type": "string"},
                 "path": {"type": "string", "description": "Relative path in vault"},
                 "anchor": {"type": "string", "description": "Exact substring to replace. Must be unique in the body. May span multiple lines. Never matches inside frontmatter."},
                 "replacement": {"type": "string", "description": "New content. Empty string deletes the anchor."},
@@ -697,6 +703,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "model": {"type": "string", "description": "Your exact model ID as stated in your system prompt. Adapters may overwrite it; omitted = unknown."},
+                    "role": {"type": "string"},
                     "scope": {
                         "type": "string",
                         "description": "Target project scope (e.g. 'symbiosis-brain'). Omit to auto-discover every project card across both layouts: <scope>/<scope>.md and legacy projects/*.md.",
@@ -868,7 +876,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # ordering IS the mechanism that overwrites the previous signature.
         # merge_frontmatter never returns `written_by`, so "not stamped here" would
         # mean "provenance erased". Exactly one call per tool invocation.
-        extra_fm["written_by"] = provenance.written_by_value(app)
+        extra_fm["written_by"] = provenance.written_by_value(
+            app, model=arguments.get("model"), role=arguments.get("role"),
+        )
 
         # ---------- VALIDATION GATE ----------
         try:
@@ -998,11 +1008,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         with note_write_lock(_vault_path, rel_path):
             raw = file_path.read_text(encoding="utf-8")
             post = frontmatter.loads(raw)
+            moment = datetime.now()
+            stamp = provenance.written_by_value(
+                app, moment.date(), model=arguments.get("model"), role=arguments.get("role"),
+            )
+            signature, separator, role = stamp.partition(" · ")
+            footer = f"{signature} {moment:%H:%M}{separator}{role}"
             try:
                 new_body = append_to_section(
                     post.content,
                     arguments["section"],
-                    arguments["content"],
+                    arguments["content"] + "\n\n*— " + footer + "*",
                     create_if_missing=arguments.get("create_if_missing", False),
                 )
             except (SectionNotFoundError, SectionAmbiguousError) as e:
@@ -1028,7 +1044,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # frontmatter.dumps, inside the lock we already hold. An append
             # rebuilds the whole frontmatter anyway, so the field means "who
             # wrote this note last", not "who authored it" (§3.1).
-            post.metadata["written_by"] = provenance.written_by_value(app)
+            post.metadata["written_by"] = stamp
             new_text = frontmatter.dumps(post) + "\n"
             canonical = rel_path.removesuffix(".md")
             broken_before = _storage.count_broken_outgoing(canonical)
@@ -1125,7 +1141,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # Provenance (I-12, §3.2): into post.metadata BEFORE
             # frontmatter.dumps, inside the lock we already hold. Mirrors
             # brain_append.
-            post.metadata["written_by"] = provenance.written_by_value(app)
+            post.metadata["written_by"] = provenance.written_by_value(
+                app, model=arguments.get("model"), role=arguments.get("role"),
+            )
             new_text = frontmatter.dumps(post) + "\n"
             canonical = rel_path.removesuffix(".md")
             broken_before = _storage.count_broken_outgoing(canonical)
@@ -1360,7 +1378,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 inline_days=inline_days,
                 # One written_by_value() call per tool invocation (I-12): every
                 # archive note this run creates carries the same stamp.
-                written_by=provenance.written_by_value(app),
+                written_by=provenance.written_by_value(
+                    app, model=arguments.get("model"), role=arguments.get("role"),
+                ),
             )
         except (ValueError, ConflictError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]

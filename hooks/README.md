@@ -131,38 +131,12 @@ your command runs both bridges are already on disk. That is the whole point of t
 change — but it means a row-1 script that used to export this variable now has no effect
 on it.
 
-### Bridge 3 — current model
+### Note signatures
 
-`$SB_TMP/brain-model-<CLAUDE_PID>` — one line, three TAB-separated fields, rewritten
-on every status tick that carries a `model` block:
-
-```
-<model_id>\t<display_name>\t<unix_seconds>
-```
-
-`CLAUDE_PID` is the PID of the Claude Code window, and every process it spawns sees it
-in the environment. The MCP server is a direct child of that window, so `os.getppid()`
-hands it the same number and it reads *its own* window's file without walking the
-process tree — which a fork-free status line could not do anyway (MSYS reports
-`ppid=1` when the parent is a native Windows process). Clients that do not export
-`CLAUDE_PID` fall back to a session key: `brain-model-sid-<session_id>`.
-
-The server reads it in `provenance.model_from_bridge()` to fill the model field of
-`written_by`. The rules there are deliberately strict:
-
-| Situation | Result |
-|---|---|
-| our own file, younger than 15 min | used |
-| our own file, older than 15 min | `unknown` — other windows are **not** consulted |
-| no file under our key at all | exactly one fresh `brain-model-*` is used; zero, or two and more, give `unknown` |
-| not exactly three TAB fields, no trailing newline, non-integer timestamp | `unknown` |
-
-The last row is not paranoia. The write is a plain `printf` and cannot be made atomic
-— moving a file into place needs a fork, and Claude Code cancels the in-flight status
-script on every event — so a truncated line is indistinguishable from a valid one and
-has to be rejected on read.
-
-Stale files are reaped by `brain-session-start.sh` (`-mmin +60`).
+Writing tools accept optional executor `model` and `role` values. The server adds
+client/version and date; missing or malformed model values become `unknown`.
+Statusline model parsing still drives the UI, but no model file is exported or
+read across sessions. Context/state and rate-limit bridges remain unchanged.
 
 ## Vault sync and its alarm marker
 

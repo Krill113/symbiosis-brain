@@ -205,7 +205,6 @@ if command -v find >/dev/null 2>&1; then
   # The shared roster answer and its .key live a day (mcp_roster.TTL_S; a test
   # pins the two numbers together), not 60 minutes like the per-session file.
   find "$SB_TMP" -maxdepth 1 -name 'brain-mcp-shared-*' -mmin +1440 -delete 2>/dev/null || true
-  find "$SB_TMP" -maxdepth 1 -name 'brain-model-*' -mmin +60 -delete 2>/dev/null || true
   # 24h, not 60min like the counters above: this one is written once per session and
   # must outlive a long session, not be refreshed by every turn.
   find "$SB_TMP" -maxdepth 1 -name 'brain-scope-*' -mmin +1440 -delete 2>/dev/null || true

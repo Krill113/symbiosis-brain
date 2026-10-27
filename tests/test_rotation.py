@@ -656,3 +656,59 @@ def test_rotate_still_conflicts_on_a_real_difference(tmp_path):
     _write(pre_existing, f'---\ntype: project\nscope: demo\nwritten_by: "{WB_A}"\n---\nDifferent.\n')
     with pytest.raises(ConflictError):
         rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_B)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rotation_stamps_only_changed_outputs_and_preserves_footers(tmp_path, dry_run):
+    import frontmatter
+
+    vault = _make_vault(tmp_path)
+    card = vault / "projects/demo.md"
+    footer_a = "*Дополнено: testclient/1 model-a 2026-01-01*"
+    footer_b = "*Дополнено: testclient/1 model-b 2026-01-02 · colleague*"
+    original = (
+        "---\nscope: demo\nwritten_by: previous\ncustom: keep\n---\n"
+        "## Handoff 2026-05-14\nRecent\n\n"
+        f"## Handoff 2026-05-08\nOld\n\n{footer_a}\n\n{footer_b}\n"
+    )
+    _write(card, original)
+    report = rotate_handoffs(vault=vault, scope="demo", inline_days=1, dry_run=dry_run, written_by=WB_A)
+    if dry_run:
+        assert card.read_text(encoding="utf-8") == original
+        assert not list((vault / "archive/handoffs").glob("*.md"))
+        return
+    assert report.cards_modified == 1
+    post = frontmatter.loads(card.read_text(encoding="utf-8"))
+    assert post.metadata["written_by"] == WB_A
+    assert post.metadata["custom"] == "keep"
+    archive = vault / report.archive_files_created[0]
+    archive_raw = archive.read_text(encoding="utf-8")
+    assert frontmatter.loads(archive_raw).metadata["written_by"] == WB_A
+    assert footer_a in archive_raw and footer_b in archive_raw
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in [card, archive]}
+    report2 = rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_B)
+    assert report2.cards_modified == 0 and not report2.archive_files_created
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before} == before
+
+
+@pytest.mark.parametrize("previous_stamp", ["written_by: previous\n", ""])
+def test_rotation_stamps_legacy_content_key_without_reserializing_card(tmp_path, previous_stamp):
+    vault = _make_vault(tmp_path)
+    card = vault / "projects/demo.md"
+    header = (
+        "---\n# Keep this comment\nscope: demo\ncontent: legacy metadata\n"
+        "title: 'Quoted title'\n" + previous_stamp + "---\n"
+    )
+    original = header + (
+        "## Handoff 2026-05-14\nRecent\n\n"
+        "## Handoff 2026-05-08\nOld\n"
+    )
+    _write(card, original)
+    report = rotate_handoffs(vault=vault, scope="demo", inline_days=1, written_by=WB_A)
+    assert report.cards_modified == 1
+    raw = card.read_text(encoding="utf-8")
+    fm = raw.split("---", 2)[1]
+    assert "# Keep this comment\nscope: demo\ncontent: legacy metadata\ntitle: 'Quoted title'\n" in fm
+    assert fm.count("written_by:") == 1
+    assert f'written_by: "{WB_A}"' in fm
+    assert "Recent" in raw and "## Handoff 2026-05-08" not in raw

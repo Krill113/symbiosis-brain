@@ -485,6 +485,15 @@ def _rotate_one_card(
 
     new_card = apply_archive_to_card(text, archived)
     if not dry_run and new_card != text:
+        if written_by:
+            new_card = _body_without_written_by(new_card)
+            stamp_line = f"written_by: {_yaml_quote_string(written_by)}\n"
+            fm = _FM_BLOCK_RE.match(new_card)
+            if fm:
+                insert_at = new_card.rfind("---", 0, fm.end())
+                new_card = new_card[:insert_at] + stamp_line + new_card[insert_at:]
+            else:
+                new_card = "---\n" + stamp_line + "---\n\n" + new_card
         with note_write_lock(vault, rel_card):
             atomic_write_text(card_path, new_card)
         report.cards_modified += 1

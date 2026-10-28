@@ -178,7 +178,7 @@ def _hook_log_ctx(source, vault_path, cfg, *, session_id=None, origin="unknown",
 def _hook_prompt_gates(prompt: str) -> tuple[bool, bool]:
     """The prompt-check shell gates, without an extra interpreter startup."""
     import os
-    if not isinstance(prompt, str):
+    if not isinstance(prompt, str) or prompt.startswith("<task-notification>"):
         return False, False
     normalized = prompt.replace("\r", " ").replace("\n", " ")
     route = not normalized.startswith("/") and normalized.lower() not in {

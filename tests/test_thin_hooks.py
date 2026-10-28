@@ -27,6 +27,55 @@ def test_hook_prompt_gates_match_shell(prompt, recall, route, monkeypatch):
     assert cli._hook_prompt_gates(prompt) == (recall, route)
 
 
+@pytest.mark.parametrize('prompt', [
+    '<task-notification>\n<task-id>synthetic</task-id>\n<summary>Completed</summary>\n</task-notification>',
+    '<task-notification>synthetic inline completion</task-notification>',
+])
+def test_task_notification_skips_memory_and_routes_before_config(prompt, tmp_path, monkeypatch):
+    assert cli._hook_prompt_gates(prompt) == (False, False)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps({'prompt': prompt})))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, 'stdout', out)
+    monkeypatch.setattr(cli, '_load_pre_action_config', lambda: pytest.fail('notification must not load recall/routing config'))
+    assert cli._run_search_gist(['--vault', str(tmp_path), '--prompt-from-stdin', '--hook-blocks']) == 0
+    assert out.getvalue() == 'S0\n'
+
+
+@pytest.mark.parametrize('prompt', [
+    '<system-reminder>A substantive synthetic user request about memory</system-reminder>',
+    'Explain the literal <task-notification> marker in this synthetic request',
+    '<task-notification-extra>A substantive user request</task-notification-extra>',
+])
+def test_notification_gate_does_not_hide_other_user_prompts(prompt, monkeypatch):
+    monkeypatch.setenv('SYMBIOSIS_BRAIN_RECALL_ENABLED', 'true')
+    monkeypatch.setenv('SYMBIOSIS_BRAIN_RECALL_SKIP_SHORT_CHARS', '15')
+    assert cli._hook_prompt_gates(prompt) == (True, True)
+
+
+def test_task_notification_keeps_rules_context_compaction_relay_and_turn_counter(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    profile = tmp_path / 'home'
+    (profile / '.claude').mkdir(parents=True)
+    sid = 'synthetic-notification'
+    import time
+    (tmp_path / f'brain-context-pct-{sid}').write_bytes(b'35\n')
+    (tmp_path / f'brain-context-state-{sid}').write_bytes(f'35\t{int(time.time())}\n'.encode('utf-8'))
+    (tmp_path / f'brain-precompact-pending-{sid}').write_text('', encoding='utf-8')
+    env = {**os.environ, 'HOME': str(profile), 'USERPROFILE': str(profile),
+           'TMPDIR': str(tmp_path), 'TEMP': str(tmp_path), 'SYMBIOSIS_BRAIN_TOOLS': str(root),
+           'SYMBIOSIS_BRAIN_PYTHON': sys.executable, 'SYMBIOSIS_BRAIN_VAULT': str(tmp_path / 'vault'),
+           'SYMBIOSIS_BRAIN_RULES_ENABLED': 'true', 'SYMBIOSIS_BRAIN_ROUTING_MODE': 'decompose'}
+    result = subprocess.run([_bash(), str(root / 'hooks/brain-save-trigger.sh'), 'prompt-check'],
+        input=json.dumps({'session_id': sid, 'prompt': '<task-notification>synthetic done</task-notification>'}),
+        env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert '[rules' in result.stdout and 'context 35%' in result.stdout
+    assert 'Compaction was blocked' in result.stdout
+    assert '[memory:' not in result.stdout and '[route]' not in result.stdout
+    assert (tmp_path / f'brain-route-turn-{sid}').read_text(encoding='utf-8').strip() == '1'
+    assert not (tmp_path / f'brain-precompact-pending-{sid}').exists()
+
+
 def test_hook_blocks_are_data_not_shell_and_preserve_multiline(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(sys, 'stdout', out)

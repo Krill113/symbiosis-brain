@@ -357,7 +357,7 @@ async def test_append_preserves_signed_history_and_rejection_is_atomic(
     assert body.index("First block") < body.index(footers[0]) < body.index("Second block") < body.index(footers[1])
     assert footers[0] + "\n\nSecond block" in body
     assert _meta(tmp_vault_with_taxonomy, "wiki/history.md")["written_by"] == f"testclient/9.9.9 model-b {day} · colleague"
-    for extra in [{"section": "Missing", "content": "Rejected"}, {"section": "Updates", "content": "[[wiki/missing-target]]"}]:
+    for extra in [{"section": "Missing", "content": "Rejected"}, {"section": "Updates", "content": "[[wiki/x]]"}]:
         text = await _call("brain_append", {"path": "wiki/history.md", "model": "model-c", **extra})
         assert text.startswith("Error:"), text
         assert note.read_text(encoding="utf-8") == raw

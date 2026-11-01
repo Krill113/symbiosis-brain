@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-11-01
+
+### Added
+- Writes carry a signature: `brain_write`, `brain_append`, `brain_patch` and
+  `brain_rotate_handoffs` accept optional `model` and `role`, and the vault
+  records `written_by: <client>/<version> <model> <date>`. `brain_append` leaves
+  a visible footer under every block it adds and keeps the earlier blocks, so a
+  handoff records who wrote each part. Missing or malformed model values are
+  stored as `unknown`; provenance never blocks a write.
+- Adapters fill the model themselves: the Claude pre-action hook reads the
+  calling actor's own transcript tail — a subagent's file for a subagent, never
+  the parent's — and Codex and OpenCode take it from their session metadata.
+
+### Changed
+- The prompt hook runs one Python process per event instead of several, and the
+  installer refreshes its own Python path during setup.
+- Recall, route hints and auto-save skip `<task-notification>` turns, which are
+  not user prompts. Rules context, compaction, relay and the turn counter still
+  run on them.
+- The injected rules hint follows the rewritten global rules.
+
+### Removed
+- The statusline model bridge: the server no longer reads `brain-model-*` files,
+  since the executor reports its model directly. Context and rate-limit exports
+  are unchanged.
+
 ## [0.7.2] — 2026-10-26
 
 ### Changed

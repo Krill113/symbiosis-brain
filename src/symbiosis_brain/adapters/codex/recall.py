@@ -33,7 +33,8 @@ ACTION_SEEN_PREFIX = "brain-codex-action-seen-"
 ROUTE_SEEN_PREFIX = "brain-route-seen-"
 _DISCIPLINE_BRAIN = "Before broad code search, check brain_search first."
 _DISCIPLINE_TOOLS = (
-    "Use available subagents for large multi-file exploration; use "
+    "Delegate when raw output would flood the context or an independent "
+    "view helps, not when coordination costs more than the work; use "
     "symbol/dependency tools before blind edits."
 )
 @dataclass

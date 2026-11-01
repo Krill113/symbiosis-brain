@@ -275,6 +275,15 @@ Four steps, in this order:
 3. `symbiosis-brain setup claude-code --repair` — upgrading the package does not touch `~/.claude/hooks` or `~/.claude/skills`. Without the repair, a release's new hooks and skills never arrive.
 4. `symbiosis-brain doctor` — then start Claude Code again.
 
+**Installed from a checkout** (`uv tool install --editable .`)? `uv tool upgrade` does not move an editable install: the tool keeps pointing at your checkout, so a `git pull` changes the code but not the installed metadata, and `symbiosis-brain --version` keeps reporting the old number. Replace step 2 with:
+
+```bash
+git pull                             # inside the checkout
+uv tool install --editable . --force
+```
+
+Then continue with steps 3 and 4. Close the Claude Code windows first here too — a running server holds the tool's `python.exe`, and the reinstall fails with the same `os error 32`.
+
 Anything else worth knowing before a particular upgrade is in that release's notes, under [`docs/release-notes/`](docs/release-notes/).
 
 ## FAQ

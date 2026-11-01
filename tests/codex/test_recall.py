@@ -635,9 +635,10 @@ def test_prompt_recall_returns_route_hints_without_route_event_files():
 
 def test_discipline_hint_cadence_and_supersede_behavior():
     text = (
-        "Before broad code search, check brain_search first. Use available "
-        "subagents for large multi-file exploration; use symbol/dependency "
-        "tools before blind edits."
+        "Before broad code search, check brain_search first. Delegate when "
+        "raw output would flood the context or an independent view helps, "
+        "not when coordination costs more than the work; use "
+        "symbol/dependency tools before blind edits."
     )
 
     assert codex_discipline_hint(turn=1, interval=10, routes_fired=False) == text

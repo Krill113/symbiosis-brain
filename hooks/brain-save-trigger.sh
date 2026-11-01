@@ -172,11 +172,11 @@ if [ "$MODE" = "prompt-check" ]; then
   RULES_TURN_INTERVAL="${SYMBIOSIS_BRAIN_RULES_TURN_INTERVAL:-10}"
   RULES_TEXT="${SYMBIOSIS_BRAIN_RULES_TEXT:-Перед grep по коду — проверь \`.claude/docs/catalog/\` (если есть) и brain_search.
 Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena (find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).
-Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.}"
+Делегируй, если сырой вывод засорит контекст или нужен независимый взгляд; не делегируй, если координация дороже самой работы.}"
 
   # ── C7 decompose split (§5.3). Two independently-overridable env vars. ──
   RULES_DISCIPLINE_TEXT="${SYMBIOSIS_BRAIN_RULES_DISCIPLINE_TEXT:-Доступно: brain_search/brain_read/brain_lint (память+гигиена), субагенты (Explore/general-purpose).
-Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.}"
+Делегируй, если сырой вывод засорит контекст или нужен независимый взгляд; не делегируй, если координация дороже самой работы.}"
   RULES_TOOLS_TEXT="${SYMBIOSIS_BRAIN_RULES_TOOLS_TEXT:-Перед grep по коду — проверь \`.claude/docs/catalog/\` (если есть) и brain_search.
 Именованный символ: Serena (find_symbol/find_referencing_symbols) до правки.}"
 

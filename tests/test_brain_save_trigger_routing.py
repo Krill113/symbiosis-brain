@@ -67,7 +67,8 @@ def test_route_turn_excluded_from_sessionstart_rm():
 
 ORIGINAL = ('Перед grep по коду — проверь `.claude/docs/catalog/` (если есть) и brain_search.\n'
             'Доступно: brain_search/brain_read/brain_lint (память+гигиена), Serena (find_symbol/find_referencing_symbols), субагенты (Explore/general-purpose).\n'
-            'Большие чтения / multi-file поиск — делегируй субагентам, не лезь сам в main.')
+            'Делегируй, если сырой вывод засорит контекст или нужен независимый взгляд; '
+            'не делегируй, если координация дороже самой работы.')
 
 def test_additive_byte_identical():
     sb = tempfile.mkdtemp()
@@ -129,7 +130,7 @@ def test_supersede_suppresses_tools_but_keeps_discipline():
     sb = tempfile.mkdtemp()
     try:
         out = _run_route('переименуй FooBar везде', sb, 'supersede')
-        assert 'делегируй субагентам' in out
+        assert 'не делегируй, если координация дороже' in out
         assert 'проверь' not in out or 'catalog' not in out
         assert '[route]' in out
     finally:
